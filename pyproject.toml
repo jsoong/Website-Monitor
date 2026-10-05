@@ -1,0 +1,87 @@
+[project]
+name = "pagewatch"
+version = "0.1.0"
+description = "PageWatch: a local Windows page-change monitor (engine + UI + CLI)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+dependencies = [
+    "pydantic>=2.8",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx[http2]>=0.27",
+    "lxml>=5.2",
+    "cssselect>=1.2",
+    "zstandard>=0.23",
+    "structlog>=24.1",
+    "psutil>=6.0",
+    "jinja2>=3.1",
+    "pyyaml>=6.0",
+    "charset-normalizer>=3.3",
+    "nh3>=0.2.18",
+    "rapidfuzz>=3.9",
+    "cdifflib>=1.2",
+    "fast-diff-match-patch>=2.1",
+    "windows-toasts>=1.1; sys_platform == 'win32'",
+    "pystray>=0.19; sys_platform == 'win32'",
+]
+
+[project.scripts]
+pagewatch-engine = "pagewatch.engine.main:main"
+pagewatch-ui = "pagewatch.ui.main:main"
+pagewatch-cli = "pagewatch.cli.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+    "aiohttp>=3.10",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "types-psutil",
+    "types-PyYAML",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pagewatch"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "ASYNC", "SIM", "C4"]
+ignore = ["B008"]  # FastAPI Depends() in defaults
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+plugins = ["pydantic.mypy"]
+files = ["src/pagewatch/engine", "src/pagewatch/models.py"]
+
+[[tool.mypy.overrides]]
+module = ["lxml.*", "cssselect.*", "cdifflib.*", "fast_diff_match_patch.*", "keyring.*",
+          "windows_toasts.*", "pystray.*", "aioftp.*", "feedparser.*", "pdfminer.*",
+          "docx.*", "openpyxl.*", "playwright.*", "nh3.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+markers = [
+    "browser: needs a Playwright browser",
+    "soak: long-running soak tests (opt in with -m soak)",
+]
+addopts = "-m 'not browser and not soak' -q"
+filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning"]

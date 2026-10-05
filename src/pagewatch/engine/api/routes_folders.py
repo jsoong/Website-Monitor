@@ -91,6 +91,8 @@ async def patch_folder(folder_id: int, body: FolderPatch, engine: EngineDep) -> 
     await engine.reload_folders()
     if defaults_changed and "filter" in (body.defaults or {}):
         engine.spawn(_rebuild_folder(engine, folder_id), f"rebuild-folder-{folder_id}")
+    if defaults_changed and "schedule" in (body.defaults or {}):
+        engine.spawn(engine.refresh_battery_policies(), f"battery-policy-{folder_id}")
     return folder_out(updated)
 
 

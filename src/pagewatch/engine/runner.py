@@ -27,12 +27,16 @@ from pagewatch.engine.pipeline.core import PipelineJob, PipelineResult, VersionR
 from pagewatch.engine.pipeline.sources import resolve_kind
 from pagewatch.engine.scheduler import RunResult
 from pagewatch.engine.store import repo
+from pagewatch.engine.workers import WorkerTimeout
 from pagewatch.models import BookmarkStatus, CheckKind, FetchErrorKind, Outcome, Trigger
 
 if TYPE_CHECKING:
     from pagewatch.engine.core import Engine
 
 log = get_logger("pagewatch.runner")
+
+# Failures that may just mean "this machine has no network": ask before counting them.
+NETWORK_KINDS = (FetchErrorKind.DNS, FetchErrorKind.CONNECTION, FetchErrorKind.TIMEOUT)
 
 
 @dataclass(slots=True)
@@ -163,6 +167,9 @@ class CheckRunner:
 
     @staticmethod
     def _processing_error(bookmark_id: int, exc: Exception) -> FetchError:
+        if isinstance(exc, WorkerTimeout):
+            log.warning("pipeline_timeout", bookmark_id=bookmark_id, error=str(exc))
+            return FetchError(FetchErrorKind.PARSE, f"processing timed out: {exc}"[:300])
         # An unreadable document or a feed whose layout changed is an expected failure of the
         # check (named plainly); anything else is a bug and gets its stack trace in the log.
         if isinstance(exc, ValueError) and type(exc).__name__ in (
@@ -357,12 +364,23 @@ class CheckRunner:
         host = host_of(row["url"])
         if err.retry_after_s:
             e.host_gate.backoff(host, err.retry_after_s)
+        # A failure that looks like a network problem may be ours, not the site's: probe before
+        # counting it. A local file never needs the network.
+        if (
+            e.connectivity is not None
+            and e.online
+            and err.kind in NETWORK_KINDS
+            and (route is None or route.name != "file")
+        ):
+            await e.connectivity.verify()
+        if not e.online:
+            return await self._skip_offline(ctx, run_id, elapsed_ms, err, route)
         threshold = resolved.gate.error_threshold if resolved else 3
         errors = int(row["consecutive_errors"])
         status: BookmarkStatus | None = None
         next_trigger = Trigger.SCHEDULE
-        counted = e.online
-        if err.transient and e.online and trigger is not Trigger.RETRY:
+        counted = True
+        if err.transient and trigger is not Trigger.RETRY:
             counted = False  # one quick retry before it counts
             due = e.clock.now() + timedelta(seconds=e.settings.transient_retry_s)
             interval = row["current_interval_s"]
@@ -395,6 +413,29 @@ class CheckRunner:
                 row["id"], f"{row['name']} is failing", f"{err.reason}: {err.message}"[:200]
             )
         return RunResult(due, next_trigger)
+
+    async def _skip_offline(
+        self, ctx: _Context, run_id: int, elapsed_ms: int, err: FetchError, route: Route | None
+    ) -> RunResult:
+        """The engine is offline (spec: "failures are not counted at all"): the run is recorded
+        as skipped, the error counter and status are left alone, and the bookmark stays due so
+        it is caught up, staggered, when the network is back."""
+        e = self.e
+        due = e.clock.now()
+        commit = repo.CheckCommit(
+            bookmark_id=ctx.row["id"],
+            run_id=run_id,
+            finished_at=iso(due),
+            outcome=Outcome.SKIPPED,
+            reason=f"offline:{err.reason}",
+            duration_ms=elapsed_ms,
+            byte_count=None,
+            next_due_at=iso(due),
+            current_interval_s=ctx.row["current_interval_s"],
+            method=route.kind.value if route is not None else None,
+        )
+        await self._write(ctx, commit, error=err)
+        return RunResult(due, Trigger.CATCHUP)
 
     async def _write(
         self, ctx: _Context, commit: repo.CheckCommit, error: FetchError | None = None

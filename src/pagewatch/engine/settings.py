@@ -14,6 +14,8 @@ from pydantic import ValidationError
 from pagewatch.engine.store.db import Database
 from pagewatch.models import Settings, deep_merge
 
+STATE_PREFIX = "_state."  # engine bookkeeping in the `setting` table; never a user setting
+
 
 class SettingsStore:
     def __init__(self, db: Database, overrides: dict[str, Any] | None = None) -> None:
@@ -54,3 +56,27 @@ class SettingsStore:
         await self._db.write(write)
         self.current = new
         return new
+
+    # -- engine state -------------------------------------------------------------------
+    # Small facts the engine must remember across restarts (when the last backup ran, ...).
+    # They live beside the settings but are not settings: ``load`` only reads keys that are
+    # fields of ``Settings`` and ``update`` only writes keys it was given, so these never show
+    # up in ``GET /settings`` and cannot be set through ``PUT /settings``.
+
+    async def get_state(self, name: str) -> str | None:
+        def read(conn: Any) -> str | None:
+            row = conn.execute(
+                "SELECT value_json FROM setting WHERE key=?", (STATE_PREFIX + name,)
+            ).fetchone()
+            return None if row is None else str(json.loads(row["value_json"]))
+
+        return await self._db.read(read)
+
+    async def set_state(self, name: str, value: str) -> None:
+        await self._db.write(
+            lambda conn: conn.execute(
+                "INSERT INTO setting(key, value_json) VALUES(?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",
+                (STATE_PREFIX + name, json.dumps(value)),
+            )
+        )

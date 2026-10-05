@@ -5,6 +5,11 @@ reruns are idempotent. Jobs run in configured order; a failure retries after 1, 
 minutes (then every 30) up to 5 attempts, after which the job is ``failed`` and surfaces in
 the Problems list. Jobs survive restarts because they live in SQLite: a job interrupted by a
 crash is simply run again (at-least-once delivery).
+
+The jobs of one change run one at a time, in configured order (``mark_read`` is always last):
+a job waits while an earlier job of its change is running or waiting for a retry. If an earlier
+action finally failed, ``mark_read`` does not run, so a change the user was never told about
+stays unread.
 """
 
 from __future__ import annotations
@@ -17,7 +22,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pagewatch.engine.actions.base import ActionUnavailable, AlertContext
 from pagewatch.engine.actions.builtin import ACTIONS
-from pagewatch.engine.clock import iso
+from pagewatch.engine.clock import iso, parse_iso
 from pagewatch.engine.config import resolve
 from pagewatch.engine.logs import get_logger
 from pagewatch.engine.store import repo
@@ -89,12 +94,20 @@ class ActionQueue:
                     self._running[job["id"]] = asyncio.create_task(
                         self._run_job(job["id"]), name=f"action-{job['id']}"
                     )
-            sleeper = asyncio.ensure_future(self.e.clock.sleep(MAX_IDLE_WAIT_S))
+            sleeper = asyncio.ensure_future(self.e.clock.sleep(await self._sleep_for()))
             waker = asyncio.ensure_future(self._wake.wait())
             _, pending = await asyncio.wait({sleeper, waker}, return_when=asyncio.FIRST_COMPLETED)
             for p in pending:
                 p.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
+
+    async def _sleep_for(self) -> float:
+        """Until the next scheduled retry, but never longer than a minute (clock changes)."""
+        nxt = await self.e.db.read(repo.action_job_next_attempt)
+        if nxt is None:
+            return MAX_IDLE_WAIT_S
+        wait = (parse_iso(nxt) - self.e.clock.now()).total_seconds()
+        return min(MAX_IDLE_WAIT_S, max(0.05, wait))
 
     # -- one job ------------------------------------------------------------------------
 
@@ -145,6 +158,18 @@ class ActionQueue:
                     )
                     return
                 job, ctx = loaded
+                if job["action_type"] == "mark_read" and await self.e.db.read(
+                    lambda c: repo.action_job_earlier_failed(c, job)
+                ):
+                    await self.e.db.write(
+                        lambda c: c.execute(
+                            "UPDATE action_job SET status='done', last_error=?, "
+                            "next_attempt_at=NULL WHERE id=?",
+                            ("skipped: an earlier action failed, so the change stays unread",
+                             job_id),
+                        )
+                    )  # fmt: skip
+                    return
                 action = ACTIONS.get(job["action_type"])
                 try:
                     if action is None:

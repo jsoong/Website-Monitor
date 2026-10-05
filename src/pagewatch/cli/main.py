@@ -8,9 +8,11 @@ import re
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from pagewatch import __version__
+from pagewatch.cli import service
 from pagewatch.cli.client import ApiError, EngineClient, EngineNotRunning
 from pagewatch.engine.paths import resolve_data_dir
 
@@ -105,6 +107,23 @@ def build_parser() -> argparse.ArgumentParser:
     frm.add_argument("folder")
 
     sub.add_parser("status", help="engine health")
+
+    bk = sub.add_parser("backup", help="write a backup zip now")
+    bk.add_argument("--blobs", action="store_true",
+                    help="include the page snapshots (needed to move to another PC)")  # fmt: skip
+    bk.add_argument("--out", help="destination .zip (default: the data folder's backups folder)")
+
+    rs = sub.add_parser("restore", help="restore a backup zip (the engine restarts to apply it)")
+    rs.add_argument("zip", help="a backup made by 'pagewatch-cli backup'")
+
+    sv = sub.add_parser("service", help="start the engine at logon (Windows Task Scheduler)")
+    svs = sv.add_subparsers(dest="service_cmd", required=True)
+    inst = svs.add_parser("install", help="register the task")
+    inst.add_argument("--exe", help="the engine program to run (default: this Python)")
+    inst.add_argument("--print-xml", action="store_true",
+                      help="print the task definition instead of registering it")  # fmt: skip
+    svs.add_parser("uninstall", help="remove the task")
+    svs.add_parser("status", help="show the task")
     return p
 
 
@@ -245,6 +264,13 @@ def run(args: argparse.Namespace, client: EngineClient) -> Any:
         return {"deleted": fid}
     if cmd == "status":
         return client.get("/health")
+    if cmd == "backup":
+        body = {"include_blobs": True} if args.blobs else {}
+        if args.out:
+            body["path"] = str(Path(args.out).expanduser().resolve())  # the engine's cwd differs
+        return client.post("/backup", body)
+    if cmd == "restore":
+        return client.post("/restore", {"path": str(Path(args.zip).expanduser().resolve())})
     raise ApiError(2, f"unknown command {cmd}")
 
 
@@ -278,21 +304,61 @@ def render(args: argparse.Namespace, result: Any) -> str:
         if args.folder_cmd == "add":
             return f"added folder #{result['id']} {result['name']}"
         return f"deleted folder #{result['deleted']}"
+    if cmd == "backup":
+        kind = "with page snapshots" if result["include_blobs"] else "without page snapshots"
+        return f"backup written to {result['path']} ({result['size_bytes']:,} bytes, {kind})"
+    if cmd == "restore":
+        return result["message"]
     if cmd == "status":
         a = result["autowatch"]
+        state = [
+            s
+            for s, on in (("offline", not result["online"]), ("on battery", result["on_battery"]))
+            if on
+        ]
         return (
             f"PageWatch {result['version']} (pid {result['pid']}) up {int(result['uptime_s'])}s\n"
             f"bookmarks {result['bookmarks']}  queued {result['queue_length']}  "
-            f"running {result['in_flight']}  autowatch {a['state']}  rss {result['rss_mb']} MB\n"
-            f"last 24h: {result['outcomes_24h'] or 'no checks yet'}"
+            f"running {result['in_flight']}  autowatch {a['state']}  rss {result['rss_mb']} MB"
+            + (f"  [{', '.join(state)}]" if state else "")
+            + f"\nlast 24h: {result['outcomes_24h'] or 'no checks yet'}"
+            + (
+                f"\nlast backup {_fmt_time(result['last_backup_at'])}"
+                if result.get("last_backup_at")
+                else ""
+            )
         )
     return json.dumps(result)
 
 
+def run_service(args: argparse.Namespace) -> int:
+    """Task Scheduler registration: needs no running engine."""
+    data = resolve_data_dir(args.data_dir).root
+    try:
+        if args.service_cmd == "install":
+            if args.print_xml:
+                program, arguments = service.engine_command(data, args.exe)
+                print(service.build_task_xml(program, arguments, service.current_user()))
+                return 0
+            print(service.install(data, exe=args.exe))
+        elif args.service_cmd == "uninstall":
+            print(service.uninstall())
+        else:
+            print(service.status())
+    except service.ServiceError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.cmd == "service":
+        return run_service(args)
+    # a backup that includes every page snapshot can take a while
+    timeout = 3600.0 if args.cmd in ("backup", "restore") else 30.0
     try:
-        with EngineClient(resolve_data_dir(args.data_dir)) as client:
+        with EngineClient(resolve_data_dir(args.data_dir), timeout=timeout) as client:
             result = run(args, client)
     except EngineNotRunning as exc:
         print(f"error: {exc}", file=sys.stderr)

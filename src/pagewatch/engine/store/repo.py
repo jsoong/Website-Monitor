@@ -346,18 +346,35 @@ def changes_for(
 
 
 def action_jobs_due(conn: sqlite3.Connection, now: str, limit: int = 50) -> list[sqlite3.Row]:
+    """Jobs that may start now. A change's jobs run in configured order (spec: "Jobs run in
+    configured order"; ``mark_read`` is always last), so a job waits while any earlier job of
+    its change is still ``queued`` (running, or waiting for a retry)."""
     return conn.execute(
-        "SELECT * FROM action_job WHERE status='queued' AND (next_attempt_at IS NULL "
-        "OR next_attempt_at<=?) ORDER BY id LIMIT ?",
+        "SELECT j.* FROM action_job j WHERE j.status='queued' AND (j.next_attempt_at IS NULL "
+        "OR j.next_attempt_at<=?) AND NOT EXISTS (SELECT 1 FROM action_job p "
+        "WHERE p.change_id=j.change_id AND p.action_index<j.action_index AND p.status='queued') "
+        "ORDER BY j.id LIMIT ?",
         (now, limit),
     ).fetchall()
 
 
 def action_job_next_attempt(conn: sqlite3.Connection) -> str | None:
+    """The earliest scheduled retry of any queued job (``None``: nothing is waiting for one)."""
     row = conn.execute(
-        "SELECT MIN(COALESCE(next_attempt_at, '')) FROM action_job WHERE status='queued'"
+        "SELECT MIN(next_attempt_at) FROM action_job WHERE status='queued' "
+        "AND next_attempt_at IS NOT NULL"
     ).fetchone()
     return None if row[0] is None else str(row[0])
+
+
+def action_job_earlier_failed(conn: sqlite3.Connection, job: sqlite3.Row) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM action_job WHERE change_id=? AND action_index<? AND status='failed'",
+            (job["change_id"], job["action_index"]),
+        ).fetchone()
+        is not None
+    )
 
 
 # -- the check commit -------------------------------------------------------------------
@@ -541,6 +558,10 @@ def mark_read(conn: sqlite3.Connection, bookmark_id: int, now: str) -> bool:
     }
     if row["status"] == "changed":
         upd["status"] = "ok"
+    elif row["status"] == "error":
+        upd["status"] = "ok" if latest is not None else "new"
+    # Spec (Errors): the counter resets on the next success or when the user opens the bookmark.
+    upd["consecutive_errors"] = 0
     bookmark_update(conn, bookmark_id, upd, now)
     conn.execute(
         "UPDATE change SET read_at=? WHERE bookmark_id=? AND read_at IS NULL", (now, bookmark_id)

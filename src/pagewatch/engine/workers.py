@@ -4,11 +4,17 @@ The event loop never parses or diffs. It hands raw bytes to a process pool and g
 small result; workers read earlier versions from the blob store themselves. ``thread``
 mode runs the same code in threads: used by tests (no process start-up cost) and as a
 fallback; ``process`` mode is the production default.
+
+A job that runs past ``default_timeout_s`` (a catastrophic user regex, a pathological PDF) is
+abandoned: in process mode the workers are killed and the pool is rebuilt, so one bad page can
+never wedge every later check; in thread mode (tests) a thread cannot be killed, so it is
+abandoned and the executor replaced.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import multiprocessing
 import sys
 import threading
@@ -23,6 +29,10 @@ T = TypeVar("T")
 log = get_logger("pagewatch.workers")
 
 MAX_TASKS_PER_CHILD = 500
+
+
+class WorkerTimeout(TimeoutError):
+    """A pipeline job ran longer than its time limit and was abandoned."""
 
 
 def _init_worker() -> None:  # pragma: no cover - runs in the child process
@@ -47,6 +57,8 @@ class WorkerPool:
         self._executor: Executor | None = None
         self.completed = 0
         self.restarts = 0
+        self.timeouts = 0
+        self.default_timeout_s: float | None = None  # set by the engine from the settings
 
     def _ensure(self) -> Executor:
         with self._lock:
@@ -64,13 +76,28 @@ class WorkerPool:
                     )
             return self._executor
 
-    async def run(self, fn: Callable[..., T], *args: Any) -> T:
-        """Run ``fn(*args)`` in a worker. A crashed process pool is rebuilt once."""
+    async def run(self, fn: Callable[..., T], *args: Any, time_limit: float | None = None) -> T:
+        """Run ``fn(*args)`` in a worker. A crashed process pool is rebuilt once; a job that
+        exceeds ``time_limit`` (default ``default_timeout_s``) raises ``WorkerTimeout`` after its
+        worker was killed."""
         loop = asyncio.get_running_loop()
+        limit = time_limit if time_limit is not None else self.default_timeout_s
         for attempt in (1, 2):
             executor = self._ensure()
+            fut = loop.run_in_executor(executor, fn, *args)
             try:
-                result = await loop.run_in_executor(executor, fn, *args)
+                if limit is None:
+                    result = await fut
+                else:
+                    done, _ = await asyncio.wait({fut}, timeout=limit)
+                    if not done:
+                        fut.cancel()
+                        self.timeouts += 1
+                        log.warning("worker_job_timeout", fn=getattr(fn, "__name__", "?"),
+                                    limit_s=limit)  # fmt: skip
+                        self._abandon(executor)
+                        raise WorkerTimeout(f"processing took longer than {limit:g} s")
+                    result = fut.result()
             except BrokenProcessPool:
                 log.warning("worker_pool_broken", attempt=attempt)
                 self._reset(executor)
@@ -80,6 +107,14 @@ class WorkerPool:
             self.completed += 1
             return result
         raise AssertionError("unreachable")  # pragma: no cover
+
+    def _abandon(self, executor: Executor) -> None:
+        """Get rid of an executor holding a job that will not finish: kill its worker
+        processes (their state is disposable: blobs are written atomically), then replace it."""
+        for proc in list(getattr(executor, "_processes", {}).values()):
+            with contextlib.suppress(Exception):
+                proc.kill()
+        self._reset(executor)
 
     def _reset(self, broken: Executor) -> None:
         with self._lock:

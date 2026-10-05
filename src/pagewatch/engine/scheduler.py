@@ -7,6 +7,12 @@ host so one slow or rate-limited host never blocks checks for others.
 Dispatch rules: at most one in-flight check per bookmark; the global static/browser pools;
 the per-host gate (concurrency, spacing, ``Retry-After`` back-off). Manual "Check now" and
 hotsites jump the queue.
+
+Scheduled dispatch also stops while AutoWatch is paused, while the engine is offline, while a
+named *hold* is set (waiting for the network after a resume, battery saver) and, for bookmarks
+whose policy is ``on_battery: pause``, while the machine runs on battery. Manual checks always
+run. ``catch_up`` turns everything that became overdue meanwhile into one staggered ``catchup``
+check per bookmark.
 """
 
 from __future__ import annotations
@@ -14,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import heapq
 import itertools
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -53,6 +59,7 @@ class _Entry:
     seq: int = 0  # invalidates stale heap items
     next_trigger: Trigger = Trigger.SCHEDULE
     override_due: float | None = None  # set by upsert() while a check is running
+    battery_pause: bool = False  # policy `on_battery: pause`
 
 
 @dataclass(slots=True)
@@ -98,6 +105,9 @@ class Scheduler:
         self._paused = False
         self._paused_until: float | None = None
         self.online = True
+        self.on_battery = False
+        self._holds: set[str] = set()
+        self._parked: set[int] = set()  # overdue bookmarks held back by the battery policy
         self._static_active = 0
         self._browser_active = 0
         self._dispatch_from = 0.0  # monotonic: scheduled work waits for the start-up delay
@@ -121,6 +131,15 @@ class Scheduler:
         if self._paused_until is None:
             return None
         return datetime.fromtimestamp(self._paused_until, tz=self._clock.now().tzinfo)
+
+    @property
+    def holds(self) -> frozenset[str]:
+        return frozenset(self._holds)
+
+    @property
+    def scheduled_ok(self) -> bool:
+        """May scheduled (non-manual) checks start? Not while paused, offline or on hold."""
+        return not self._paused and self.online and not self._holds
 
     @property
     def backlog_warning(self) -> bool:
@@ -154,7 +173,9 @@ class Scheduler:
         enabled: bool,
         due: datetime | None,
         trigger: Trigger = Trigger.SCHEDULE,
+        battery_pause: bool = False,
     ) -> None:
+        self._parked.discard(bookmark_id)
         e = self._entries.get(bookmark_id)
         if e is None:
             e = self._entries[bookmark_id] = _Entry(bookmark_id, "", 0, False)
@@ -162,6 +183,7 @@ class Scheduler:
         e.priority = priority
         e.browser = uses_browser(check_method)
         e.enabled = enabled
+        e.battery_pause = battery_pause
         e.next_trigger = trigger
         e.seq = next(self._tick)
         e.due = due.timestamp() if (due is not None and enabled) else None
@@ -177,14 +199,33 @@ class Scheduler:
     def remove(self, bookmark_id: int) -> None:
         self._entries.pop(bookmark_id, None)
         self._queued.pop(bookmark_id, None)
+        self._parked.discard(bookmark_id)
         self._wake.set()
 
-    def load(self, rows: list[tuple[int, str, int, str, bool, datetime | None]]) -> None:
-        """Populate from the database: ``(id, url, priority, check_method, enabled, due)``."""
-        for bid, url, priority, method, enabled, due in rows:
+    def load(self, rows: list[tuple[int, str, int, str, bool, datetime | None, bool]]) -> None:
+        """Populate from the database:
+        ``(id, url, priority, check_method, enabled, due, battery_pause)``."""
+        for bid, url, priority, method, enabled, due, battery_pause in rows:
             self.upsert(
-                bid, url=url, priority=priority, check_method=method, enabled=enabled, due=due
-            )
+                bid, url=url, priority=priority, check_method=method, enabled=enabled, due=due,
+                battery_pause=battery_pause,
+            )  # fmt: skip
+
+    def reschedule(self, bookmark_id: int, due: datetime | None) -> None:
+        """Move a bookmark's next due time (e.g. to the next time its day/window allows)."""
+        e = self._entries.get(bookmark_id)
+        if e is None:
+            return
+        if bookmark_id in self._inflight:
+            e.override_due = due.timestamp() if due is not None else None
+            return
+        self._queued.pop(bookmark_id, None)
+        self._parked.discard(bookmark_id)
+        e.seq = next(self._tick)
+        e.due = due.timestamp() if (due is not None and e.enabled) else None
+        if e.due is not None:
+            heapq.heappush(self._heap, (e.due, e.seq, bookmark_id))
+        self._wake.set()
 
     # -- control ------------------------------------------------------------------------
 
@@ -202,6 +243,96 @@ class Scheduler:
         if online != self.online:
             self.online = online
             self._wake.set()
+
+    def hold(self, reason: str) -> None:
+        """Stop scheduled dispatch for ``reason`` until ``release(reason)`` (manual checks run)."""
+        self._holds.add(reason)
+        self._wake.set()
+
+    def release(self, reason: str) -> None:
+        if reason in self._holds:
+            self._holds.discard(reason)
+            self._wake.set()
+
+    def set_on_battery(self, on_battery: bool) -> None:
+        """Bookmarks with ``on_battery: pause`` wait while this is true; they run again, still
+        overdue, as soon as it is false."""
+        if on_battery == self.on_battery:
+            return
+        self.on_battery = on_battery
+        if not on_battery:
+            for bid in self._parked:
+                e = self._entries.get(bid)
+                if e is not None and e.due is not None:
+                    heapq.heappush(self._heap, (e.due, e.seq, bid))
+            self._parked.clear()
+        self._wake.set()
+
+    def set_battery_pause(self, bookmark_id: int, pause: bool) -> None:
+        e = self._entries.get(bookmark_id)
+        if e is None or e.battery_pause == pause:
+            return
+        e.battery_pause = pause
+        if not pause and bookmark_id in self._parked and e.due is not None:
+            self._parked.discard(bookmark_id)
+            heapq.heappush(self._heap, (e.due, e.seq, bookmark_id))
+            self._wake.set()
+
+    def overdue_ids(self) -> list[int]:
+        """Bookmarks whose scheduled check is due or waiting to start and is not running."""
+        now = self._clock.now().timestamp()
+        waiting = {
+            item.id
+            for heap in self._ready.values()
+            for item in heap
+            if self._queued.get(item.id) == item.seq and item.trigger is not Trigger.MANUAL
+        }
+        return [
+            e.id
+            for e in self._entries.values()
+            if e.enabled
+            and e.id not in self._inflight
+            and ((e.due is not None and e.due <= now) or e.id in waiting)
+        ]
+
+    def catch_up(self, spread_s: float, *, skip: Collection[int] = ()) -> int:
+        """One ``catchup`` check for every overdue bookmark (not one per missed interval, which
+        the single due time per bookmark already guarantees), spread evenly over
+        ``min(spread_s, count x 1 s)`` and starting after the start-up delay. Hotsites go
+        first, then the longest overdue. Returns how many were scheduled."""
+        now = self._clock.now().timestamp()
+        start = now + max(0.0, self._dispatch_from - self._clock.monotonic())
+        skipped = set(skip)
+        for heap in self._ready.values():  # already waiting to start: re-time them with the rest
+            for item in heap:
+                if self._queued.get(item.id) == item.seq and item.trigger is not Trigger.MANUAL:
+                    e = self._entries.get(item.id)
+                    self._queued.pop(item.id, None)
+                    if e is not None and e.due is None:
+                        e.due = min(item.key[1], now)
+        chosen = sorted(
+            (
+                e
+                for e in self._entries.values()
+                if e.enabled
+                and e.id not in self._inflight
+                and e.id not in skipped
+                and e.due is not None
+                and e.due <= now
+            ),
+            key=lambda e: (0 if e.priority else 1, e.due or 0.0, e.id),
+        )
+        if not chosen:
+            return 0
+        spread = min(max(0.0, spread_s), len(chosen) * 1.0)
+        for i, e in enumerate(chosen):
+            self._parked.discard(e.id)
+            e.seq = next(self._tick)
+            e.due = start + i * spread / len(chosen)
+            e.next_trigger = Trigger.CATCHUP
+            heapq.heappush(self._heap, (e.due, e.seq, e.id))
+        self._wake.set()
+        return len(chosen)
 
     def wake(self) -> None:
         self._wake.set()
@@ -264,7 +395,7 @@ class Scheduler:
         back-off may still be queued: they wait for the clock, not for us."""
         if self._inflight:
             return False
-        scheduled_ok = not self._paused and self.online
+        scheduled_ok = self.scheduled_ok
         if self._queued and self._pick(scheduled_ok)[1] is not None:
             return False
         if not scheduled_ok:
@@ -312,7 +443,7 @@ class Scheduler:
             if self._on_autowatch_change:
                 self._on_autowatch_change(False, None)
         wait: float | None = None
-        scheduled_ok = not self._paused and self.online
+        scheduled_ok = self.scheduled_ok
         if scheduled_ok and mono < self._dispatch_from:
             wait = self._dispatch_from - mono
         elif scheduled_ok:
@@ -323,6 +454,9 @@ class Scheduler:
                 due_ts, _, bid = heapq.heappop(self._heap)
                 e = self._entries[bid]
                 if bid in self._inflight or bid in self._queued:
+                    continue
+                if self.on_battery and e.battery_pause:
+                    self._parked.add(bid)  # stays overdue; set_on_battery(False) releases it
                     continue
                 rank = RANK_HOTSITE if e.priority else RANK_NORMAL
                 e.due = None

@@ -496,6 +496,11 @@ class ActionConfig(PWModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+def _is_mark_read(action: Any) -> bool:
+    kind = action.get("type") if isinstance(action, dict) else getattr(action, "type", None)
+    return kind == ActionType.MARK_READ  # StrEnum: equal to its string value
+
+
 class ActionsConfig(PWModel):
     actions: list[ActionConfig] = Field(default_factory=list)
     alert_privacy: AlertPrivacy = AlertPrivacy.CONTENT
@@ -505,7 +510,11 @@ class ActionsConfig(PWModel):
     def _legacy_list(cls, data: Any) -> Any:
         # The column default is '[]': a bare list is accepted as "just the actions".
         if isinstance(data, list):
-            return {"actions": data}
+            data = {"actions": data}
+        # Spec: `mark_read` "always runs last". The queue runs a change's jobs in action_index
+        # order, so the order is fixed here, where every consumer gets it (stable otherwise).
+        if isinstance(data, dict) and isinstance(data.get("actions"), list):
+            data = {**data, "actions": sorted(data["actions"], key=_is_mark_read)}
         return data
 
 
@@ -543,6 +552,53 @@ class Settings(PWModel):
     debug_logging: bool = False
     autowatch_state: Literal["running", "paused"] = "running"
     autowatch_paused_until: str | None = None
+    # -- unattended operation (spec: Sleep, resume and connectivity; Continuous operation) ----
+    connectivity_url: str = (
+        "https://www.msftconnecttest.com/connecttest.txt"  # HEAD; any reply = online
+    )
+    connectivity_timeout_s: float = Field(5.0, gt=0.0, le=60.0)
+    probe_interval_s: float = Field(5.0, ge=0.05)  # between probes while waiting after a resume
+    resume_probe_window_s: float = Field(
+        120.0, ge=0.0
+    )  # give up waiting for the network after this
+    offline_probe_s: float = Field(15.0, ge=0.05)  # between probes while offline
+    resume_drift_s: float = Field(30.0, gt=0.0)  # wall-vs-monotonic drift that means "slept"
+    catchup_spread_s: float = Field(
+        300.0, ge=0.0
+    )  # catch-up checks spread over min(this, count x 1 s)
+    battery_poll_s: float = Field(60.0, ge=0.05)
+    pause_on_battery_saver: bool = False
+    keep_awake: bool = False  # hold the machine awake while AutoWatch runs
+    os_power_events: bool = True  # listen for Windows' own sleep/resume/logoff messages
+    backup_enabled: bool = True
+    backup_time: str = "03:00"  # local clock; at the next wake if the machine was asleep
+    backup_keep: int = Field(14, ge=1)
+    backup_include_blobs: bool = False
+    maintenance_time: str = "03:30"  # retention and blob GC, local clock
+    check_run_retention_days: int = Field(30, ge=1)
+    metric_retention_days: int = Field(30, ge=1)
+    blob_grace_h: float = Field(24.0, ge=1.0)  # an unreferenced blob must be unused this long to go
+    rss_limit_mb: int = Field(1500, ge=100)  # engine + children; browser recycled, then exit code 3
+    rss_check_s: float = Field(30.0, ge=0.05)
+    rss_grace_s: float = Field(60.0, ge=0.0)  # between recycling the browser and giving up
+    loop_lag_limit_s: float = Field(10.0, gt=0.0)  # a stall longer than this logs a stack dump
+    worker_job_timeout_s: float = Field(120.0, gt=0.0)  # a pipeline job running longer is killed
+    metric_interval_s: float = Field(3600.0, ge=0.05)
+
+    @field_validator("backup_time", "maintenance_time")
+    @classmethod
+    def _clock_time(cls, v: str) -> str:
+        if not _HHMM.match(v):
+            raise ValueError("expected HH:MM")
+        return v
+
+    @field_validator("connectivity_url")
+    @classmethod
+    def _probe_url(cls, v: str) -> str:
+        v = v.strip()
+        if not re.match(r"^https?://[^/\s]+", v, re.IGNORECASE):
+            raise ValueError("the connectivity URL must start with http:// or https://")
+        return v
 
     @field_validator("timezone")
     @classmethod
@@ -886,6 +942,34 @@ class HealthOut(PWModel):
     online: bool = True
     on_battery: bool = False
     backlog_warning: bool = False
+    # Unattended-operation state (M5). RSS here is the engine plus its workers and browser.
+    rss_total_mb: float | None = None
+    cpu_percent: float | None = None
+    last_backup_at: str | None = None
+    last_maintenance_at: str | None = None
+
+
+class BackupRequest(PWModel):
+    include_blobs: bool | None = None  # None: the `backup_include_blobs` setting
+    path: str | None = None  # destination zip; default: a new file in the data folder's backups\
+
+
+class BackupOut(PWModel):
+    path: str
+    size_bytes: int
+    created_at: str
+    include_blobs: bool
+    schema_version: int
+
+
+class RestoreRequest(PWModel):
+    path: str = Field(min_length=1)  # a backup zip made by this program
+
+
+class RestoreOut(PWModel):
+    staged: bool
+    restart: bool  # the engine is about to exit (code 3) so the restore can be applied
+    message: str
 
 
 class LockInfo(PWModel):

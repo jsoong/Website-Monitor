@@ -175,6 +175,69 @@
     "title": "AutowatchState",
     "type": "object"
    },
+   "BackupOut": {
+    "additionalProperties": false,
+    "properties": {
+     "created_at": {
+      "title": "Created At",
+      "type": "string"
+     },
+     "include_blobs": {
+      "title": "Include Blobs",
+      "type": "boolean"
+     },
+     "path": {
+      "title": "Path",
+      "type": "string"
+     },
+     "schema_version": {
+      "title": "Schema Version",
+      "type": "integer"
+     },
+     "size_bytes": {
+      "title": "Size Bytes",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "path",
+     "size_bytes",
+     "created_at",
+     "include_blobs",
+     "schema_version"
+    ],
+    "title": "BackupOut",
+    "type": "object"
+   },
+   "BackupRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "include_blobs": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Include Blobs"
+     },
+     "path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Path"
+     }
+    },
+    "title": "BackupRequest",
+    "type": "object"
+   },
    "BookmarkCounts": {
     "additionalProperties": false,
     "properties": {
@@ -2089,9 +2152,42 @@
       "title": "Browser State",
       "type": "string"
      },
+     "cpu_percent": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Cpu Percent"
+     },
      "in_flight": {
       "title": "In Flight",
       "type": "integer"
+     },
+     "last_backup_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Backup At"
+     },
+     "last_maintenance_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Maintenance At"
      },
      "on_battery": {
       "default": false,
@@ -2121,6 +2217,17 @@
      "rss_mb": {
       "title": "Rss Mb",
       "type": "number"
+     },
+     "rss_total_mb": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Rss Total Mb"
      },
      "uptime_s": {
       "title": "Uptime S",
@@ -2639,6 +2746,45 @@
     "title": "Rect",
     "type": "object"
    },
+   "RestoreOut": {
+    "additionalProperties": false,
+    "properties": {
+     "message": {
+      "title": "Message",
+      "type": "string"
+     },
+     "restart": {
+      "title": "Restart",
+      "type": "boolean"
+     },
+     "staged": {
+      "title": "Staged",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "staged",
+     "restart",
+     "message"
+    ],
+    "title": "RestoreOut",
+    "type": "object"
+   },
+   "RestoreRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "path": {
+      "minLength": 1,
+      "title": "Path",
+      "type": "string"
+     }
+    },
+    "required": [
+     "path"
+    ],
+    "title": "RestoreRequest",
+    "type": "object"
+   },
    "ScheduleConfig": {
     "additionalProperties": false,
     "properties": {
@@ -2771,6 +2917,39 @@
       "title": "Backlog Warning",
       "type": "integer"
      },
+     "backup_enabled": {
+      "default": true,
+      "title": "Backup Enabled",
+      "type": "boolean"
+     },
+     "backup_include_blobs": {
+      "default": false,
+      "title": "Backup Include Blobs",
+      "type": "boolean"
+     },
+     "backup_keep": {
+      "default": 14,
+      "minimum": 1.0,
+      "title": "Backup Keep",
+      "type": "integer"
+     },
+     "backup_time": {
+      "default": "03:00",
+      "title": "Backup Time",
+      "type": "string"
+     },
+     "battery_poll_s": {
+      "default": 60.0,
+      "minimum": 0.05,
+      "title": "Battery Poll S",
+      "type": "number"
+     },
+     "blob_grace_h": {
+      "default": 24.0,
+      "minimum": 1.0,
+      "title": "Blob Grace H",
+      "type": "number"
+     },
      "browser_args": {
       "items": {
        "type": "string"
@@ -2807,6 +2986,30 @@
       "minimum": 1.0,
       "title": "Browser Pool",
       "type": "integer"
+     },
+     "catchup_spread_s": {
+      "default": 300.0,
+      "minimum": 0.0,
+      "title": "Catchup Spread S",
+      "type": "number"
+     },
+     "check_run_retention_days": {
+      "default": 30,
+      "minimum": 1.0,
+      "title": "Check Run Retention Days",
+      "type": "integer"
+     },
+     "connectivity_timeout_s": {
+      "default": 5.0,
+      "exclusiveMinimum": 0.0,
+      "maximum": 60.0,
+      "title": "Connectivity Timeout S",
+      "type": "number"
+     },
+     "connectivity_url": {
+      "default": "https://www.msftconnecttest.com/connecttest.txt",
+      "title": "Connectivity Url",
+      "type": "string"
      },
      "debug_logging": {
       "default": false,
@@ -2845,15 +3048,59 @@
       "title": "Host Overrides",
       "type": "object"
      },
+     "keep_awake": {
+      "default": false,
+      "title": "Keep Awake",
+      "type": "boolean"
+     },
      "keep_changed_versions": {
       "default": 20,
       "minimum": 1.0,
       "title": "Keep Changed Versions",
       "type": "integer"
      },
+     "loop_lag_limit_s": {
+      "default": 10.0,
+      "exclusiveMinimum": 0.0,
+      "title": "Loop Lag Limit S",
+      "type": "number"
+     },
+     "maintenance_time": {
+      "default": "03:30",
+      "title": "Maintenance Time",
+      "type": "string"
+     },
+     "metric_interval_s": {
+      "default": 3600.0,
+      "minimum": 0.05,
+      "title": "Metric Interval S",
+      "type": "number"
+     },
+     "metric_retention_days": {
+      "default": 30,
+      "minimum": 1.0,
+      "title": "Metric Retention Days",
+      "type": "integer"
+     },
      "notify_on_first_check": {
       "default": false,
       "title": "Notify On First Check",
+      "type": "boolean"
+     },
+     "offline_probe_s": {
+      "default": 15.0,
+      "minimum": 0.05,
+      "title": "Offline Probe S",
+      "type": "number"
+     },
+     "os_power_events": {
+      "default": true,
+      "title": "Os Power Events",
+      "type": "boolean"
+     },
+     "pause_on_battery_saver": {
+      "default": false,
+      "title": "Pause On Battery Saver",
       "type": "boolean"
      },
      "per_host_concurrency": {
@@ -2868,6 +3115,42 @@
       "minimum": 0.0,
       "title": "Per Host Min Gap S",
       "type": "number"
+     },
+     "probe_interval_s": {
+      "default": 5.0,
+      "minimum": 0.05,
+      "title": "Probe Interval S",
+      "type": "number"
+     },
+     "resume_drift_s": {
+      "default": 30.0,
+      "exclusiveMinimum": 0.0,
+      "title": "Resume Drift S",
+      "type": "number"
+     },
+     "resume_probe_window_s": {
+      "default": 120.0,
+      "minimum": 0.0,
+      "title": "Resume Probe Window S",
+      "type": "number"
+     },
+     "rss_check_s": {
+      "default": 30.0,
+      "minimum": 0.05,
+      "title": "Rss Check S",
+      "type": "number"
+     },
+     "rss_grace_s": {
+      "default": 60.0,
+      "minimum": 0.0,
+      "title": "Rss Grace S",
+      "type": "number"
+     },
+     "rss_limit_mb": {
+      "default": 1500,
+      "minimum": 100.0,
+      "title": "Rss Limit Mb",
+      "type": "integer"
      },
      "startup_delay_s": {
       "default": 30.0,
@@ -2903,6 +3186,12 @@
       "default": 60.0,
       "minimum": 1.0,
       "title": "Transient Retry S",
+      "type": "number"
+     },
+     "worker_job_timeout_s": {
+      "default": 120.0,
+      "exclusiveMinimum": 0.0,
+      "title": "Worker Job Timeout S",
       "type": "number"
      },
      "worker_processes": {
@@ -3247,6 +3536,55 @@
     "summary": "Set Autowatch",
     "tags": [
      "checks"
+    ]
+   }
+  },
+  "/backup": {
+   "post": {
+    "description": "Write a backup zip now: into ``backups\\`` unless ``path`` says where.",
+    "operationId": "backup_backup_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "anyOf": [
+         {
+          "$ref": "#/components/schemas/BackupRequest"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "title": "Body"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BackupOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Backup",
+    "tags": [
+     "maintenance"
     ]
    }
   },
@@ -4460,6 +4798,48 @@
     "summary": "Preview",
     "tags": [
      "changes"
+    ]
+   }
+  },
+  "/restore": {
+   "post": {
+    "description": "Validate a backup zip, stage it and restart the engine, which applies it on the way up.\nNothing is changed unless the zip passes every check.",
+    "operationId": "restore_restore_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RestoreRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "202": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RestoreOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Restore",
+    "tags": [
+     "maintenance"
     ]
    }
   },

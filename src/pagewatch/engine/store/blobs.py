@@ -7,6 +7,11 @@ references the blob; a crash can therefore leave an orphan but never a dangling 
 
 The store is safe to use from several processes: worker processes read and write blobs
 directly so only small results cross process boundaries.
+
+A blob's modification time means "last used": writing an existing blob (the dedupe hit) refreshes
+it. Garbage collection relies on that: it deletes only unreferenced blobs that have not been used
+for a grace period, which closes the race between a worker that has just decided to reuse a blob
+and a collector that is about to delete it.
 """
 
 from __future__ import annotations
@@ -74,6 +79,8 @@ class BlobStore:
     def _write(self, digest: str, data: bytes) -> None:
         path = self.path_for(digest)
         if path.exists():
+            with contextlib.suppress(OSError):
+                os.utime(path)  # reused: it is in use again (see the module docstring)
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         packed = zstandard.ZstdCompressor(level=self.level).compress(data)
@@ -124,6 +131,15 @@ class BlobStore:
     def exists(self, digest: str) -> bool:
         return self.path_for(digest).exists()
 
+    def peek(self, digest: str, n: int = 64) -> bytes:
+        """The first ``n`` bytes of a blob's content, without decompressing the rest."""
+        path = self.path_for(digest)
+        try:
+            with open(path, "rb") as fh:
+                return zstandard.ZstdDecompressor().stream_reader(fh).read(n)
+        except FileNotFoundError:
+            raise BlobNotFound(digest) from None
+
     # -- maintenance --------------------------------------------------------------------
 
     def delete(self, digest: str) -> int:
@@ -147,6 +163,19 @@ class BlobStore:
                     yield digest, path.stat().st_size
                 except FileNotFoundError:
                     continue
+
+    def iter_blob_files(self) -> Iterator[tuple[str, int, float]]:
+        """Yield ``(digest, compressed_size, mtime)`` for every stored blob."""
+        if not self.root.exists():
+            return
+        for path in self.root.glob("??/??/*.zst"):
+            digest = path.stem
+            if _valid(digest):
+                try:
+                    st = path.stat()
+                except FileNotFoundError:
+                    continue
+                yield digest, st.st_size, st.st_mtime
 
     def iter_stale_temp_files(self, older_than_s: float) -> Iterator[Path]:
         import time

@@ -13,6 +13,7 @@ import secrets
 import sqlite3
 from collections.abc import Coroutine
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Literal
 
 import psutil
@@ -23,7 +24,7 @@ from pagewatch.engine.actions.queue import ActionQueue
 from pagewatch.engine.actions.toast import ToastBackend, ToastService, default_backend
 from pagewatch.engine.api.events import EventBus
 from pagewatch.engine.clock import Clock, SystemClock, iso, parse_iso
-from pagewatch.engine.config import FolderCache, resolve, source_options
+from pagewatch.engine.config import FolderCache, resolve, resolve_schedule, source_options
 from pagewatch.engine.fetch.browser import BrowserFetcher, BrowserManager, Launcher
 from pagewatch.engine.fetch.feed import FeedFetcher
 from pagewatch.engine.fetch.ftp import FtpFetcher
@@ -31,20 +32,24 @@ from pagewatch.engine.fetch.localfile import FileFetcher
 from pagewatch.engine.fetch.screenshot import ScreenshotFetcher
 from pagewatch.engine.fetch.select import FetcherSet
 from pagewatch.engine.fetch.static import StaticFetcher
+from pagewatch.engine.guard import ResourceGuard, tree_rss_mb
 from pagewatch.engine.hostgate import HostGate
 from pagewatch.engine.logs import get_logger, set_debug
+from pagewatch.engine.maintenance import Maintenance
 from pagewatch.engine.paths import DataDir
 from pagewatch.engine.pipeline.core import RebuildJob, rebuild_version
+from pagewatch.engine.power import Connectivity, PowerBackend, PowerMonitor, ProbeFn
 from pagewatch.engine.runner import CheckRunner
 from pagewatch.engine.scheduler import Scheduler
 from pagewatch.engine.secrets import NullSecrets, SecretStore
 from pagewatch.engine.settings import SettingsStore
+from pagewatch.engine.store import backup as backups
 from pagewatch.engine.store import repo
 from pagewatch.engine.store.blobs import BlobStore
 from pagewatch.engine.store.db import Database, migrate
 from pagewatch.engine.tray import TrayBackend, TrayController
 from pagewatch.engine.workers import WorkerPool
-from pagewatch.models import AutowatchState, HealthOut, Settings, Trigger
+from pagewatch.models import AutowatchState, HealthOut, OnBattery, Settings, Trigger
 
 log = get_logger("pagewatch.engine")
 
@@ -68,6 +73,9 @@ class Engine:
         enable_tray: bool = False,
         browser_launcher: Launcher | None = None,
         secret_store: SecretStore | None = None,
+        enable_unattended: bool = False,
+        power_backend: PowerBackend | None = None,
+        probe: ProbeFn | None = None,
     ) -> None:
         self.data_dir = data_dir
         self.clock: Clock = clock or SystemClock()
@@ -108,6 +116,17 @@ class Engine:
         self.tray: TrayController | None = (
             TrayController(self, tray_backend) if (enable_tray or tray_backend) else None
         )
+        # Unattended-operation machinery (M5): off unless asked for, like the tray, so unit tests
+        # never probe a real network or start background loops they did not ask for.
+        self.connectivity: Connectivity | None = None
+        self.power: PowerMonitor | None = None
+        self.maintenance: Maintenance | None = None
+        self.guard: ResourceGuard | None = None
+        if enable_unattended:
+            self.connectivity = Connectivity(self, probe)
+            self.power = PowerMonitor(self, power_backend)
+            self.maintenance = Maintenance(self)
+            self.guard = ResourceGuard(self)
         self._toast_backend = toast_backend
         self.toasts: ToastService
         self._started_mono: float | None = None
@@ -142,12 +161,16 @@ class Engine:
         if self._started:
             return
         self.data_dir.ensure()
+        # A restore staged by the previous run is applied before anything opens the database.
+        if backups.apply_pending_restore(self.data_dir, self.clock.now()):
+            log.warning("restore_applied_at_start")
         # Migrations run synchronously, before any thread touches the database, and take
         # an automatic backup first when upgrading an existing database.
         schema = migrate(self.data_dir.db_path, self.data_dir.backups_dir)
         self.db.start()
         await self.settings_store.load()
         self.pool = WorkerPool(self.settings.worker_processes, mode=self.pool.mode)
+        self.pool.default_timeout_s = self.settings.worker_job_timeout_s
         self.zone = sched.make_zone(self.settings.timezone)
         set_debug(self.settings.debug_logging)
         if self._toast_backend is None:
@@ -171,10 +194,27 @@ class Engine:
             self.scheduler.pause(until)
         self._started_mono = self.clock.monotonic()
         self._started = True
+        # Nothing is dispatched until the start-up sequence below has looked at the network and
+        # staggered whatever is overdue (a restart after hours would otherwise run everything
+        # at once).
+        self.scheduler.hold("startup")
         self.scheduler.start()
         self.actions.start()
         if self.tray is not None:
             await self.tray.start()
+        try:
+            if self.power is not None:
+                await self.power.start()
+            if self.connectivity is not None and not await self.connectivity.probe(fresh=True):
+                self.connectivity.go_offline("startup")  # keeps probing; catches up when it answers
+            elif self.connectivity is not None:
+                await self.catch_up("startup")
+        finally:
+            self.scheduler.release("startup")
+        if self.maintenance is not None:
+            await self.maintenance.start()
+        if self.guard is not None:
+            await self.guard.start()
         log.info(
             "engine_started", version=self.version, schema=schema, data=str(self.data_dir.root)
         )
@@ -182,13 +222,23 @@ class Engine:
     async def _load_scheduler(self) -> None:
         rows = await self.db.read(repo.bookmark_schedule_rows)
         now = self.clock.now()
-        loaded: list[tuple[int, str, int, str, bool, datetime | None]] = []
+        loaded: list[tuple[int, str, int, str, bool, datetime | None, bool]] = []
         for r in rows:
             due = parse_iso(r["next_due_at"]) if r["next_due_at"] else now
             loaded.append(
-                (r["id"], r["url"], r["priority"], r["check_method"], bool(r["enabled"]), due)
-            )
+                (r["id"], r["url"], r["priority"], r["check_method"], bool(r["enabled"]), due,
+                 self._pauses_on_battery(r))
+            )  # fmt: skip
         self.scheduler.load(loaded)
+
+    def _pauses_on_battery(self, row: sqlite3.Row) -> bool:
+        cfg = resolve_schedule(row, self.folders, self.settings)
+        return cfg is not None and cfg.on_battery is OnBattery.PAUSE
+
+    async def refresh_battery_policies(self) -> None:
+        """A folder's defaults changed: bookmarks that inherit them may have a new policy."""
+        for r in await self.db.read(repo.bookmark_schedule_rows):
+            self.scheduler.set_battery_pause(r["id"], self._pauses_on_battery(r))
 
     async def stop(self) -> None:
         if not self._started:
@@ -197,6 +247,14 @@ class Engine:
         log.info("engine_stopping")
         if self.tray is not None:
             await self.tray.stop()
+        if self.guard is not None:
+            await self.guard.stop()
+        if self.maintenance is not None:
+            await self.maintenance.stop()
+        if self.power is not None:
+            await self.power.stop()
+        if self.connectivity is not None:
+            await self.connectivity.stop()
         await self.scheduler.stop(grace_s=10.0)
         await self.actions.stop()
         await self.toasts.aclose()
@@ -224,6 +282,10 @@ class Engine:
         new = await self.settings_store.update(patch)
         set_debug(new.debug_logging)
         self.zone = sched.make_zone(new.timezone)
+        self.pool.default_timeout_s = new.worker_job_timeout_s
+        if self.power is not None:
+            self.power.apply_keep_awake()
+            self.power.poll_battery()  # the battery-saver option may have just been turned on
         self.scheduler.wake()
         self.events.publish("engine_state", {"reason": "settings"})
         return new
@@ -243,6 +305,7 @@ class Engine:
             check_method=row["check_method"],
             enabled=bool(row["enabled"]),
             due=due,
+            battery_pause=self._pauses_on_battery(row),
         )
 
     async def mark_read(self, bookmark_id: int) -> bool:
@@ -308,6 +371,110 @@ class Engine:
         await self.db.write(write)
         self.events.publish("bookmark_updated", {"bookmark_id": bookmark_id})
 
+    # -- unattended operation -----------------------------------------------------------
+
+    def set_online(self, online: bool, reason: str = "", *, catch_up: bool = False) -> None:
+        """Offline mode: scheduled dispatch stops and failures are not counted until the
+        network answers again. With ``catch_up`` the overdue bookmarks are re-timed (staggered)
+        *before* dispatch resumes, so they do not all start at once."""
+        if online == self.online:
+            return
+        self.online = online
+        hold = f"catchup:{reason or 'online'}" if (online and catch_up) else None
+        if hold:
+            self.scheduler.hold(hold)
+        self.scheduler.set_online(online)
+        log.info("online" if online else "offline", reason=reason)
+        self.events.publish(
+            "engine_state", {"reason": "online" if online else "offline", "detail": reason}
+        )
+        if hold:
+            self.spawn(self._catch_up_released("network", hold), "catch-up-network")
+
+    def set_on_battery(self, on_battery: bool) -> None:
+        if on_battery == self.on_battery:
+            return
+        self.on_battery = on_battery
+        hold = "catchup:ac" if (not on_battery and self._started) else None
+        if hold:  # what the policy held back is re-timed before it is let go
+            self.scheduler.hold(hold)
+        self.scheduler.set_on_battery(on_battery)
+        log.info("power_source", on_battery=on_battery)
+        self.events.publish("engine_state", {"reason": "battery", "on_battery": on_battery})
+        if hold:
+            self.spawn(self._catch_up_released("ac", hold), "catch-up-ac")
+
+    async def _catch_up_released(self, reason: str, hold: str) -> None:
+        try:
+            await self.catch_up(reason)
+        finally:
+            self.scheduler.release(hold)
+
+    async def catch_up(self, reason: str) -> int:
+        """One ``catchup`` check for every overdue bookmark, staggered (spec: Catch up once). A
+        bookmark whose ``days`` / ``window`` forbid running right now is moved to its next
+        allowed start instead of being checked at 3 a.m."""
+        overdue = self.scheduler.overdue_ids()
+        if not overdue:
+            return 0
+        wanted = set(overdue)
+        now = self.clock.now()
+        moved: dict[int, datetime] = {}
+        for r in await self.db.read(repo.bookmark_schedule_rows):
+            if r["id"] not in wanted:
+                continue
+            cfg = resolve_schedule(r, self.folders, self.settings)
+            if cfg is None or (not cfg.days and cfg.window is None):
+                continue
+            allowed = sched.apply_limits(cfg, now, self.zone)
+            if allowed > now:
+                moved[r["id"]] = allowed
+        if moved:
+
+            def store(conn: sqlite3.Connection) -> None:
+                for bid, due in moved.items():
+                    repo.bookmark_update(conn, bid, {"next_due_at": iso(due)}, iso(now))
+
+            await self.db.write(store)
+            for bid, due in moved.items():
+                self.scheduler.reschedule(bid, due)
+        n = self.scheduler.catch_up(self.settings.catchup_spread_s, skip=set(moved))
+        log.info("catch_up", reason=reason, overdue=len(overdue), scheduled=n, moved=len(moved))
+        if n:
+            self.events.publish("engine_state", {"reason": "catch_up", "queued": n})
+        return n
+
+    # -- backup and restore -------------------------------------------------------------
+
+    async def backup_now(
+        self, *, include_blobs: bool | None = None, dest: Path | None = None,
+        kind: backups.Kind = "manual",
+    ) -> backups.BackupInfo:  # fmt: skip
+        """Write a backup zip (a thread does the copying; checks keep running)."""
+        blobs_too = self.settings.backup_include_blobs if include_blobs is None else include_blobs
+        info = await asyncio.to_thread(
+            backups.create_backup, self.db, self.data_dir, include_blobs=blobs_too,
+            now=self.clock.now(), app_version=self.version, dest=dest, kind=kind,
+        )  # fmt: skip
+        if kind == "auto":
+            await asyncio.to_thread(
+                backups.prune_backups, self.data_dir.backups_dir, self.settings.backup_keep
+            )
+        return info
+
+    async def restore(self, source: Path) -> backups.Manifest:
+        """Validate and stage a backup, then restart: it is applied when the engine comes back
+        (exit code 3: Task Scheduler restarts it, or the engine starts its own replacement)."""
+        manifest = await asyncio.to_thread(
+            backups.stage_restore, self.data_dir, source, self.clock.now()
+        )
+        self.spawn(self._restart_soon(), "restart-after-restore")
+        return manifest
+
+    async def _restart_soon(self) -> None:
+        await asyncio.sleep(0.3)  # let the HTTP response reach the client first
+        self.request_stop(EXIT_RESTART)
+
     # -- autowatch ----------------------------------------------------------------------
 
     async def set_autowatch(
@@ -322,7 +489,7 @@ class Engine:
                 "autowatch_state": state,
                 "autowatch_paused_until": iso(until) if (until and state == "paused") else None,
             }
-        )
+        )  # (update_settings re-applies the keep-awake option for the new state)
 
     def _autowatch_changed(self, paused: bool, until: datetime | None) -> None:
         """The scheduler resumed by itself (a timed pause expired): persist it."""
@@ -372,6 +539,15 @@ class Engine:
         outcomes, bookmarks = await self.db.read(read)
         started = self._started_mono if self._started_mono is not None else self.clock.monotonic()
         until = self.scheduler.paused_until
+        rss_total = cpu = last_backup = last_maintenance = None
+        if self.guard is not None:
+            rss_total = round(await asyncio.to_thread(tree_rss_mb), 1)
+            if self.guard.last_cpu_percent is not None:
+                cpu = round(self.guard.last_cpu_percent, 2)
+        if self.maintenance is not None:
+            done = self.maintenance.last
+            last_backup = iso(done["backup"]) if done["backup"] else None
+            last_maintenance = iso(done["maintenance"]) if done["maintenance"] else None
         return HealthOut(
             version=self.version,
             uptime_s=max(0.0, self.clock.monotonic() - started),
@@ -389,6 +565,10 @@ class Engine:
             online=self.online,
             on_battery=self.on_battery,
             backlog_warning=self.scheduler.backlog_warning,
+            rss_total_mb=rss_total,
+            cpu_percent=cpu,
+            last_backup_at=last_backup,
+            last_maintenance_at=last_maintenance,
         )
 
 

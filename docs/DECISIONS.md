@@ -552,3 +552,253 @@ half rewrite: 10,000 blocks, 50% replaced             5850.5ms /  6485.2ms*(1000
   (change the method on the bookmark); detection is deliberately first-check only.
 * Chromium limits very tall full-page captures (around 16,000 px); what a taller page yields is
   Chromium's behaviour, not something PageWatch controls or has tested.
+
+## M5 · Unattended operation
+
+### Scope and housekeeping
+
+* **No new dependency, no schema migration.** psutil, httpx and the standard library cover
+  everything. Facts the engine must remember (when the last backup ran) go in the existing
+  `setting` table under a `_state.` prefix that `SettingsStore` never loads as a setting and
+  `PUT /settings` cannot write.
+* **Branch repair.** The branch tip was `e259c5e` (the SPEC upload); the M4 commit `90ca022` was a
+  dangling commit on top of it, never attached to the branch. Fast-forwarded (lossless: the tip is
+  its parent) before starting.
+* **Opt-in machinery.** The power monitor, connectivity probe, maintenance loop and resource guard
+  exist only when the engine is built with `enable_unattended` (the real entry point does), like the
+  tray. A unit test therefore never probes a real network or starts a background loop it did not ask
+  for. The old tests are unchanged; M5's own tests opt in with fakes.
+* **Outside M5** (their milestones): the Settings and Problems screens (every M5 setting is reachable
+  through `PUT /settings`), email/ntfy/export actions and their Problems entry (M6), plugins (M7),
+  packaging (M8).
+
+### Sleep, resume, catch-up
+
+* **Three ways to notice a sleep**, any one is enough: wall clock minus monotonic time above 30 s;
+  a 5 s heartbeat that fires more than 30 s late (Windows' monotonic clock may include suspended
+  time, which hides the first signal: promised in M0); and `WM_POWERBROADCAST`. One wake produces
+  several signals, so a 10 s debounce makes them one resume; after the sequence the heartbeat
+  measures from the end of it (it can take two minutes, and that is not a second sleep: found by
+  reading the code, before any test).
+* **The resume sequence** is: hold scheduled dispatch → wait for the network (probe every 5 s, up to
+  2 min) → plan the catch-up → release. The **order matters and a test caught it**: the first version
+  released the hold *before* calling `catch_up`, so the scheduler woke on the release and started
+  every overdue bookmark at once as plain `schedule` checks, and the catch-up found nothing left to
+  stagger. The hold now stays until the overdue bookmarks have been re-timed. The same rule applies
+  when the network returns from offline mode and when AC power returns (`catchup:<why>` holds).
+* **Catch-up** gives each overdue bookmark one `catchup` check (the single due time per bookmark
+  already means "not one per missed interval"), hotsites first, then longest overdue, spread over
+  `min(catchup_spread_s, count × 1 s)` starting after the start-up delay. Checks already waiting to
+  start are re-timed with the rest. A bookmark whose `days`/`window` forbid "now" is **moved to its
+  next allowed start instead** (and `next_due_at` is updated), so a laptop that wakes at 03:00 does
+  not check a bookmark limited to 07:00–23:00.
+* **The same catch-up runs at start-up** (after a restart of several hours, and for a check that was
+  interrupted by a crash) and when the network or AC power returns, not only after a sleep.
+* **Start-up** takes one inline probe (never waits: an offline start goes to offline mode and keeps
+  probing), holds dispatch until the catch-up is planned, and only then lets the scheduler run.
+* **Windows window** (`SystemPowerBackend`): a hidden *top-level* window on its own thread, because
+  message-only windows do not receive the broadcast messages. It also handles `WM_QUERYENDSESSION`
+  (the engine stops itself). **This is the one piece of M5 that could not be run here.** Reviewing it
+  found two mistakes before it ever ran on Windows: `ctypes.wintypes` has no `WNDCLASSW` (the first
+  version would have raised and the feature silently never worked) and several `user32` calls lacked
+  `argtypes`/`restype` (on 64-bit Python a window handle is truncated to 32 bits). It now declares
+  its own structure and every signature, every `wintypes` name it uses is checked to exist, any
+  exception only costs the OS notification (drift and heartbeat detection still work), and
+  `os_power_events: false` turns the native window off. Listed under manual checks.
+
+### Connectivity and offline mode
+
+* **The probe** is a HEAD to `connectivity_url` (default Windows' own `msftconnecttest.com`
+  endpoint) through the global proxy. **Any HTTP reply, whatever its status, means online**; only
+  failing to get one (DNS, refused, timeout, TLS) means offline. It is single-flight, and its answer
+  is reused for 2 s so a burst of failing checks causes one probe.
+* **A failed check asks before it counts.** A DNS, connection or timeout failure (never for a local
+  file) calls `verify()`; if the probe fails too the engine goes offline. While offline, a failing
+  check is recorded as **`skipped` with reason `offline:<kind>`** rather than `error` (the spec says
+  such failures "are not counted at all"; this also keeps the check log from filling with errors that
+  were never the site's), the error counter and status are untouched, and the bookmark stays due and
+  is caught up when the network is back. Verified: 10 simulated minutes offline leave every counter
+  at 0 and raise no toast.
+* **Known limits:** a captive portal answers the probe, so it counts as online; a wrong or blocked
+  probe URL keeps the engine offline (visible in `/health`, the tray and the CLI `status`), which is
+  what a configurable probe means.
+
+### Battery
+
+* `psutil.sensors_battery()` once a minute (no battery means not on battery). `on_battery: pause`
+  *parks* a bookmark in the scheduler (it stays overdue and runs, once, when AC returns); a parked
+  bookmark does not block others of the same host. **`slow` (×4) takes effect when a bookmark is next
+  scheduled**, not by re-timing existing due times. The per-bookmark policy is cached in the
+  scheduler and refreshed on create, patch, folder-default change and start-up.
+* **Battery saver** (Windows, `GetSystemPowerStatus`) pauses everything only when
+  `pause_on_battery_saver` is on (default off). **Keep awake** (`SetThreadExecutionState`, default
+  off) is on only while the option is set *and* AutoWatch runs, and is set from the engine's
+  event-loop thread because the call is per-thread.
+
+### Errors and retries
+
+* Retry-once and the error threshold are unchanged from M1. New: **marking a bookmark read clears
+  `consecutive_errors` and the `error` status** (the spec's "or when the user opens the bookmark";
+  the API's equivalent of opening is mark-read, which the UI, the toast button and the CLI use).
+* **Per-job time limit** (deferred from M2 and M4): `worker_job_timeout_s` (120). A job past it has
+  its worker processes killed (through `ProcessPoolExecutor._processes`, as the public
+  `kill_workers` arrives only in Python 3.14), the pool rebuilt and `WorkerTimeout` raised; jobs that
+  were running on the dead pool are retried once by the existing broken-pool path. In thread mode a
+  thread cannot be killed, so it is abandoned and the executor replaced. The check fails with a
+  `parse` error ("processing timed out"), so the bookmark turns `error` and notifies like any other
+  failing source. Tested with a real worker process and with a real catastrophic regex
+  (`(a+)+$`) in a process-mode engine. The parameter is called `time_limit` (not `timeout`) to satisfy
+  ruff's ASYNC109.
+
+### Durable action queue
+
+* The M1 queue already persisted jobs, retried at 1/5/30 minutes, gave up after 5 attempts and
+  survived restarts. What the spec says and M1 did not do: **a change's jobs now run one at a time in
+  configured order** (a job waits while an earlier job of its change is running or waiting for its
+  retry), and **`mark_read` always runs last**: `ActionsConfig` orders it last at the model boundary
+  so `action_index` matches execution order everywhere.
+* **A `mark_read` is skipped (job `done`, `last_error` says why) if an earlier action finally
+  failed**: a change the user was never told about stays unread. The spec is silent; hiding an
+  unsent alert looked worse than a surprising unread flag.
+* The loop sleeps until the next scheduled retry (at most 60 s) instead of a flat minute, and is
+  kicked on resume. Delivery stays at-least-once: a job interrupted by a crash runs again once (tested
+  with a hung job and an engine stop), and a finished job is never sent again after a restart (tested).
+
+### Retention and garbage collection
+
+* **Keep rules**: pointer-referenced versions, pinned versions and the newest `keep_changed_versions`
+  (20) per bookmark. A `change` goes with *either* of its versions (its jobs cascade), and the delete
+  re-checks eligibility inside its own transaction, so a pointer that moved after the scan protects
+  its version. Deletes are chunked (200) so the writer thread is never held for long.
+* **Why the collector cannot delete something a worker is about to use.** A worker writes blobs before
+  the row that references them and *skips* the write when the blob exists. So: `BlobStore` refreshes a
+  blob's modification time on every dedupe hit (mtime means last use), and the sweep deletes only
+  blobs that are unreferenced **and** unused for `blob_grace_h` (default 24 h, minimum 1 h: the
+  setting cannot be made unsafe). A failing reference scan aborts the run without sweeping.
+  Mutation-tested: removing the touch, or removing the nested-reference scan, each fails exactly the
+  test that guards it.
+* **Blobs referenced from inside other blobs**: a screenshot diff names its two screenshots and its
+  overlay. Such a diff is recognised from its first decompressed bytes (a huge text diff is never
+  read) and its references are marked.
+* The reference set keeps 64-bit digest prefixes (about 5 MB at 1,000 bookmarks, about 50 MB for the
+  nightly run at 10,000): a collision can only keep an orphan a night longer.
+* **Disk cap**: while the blob store is over `disk_cap_gb`, prune the oldest unpinned,
+  pointer-free versions until their blobs would add up to the excess, collect, look again (up to five
+  rounds; shared blobs free nothing). If pointers alone exceed the cap it says so
+  (`disk_cap_unreachable`) and deletes nothing else.
+* `check_run` older than 30 days (spec) and `metric` older than 30 days (the spec is silent;
+  `metric_retention_days`) are deleted; the WAL gets a passive checkpoint.
+
+### Backup and restore
+
+* **Zip contents**: `manifest.json`, an SQLite online backup (settings and macros are tables in it),
+  `settings.json` and `macros.json` for readability, `plugins/`, and `blobs/` only when asked for. Never
+  the lockfile, logs or secrets (tested: a token in `engine.lock` is nowhere in the zip).
+* **Automatic backups** are `backup-auto-*.zip` and the newest `backup_keep` (14) are kept; manual,
+  pre-migration and pre-restore copies are never auto-pruned. A job that has never run is due
+  immediately, so there is a first backup two minutes after the first start, then one per 03:00.
+* **Restore never changes live data in the running engine.** It validates (zip, safe member names, no
+  path traversal, manifest, `PRAGMA integrity_check`, schema not newer than this build), stages the
+  zip, and the engine exits with code 3. At the next start, before the database is opened, the current
+  database is copied to `backups\pre-restore-*` (through SQLite's backup API, or as raw files if it is
+  too damaged for that), then swapped in by a rename: the only step that cannot be undone. A staged zip
+  that turns out bad is set aside as `restore\failed-*.zip` and the engine starts on the data it had.
+* **A restored zip's `plugins/` are trusted code**, exactly like any file in the plugins folder (the
+  spec: "plugins are trusted local code"). Restore only backups you made.
+* **"The engine restarts itself after a restore"**: under Task Scheduler the task restarts it
+  (`--supervised`); started by hand, the engine starts its own replacement, but refuses if it was
+  itself started that way less than a minute ago, so a restart that does not help cannot loop. Tested
+  with real processes both ways.
+* **Added to the API**: `POST /backup` (`{include_blobs?, path?}`) and `POST /restore` (`{path}`,
+  202); the spec lists both without bodies. No listing endpoint (the CLI and the UI can read the
+  folder).
+
+### Maintenance, memory guard, observability
+
+* Backup at `backup_time` (03:00) and retention at `maintenance_time` (03:30), **"or at the next
+  wake"**: due means the latest local occurrence of that time is newer than the last successful run,
+  computed in the configured zone (DST-correct). A failing job is reported as a `problem` event and
+  retried after an hour, not every minute.
+* **"Engine RSS" is the engine process plus its children** (workers, browser): recycling the browser
+  could not lower a process-only number. Over `rss_limit_mb` (1,500) the browser is recycled; still
+  over 60 s later, the engine exits with code 3. CPU is the engine process's share of the whole machine.
+* **Event-loop watchdog**: a thread, because the loop cannot report on itself while blocked. It logs
+  the loop thread's stack once per stall (> 10 s). Tested with a real blocked loop; it also caught my
+  own profiling script blocking the loop for 10 s.
+* Hourly samples (`rss_mb`, `rss_engine_mb`, `cpu_pct`, `queue_length`, `in_flight`) go to `metric`.
+  `/health` gained `rss_total_mb`, `cpu_percent`, `last_backup_at`, `last_maintenance_at` (additive).
+
+### `service install`
+
+* The task is registered from a Task Scheduler XML definition (only XML can set restart-on-failure,
+  run-on-battery and no time limit): logon trigger for this user, no elevation, restart every minute
+  (999 times, the most Task Scheduler accepts), `ExecutionTimeLimit` 0, allowed on battery, never a
+  second instance. It runs `pythonw -m pagewatch.engine.main --supervised ...` (or `--exe`). Task
+  Scheduler restarts on any non-zero exit, so exit 3 restarts and a clean Quit (0) does not; exit 2
+  (a second engine) is also retried, which the engine's mutex makes harmless.
+* The XML is generated and checked on every platform (`--print-xml` works anywhere, with no engine
+  running); `schtasks` itself is Windows-only and a manual check.
+
+### Soak and performance: what was measured, and what it found
+
+A true 24-hour run cannot happen here, so there are two stand-ins (both opt-in, `-m soak`): a **simulated**
+24 hours under the fake clock through the real scheduler, runner, pipeline, retention, backup and metrics
+code, and a **real-time** sample of a real engine process.
+
+* **Simulated day, 1,000 bookmarks at 1–60 minute intervals (62k checks):** queue peak 0, no stuck check,
+  nobody late, zero errors, backups and retention ran, versions bounded, **no orphan blob after GC**
+  (and every blob a version needs still present), database consistent. RSS 106 MB after two hours →
+  **111 MB after 24 h (+4.0%)**.
+* **That passing number took three real findings**, each of which the first runs got wrong:
+  1. *A test double, mistaken for an engine leak.* The first run showed +375%: `ScriptedFetcher` keeps
+     every request (each pinning its whole resolved configuration), `LogToastBackend` keeps every toast,
+     and pytest keeps every log record. The soak now uses non-retaining stand-ins and silences log
+     capture. (Confirmed by object counts, not assumed.)
+  2. *A recurring nightly step.* +3, +7, +7 MB at each 03:00. The cause was not retention but the
+     **backup running on a pooled reader thread**, whose page cache then kept a full copy of the
+     database, one reader per night. Backup and retention's whole-table scans now use short-lived
+     connections (a unit test asserts the backup never uses the reader pool, and fails on the old code).
+  3. *A steady creep that tracked database size.* Memory-mapped I/O is off (checked), file-backed RSS is
+     constant, and the growth is anonymous memory: SQLite's page caches, **20 MB × 5 connections** from
+     M0, filling as the database grew (up to 100 MB over the first week). The caches are now 2 MB per
+     reader and 4 MB for the writer. The 10,000-bookmark UI timings are unchanged (first page 41 ms,
+     worst scroll page 103 ms, sorts 35–41 ms; the spec limit is 200 ms).
+* **Real engine process, 1,000 bookmarks, browser closed, real worker processes:** idle CPU **0.23% of one
+  core** with AutoWatch paused (spec: < 1%), 0.45% with hourly checks running. **RSS: 80 MB for the engine
+  process, 302 MB for the whole tree** (the engine, 3 workers and the multiprocessing helper). The spec's
+  "≤ 250 MB RSS at 1,000 bookmarks" is met if it means the engine process and **not met (by about 50 MB)
+  if it counts the workers**; the spec does not say. This needs the owner's reading. If the tree is what
+  counts, the levers are `worker_processes` (2 saves ~55 MB) or lazy imports in the workers.
+* **Not measured, so not claimed:** 14 days of uptime and its "< 10% growth" (the simulated runs show the
+  creep stopping after the caches fill and one small step per maintenance run; 72 simulated hours at 200
+  bookmarks is the longest trend checked), the 2-hour capacity run at 10,000 bookmarks, and anything
+  that depends on a real Windows machine sleeping.
+
+### Tests
+
+* **791 -> 905 default tests** (1 skipped: the permission test needs a non-root user), plus the 12
+  real-browser tests from M4 (`-m browser`, unchanged, re-run) and 2 opt-in soak tests (`-m soak`). New:
+  unit tests for retention (16, every keep rule, nested references, grace, disk cap, FK safety), backup and
+  restore (26), the Task Scheduler definition (10), the guard and watchdog (12), maintenance (9), the
+  worker time limit against a real process (3) and the backup/reader-pool regression (1); and integration
+  tests for the whole engine under a fake clock (16: sleep, offline, battery, resume, restart), the action
+  queue (8), backup and restore through the API and CLI (8), and real engine processes (5: kill -9,
+  restore with self-respawn, supervised exit, the respawn guard).
+* **Mutation-checked** (break the behaviour, watch the guarding test fail): blob reuse not refreshing the
+  mtime; nested screenshot references ignored; the action queue not ordering a change's jobs;
+  `mark_read` not forced last; the catch-up planned after the hold is released; offline failures counted;
+  a backup going through a pooled reader.
+* The kill -9 test is a real process: it stalls a check on the fixture site, `SIGKILL`s the engine,
+  checks the database it left (consistent; the run still open; nothing half-written), restarts, and
+  checks the interrupted run is closed as `error: interrupted` without touching the error counter and
+  the bookmark is checked again (`catchup`).
+* **Existing tests changed**: `test_openapi` (the schema is regenerated); nothing else.
+
+### Manual checks that could not run here
+
+* **Windows**: the hidden power window (suspend/resume/log-off), battery saver, keep-awake, a real laptop
+  sleep and wake, `schtasks /Create` with the generated XML (and the task restarting the engine after
+  exit 3), and the real `msedge` path from M4. This is where the unexecuted ctypes code lives.
+* A real 24-hour soak, the 14-day uptime criterion, and the 10,000-bookmark capacity run.
+* The engine's default connectivity URL on the owner's network (a corporate proxy or captive portal may
+  change what "online" means).

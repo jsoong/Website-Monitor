@@ -320,6 +320,17 @@ class BrowserManager:
             elif gen.retired and gen.active == 0:
                 await self._close_gen(gen)
 
+    async def recycle(self, reason: str) -> bool:
+        """Retire the running browser (the memory guard's first remedy): it closes now if no page
+        is using it, otherwise as soon as its pages finish; the next page launches a fresh one.
+        Returns False when no browser was running."""
+        async with self._lock:
+            gen = self._current_gen
+            if gen is None:
+                return False
+            await self._retire(gen, reason)
+            return True
+
     def note_crash(self) -> None:
         """A page died because the browser did: three in a row recycle the browser."""
         self._crashes += 1

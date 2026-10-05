@@ -172,3 +172,29 @@ async def test_online_backup_is_a_usable_database(db: Database, tmp_path: Path) 
     conn = sqlite3.connect(dest)
     assert conn.execute("SELECT COUNT(*) FROM bookmark").fetchone()[0] == 1
     conn.close()
+
+
+async def test_a_backup_leaves_the_reader_pool_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Soak finding: a backup through a reader left a full copy of the database in that reader's
+    page cache, one reader per night. It runs on a connection of its own, closed afterwards, so
+    it must never go through the reader pool."""
+    path = tmp_path / "pagewatch.db"
+    migrate(path)
+    db = Database(path)
+    db.start()
+
+    def through_a_reader(fn: object) -> None:
+        raise AssertionError("the backup used a pooled reader connection")
+
+    monkeypatch.setattr(db, "_run_read", through_a_reader)
+    try:
+        await asyncio.to_thread(db.backup_sync, tmp_path / "copy.db")
+        copy = sqlite3.connect(tmp_path / "copy.db")
+        try:
+            assert copy.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] >= 1
+        finally:
+            copy.close()
+    finally:
+        db.close()

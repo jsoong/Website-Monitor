@@ -36,7 +36,11 @@ def connect(path: Path, *, readonly: bool = False) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=15000")
     conn.execute("PRAGMA temp_store=MEMORY")
-    conn.execute("PRAGMA cache_size=-20000")
+    # Page cache per connection (negative = KiB). Five connections (writer + four readers) used
+    # to get 20 MB each: a soak showed the engine's memory creeping up for days as each cache
+    # filled with a growing database, up to 100 MB. These pages are small and hot; anything else
+    # comes back from the operating system's cache in microseconds, so little is lost.
+    conn.execute(f"PRAGMA cache_size={-2048 if readonly else -4096}")
     if readonly:
         conn.execute("PRAGMA query_only=ON")
     else:
@@ -254,7 +258,12 @@ class Database:
     # online backup --------------------------------------------------------------------
 
     def backup_sync(self, dest: Path) -> None:
-        def run(conn: sqlite3.Connection) -> None:
-            backup_database(conn, dest)
-
-        self.read_sync(run)
+        """An online backup (a consistent snapshot while the writer keeps going) made through a
+        connection of its own that is closed afterwards. Going through a reader instead would
+        leave a full copy of the database in that reader's page cache: one reader per night until
+        all of them held one, which a soak test measured as a recurring step in memory."""
+        src = connect(self.path, readonly=True)
+        try:
+            backup_database(src, dest)
+        finally:
+            src.close()

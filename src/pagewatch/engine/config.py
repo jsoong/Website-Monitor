@@ -11,7 +11,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from pagewatch.models import (
     ActionsConfig,
@@ -145,6 +145,17 @@ def resolve_candidate(
         actions=ActionsConfig.model_validate(eff["actions"]),
         overrides=stored,
     )
+
+
+def resolve_schedule(
+    row: sqlite3.Row, folders: FolderCache, settings: Settings
+) -> ScheduleConfig | None:
+    """Just the effective schedule of a bookmark (the row needs only ``schedule_json`` and
+    ``folder_id``). ``None`` when the stored configuration is invalid."""
+    try:
+        return ScheduleConfig.model_validate(effective_section("schedule", row, folders, settings))
+    except ValidationError:
+        return None
 
 
 def source_options(fetch: FetchConfig) -> dict[str, Any]:

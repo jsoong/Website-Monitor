@@ -113,6 +113,40 @@ def resolve(row: sqlite3.Row, folders: FolderCache, settings: Settings) -> Resol
     )
 
 
+def resolve_candidate(
+    row: sqlite3.Row,
+    patch: dict[str, dict[str, Any] | None],
+    folders: FolderCache,
+    settings: Settings,
+) -> Resolved:
+    """The configuration the bookmark would have after ``PATCH`` with these section patches,
+    without saving anything (test filter)."""
+    from pagewatch.models import apply_patch
+
+    stored = {s: loads(row[f"{s}_json"], {}) or {} for s in SECTIONS}
+    stored["actions"] = (
+        {"actions": stored["actions"]} if isinstance(stored["actions"], list) else stored["actions"]
+    )
+    for name, value in patch.items():
+        if value is not None:
+            stored[name] = apply_patch(stored[name], value)
+    inherited = folders.chain_defaults(row["folder_id"])
+    eff = {
+        s: deep_merge(
+            deep_merge(_section_defaults(s, settings), inherited.get(s, {}) or {}), stored[s]
+        )
+        for s in SECTIONS
+    }
+    return Resolved(
+        schedule=ScheduleConfig.model_validate(eff["schedule"]),
+        fetch=FetchConfig.model_validate(eff["fetch"]),
+        filter=FilterConfig.model_validate(eff["filter"]),
+        gate=GateConfig.model_validate(eff["gate"]),
+        actions=ActionsConfig.model_validate(eff["actions"]),
+        overrides=stored,
+    )
+
+
 def validate_sections(
     sections: dict[str, Any], folder_id: int | None, folders: FolderCache, settings: Settings
 ) -> None:

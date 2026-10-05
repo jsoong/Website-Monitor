@@ -1,0 +1,21 @@
+{
+ "description": "Wildcard text ignore on plain text.",
+ "ext": "txt",
+ "bookmark": {
+  "filter": {
+   "ignore": [
+    {
+     "type": "text",
+     "pattern": "build * done",
+     "pattern_kind": "wildcard"
+    }
+   ]
+  }
+ },
+ "expect": [
+  {
+   "outcome": "unchanged"
+  }
+ ],
+ "content_type": "text/plain"
+}

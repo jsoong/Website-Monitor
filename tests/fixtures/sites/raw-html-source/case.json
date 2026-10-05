@@ -1,0 +1,16 @@
+{
+ "description": "Compare raw HTML: a markup-only change is a change.",
+ "ext": "html",
+ "bookmark": {
+  "filter": {
+   "special": {
+    "text_only": false
+   }
+  }
+ },
+ "expect": [
+  {
+   "outcome": "alert"
+  }
+ ]
+}

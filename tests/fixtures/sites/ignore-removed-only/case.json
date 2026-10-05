@@ -1,0 +1,18 @@
+{
+ "description": "Removals are ignored; a later addition alerts.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "ignore_removed": true
+  }
+ },
+ "expect": [
+  {
+   "outcome": "suppressed",
+   "reason": "removed_only"
+  },
+  {
+   "outcome": "alert"
+  }
+ ]
+}

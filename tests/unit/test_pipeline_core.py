@@ -6,56 +6,17 @@ from typing import Any
 import pytest
 
 from pagewatch.engine.pipeline.core import (
-    PipelineJob,
-    PipelineResult,
     RebuildJob,
-    VersionRef,
     ViewDiffJob,
     compute_view_diff,
-    process_check,
     rebuild_version,
     resolve_kind,
 )
 from pagewatch.engine.pipeline.diff import DiffResult
 from pagewatch.engine.store.blobs import BlobStore
+from tests.support.pipeline_harness import Harness
 
 PAGE = "<html><body><h1>Shop</h1><p>Tea costs $4 today</p><ul><li>one</li><li>two</li></ul></body></html>"
-
-
-class Harness:
-    """Drives process_check the way the runner does, keeping the version references."""
-
-    def __init__(self, root: Path, **cfg: Any) -> None:
-        self.root = root
-        self.cfg = cfg
-        self.latest: VersionRef | None = None
-        self.anchor: VersionRef | None = None
-        self.next_id = 1
-
-    def run(self, body: str | bytes, *, ctype: str = "text/html", **over: Any) -> PipelineResult:
-        data = body.encode() if isinstance(body, str) else body
-        cfg = {**self.cfg, **over}
-        job = PipelineJob(
-            blob_root=str(self.root),
-            body=data,
-            content_type=ctype,
-            final_url="https://example.com/",
-            source_type=cfg.get("source_type", "auto"),
-            filter_cfg=cfg.get("filter", {}),
-            gate_cfg=cfg.get("gate", {}),
-            highlight_mode=cfg.get("mode", "standard"),
-            latest=self.latest,
-            anchor=self.anchor,
-        )
-        res = process_check(job)
-        if res.store_version:
-            assert res.blocks_hash and res.filtered_hash
-            ref = VersionRef(self.next_id, res.raw_hash, res.blocks_hash, res.filtered_hash)
-            self.next_id += 1
-            self.latest = ref
-            if res.kind == "first" or res.alert:
-                self.anchor = ref
-        return res
 
 
 @pytest.fixture
@@ -176,17 +137,15 @@ def test_sort_content_makes_reordering_unchanged(h: Harness) -> None:
 
 
 def test_reordering_is_a_move_not_a_change_in_standard_mode_but_counts_in_exact(h: Harness) -> None:
-    a, b = (
-        "<p>alpha one</p><p>beta two</p><p>gamma three</p>",
-        "<p>beta two</p><p>gamma three</p><p>alpha one</p>",
-    )
-    h.run(a, gate={"min_changed_words": 1, "threshold_mode": "per_check"})
-    std = h.run(b, gate={"min_changed_words": 1, "threshold_mode": "per_check"})
-    assert std.changed and not std.alert and std.reason == "below_threshold"
+    a = "<p>alpha one</p><p>beta two</p><p>gamma three</p>"
+    b = "<p>beta two</p><p>gamma three</p><p>alpha one</p>"
+    h.run(a)
+    std = h.run(b)  # no threshold configured at all
+    assert std.changed and std.store_version and not std.alert and std.reason == "reorder_only"
     h2 = Harness(h.root.parent / "b2")
-    h2.run(a, gate={"min_changed_words": 1, "threshold_mode": "per_check"}, mode="exact")
-    exact = h2.run(b, gate={"min_changed_words": 1, "threshold_mode": "per_check"}, mode="exact")
-    assert exact.alert
+    h2.run(a, mode="exact")
+    exact = h2.run(b, mode="exact")
+    assert exact.alert and exact.stats and exact.stats["added_words"] > 0  # moves count as changes
 
 
 def test_ignore_case_default_and_off(h: Harness) -> None:

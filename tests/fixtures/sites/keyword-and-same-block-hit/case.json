@@ -1,0 +1,17 @@
+{
+ "description": "[same_block]: the terms share one block.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "keywords": "\"lottery\" + \"manhattan\" [same_block]"
+  }
+ },
+ "expect": [
+  {
+   "outcome": "alert",
+   "keyword_hits": [
+    "\"lottery\" + \"manhattan\""
+   ]
+  }
+ ]
+}

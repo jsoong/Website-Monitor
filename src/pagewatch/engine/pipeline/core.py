@@ -15,22 +15,25 @@ Check sequence (spec: Change detection and diffing):
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from pagewatch.engine.pipeline import filters
 from pagewatch.engine.pipeline import gate as gate_mod
+from pagewatch.engine.pipeline import keywords as kw
 from pagewatch.engine.pipeline.diff import DiffResult, count_words, diff_blocks
 from pagewatch.engine.pipeline.extract import (
     Block,
     blocks_from_json,
     blocks_to_json,
     decode_body,
-    extract_blocks,
     json_blocks,
     parse_html,
     text_blocks,
 )
+from pagewatch.engine.pipeline.render import render_marks
 from pagewatch.engine.pipeline.special import apply_special, comparison_text
 from pagewatch.engine.store.blobs import BlobStore, sha256_hex, sha256_text
 from pagewatch.models import FilterConfig, GateConfig, HighlightMode
@@ -81,6 +84,7 @@ class PipelineResult:
     anchor_based: bool = False
     degraded: bool = False
     elapsed_ms: int = 0
+    warnings: list[str] = field(default_factory=list)
 
 
 # -- source type ------------------------------------------------------------------------
@@ -120,14 +124,19 @@ def build_blocks(
     source_type: str,
     cfg: FilterConfig,
     raw_hash: str,
+    warn: Callable[[str], None] | None = None,
 ) -> list[Block]:
-    """Raw bytes -> the final filtered block list that is stored and compared."""
+    """Raw bytes -> the final filtered block list that is stored and compared.
+
+    Order (spec): parse -> cosmetic -> block extraction -> watch -> ignore -> special."""
+    warn = warn or (lambda _msg: None)
     special = cfg.special
     kind = resolve_kind(source_type, content_type, final_url, body)
     if kind == "binary":
         blocks = [Block("", "binary", f"binary content {len(body)} bytes sha256 {raw_hash}")]
         return apply_special(blocks, special)
     text = decode_body(body, content_type)
+    root: Any = None
     if kind == "json":
         blocks = json_blocks(text, nfkc=special.normalize_unicode)
     elif kind == "text":
@@ -136,12 +145,28 @@ def build_blocks(
         blocks = text_blocks(text, kind="source", nfkc=special.normalize_unicode)
     else:
         root = parse_html(text)
-        blocks = extract_blocks(
+        filters.mark_dom(root, cfg, warn)
+        blocks = []
+    if root is not None or kind == "html" and special.text_only:
+        blocks = filters.collect_blocks(
             root,
+            cfg,
             base_url=final_url,
             ignore_options=special.ignore_options,
             nfkc=special.normalize_unicode,
+            warn=warn,
         )
+    elif cfg.watch:  # no DOM: only marker/text watch rules can apply
+        blocks = filters.collect_blocks(
+            None,
+            cfg,
+            base_url=final_url,
+            ignore_options=special.ignore_options,
+            nfkc=special.normalize_unicode,
+            warn=warn,
+            page_blocks=blocks,
+        )
+    blocks = filters.apply_ignore(blocks, root, cfg, warn)
     return apply_special(blocks, special)
 
 
@@ -179,15 +204,20 @@ def process_check(job: PipelineJob) -> PipelineResult:
     ignore_case = fcfg.special.ignore_case
     mode = HighlightMode(job.highlight_mode)
 
+    warnings: list[str] = []
     blocks = build_blocks(
-        job.body, job.content_type, job.final_url, job.source_type, fcfg, raw_hash
+        job.body, job.content_type, job.final_url, job.source_type, fcfg, raw_hash, warnings.append
     )
     new_texts = _texts(blocks)
     filtered_hash = sha256_text(comparison_text(blocks, fcfg.special))
     chars = sum(len(t) for t in new_texts)
 
     if latest is not None and latest.filtered_hash == filtered_hash:
-        return done(PipelineResult("unchanged", raw_hash, filtered_hash=filtered_hash, chars=chars))
+        return done(
+            PipelineResult(
+                "unchanged", raw_hash, filtered_hash=filtered_hash, chars=chars, warnings=warnings
+            )
+        )
 
     # Bad fetches (error page, near-empty page, blacklisted/whitelist-less) are rejected
     # before anything is stored, so they can never become the comparison base.
@@ -195,7 +225,12 @@ def process_check(job: PipelineJob) -> PipelineResult:
     if bad is not None:
         return done(
             PipelineResult(
-                "rejected", raw_hash, filtered_hash=filtered_hash, chars=chars, reason=bad.reason
+                "rejected",
+                raw_hash,
+                filtered_hash=filtered_hash,
+                chars=chars,
+                reason=bad.reason,
+                warnings=warnings,
             )
         )
 
@@ -215,22 +250,49 @@ def process_check(job: PipelineJob) -> PipelineResult:
                 changed=False,
                 store_version=True,
                 summary=_summary(" ".join(new_texts)),
+                warnings=warnings,
             )
         )
 
     old_blocks = _load(store, latest.blocks_hash)
     latest_diff = diff_blocks(
-        _texts(old_blocks), new_texts, ignore_case=ignore_case, detect_moves=_moves(mode)
+        _texts(old_blocks),
+        new_texts,
+        ignore_case=ignore_case,
+        detect_moves=_moves(mode),
+        table=mode is HighlightMode.TABLE,
     )
     anchor_diff: DiffResult | None = None
     anchor = job.anchor
     if gate_mod.uses_anchor(gcfg) and anchor is not None and anchor.version_id != latest.version_id:
         anchor_blocks = _load(store, anchor.blocks_hash)
         anchor_diff = diff_blocks(
-            _texts(anchor_blocks), new_texts, ignore_case=ignore_case, detect_moves=_moves(mode)
+            _texts(anchor_blocks),
+            new_texts,
+            ignore_case=ignore_case,
+            detect_moves=_moves(mode),
+            table=mode is HighlightMode.TABLE,
         )
 
-    verdict = gate_mod.check_change(gcfg, latest_diff=latest_diff, anchor_diff=anchor_diff)
+    # Keywords look at the changes since the *latest* version; page() terms at the whole page.
+    rules = kw.parse_rules(gcfg.keywords)
+    changes = latest_diff.change_set(new_texts)
+    page_text = "\n".join(new_texts)
+    hits = kw.evaluate(rules, page_text=page_text, changes=changes)
+    shown = hits + [
+        h
+        for h in kw.evaluate(
+            kw.parse_rules(gcfg.highlight_keywords), page_text=page_text, changes=changes
+        )
+        if h not in hits
+    ]
+    verdict = gate_mod.check_change(
+        gcfg,
+        latest_diff=latest_diff,
+        anchor_diff=anchor_diff,
+        keywords_configured=bool(rules),
+        keyword_hits=hits,
+    )
     res = PipelineResult(
         "stored",
         raw_hash,
@@ -242,8 +304,9 @@ def process_check(job: PipelineJob) -> PipelineResult:
         store_version=True,
         alert=verdict.alert,
         reason=verdict.reason,
-        keyword_hits=verdict.keyword_hits,
+        keyword_hits=shown,
         degraded=latest_diff.degraded or (anchor_diff.degraded if anchor_diff else False),
+        warnings=warnings,
     )
     if verdict.alert:
         report = anchor_diff if anchor_diff is not None else latest_diff
@@ -321,10 +384,91 @@ def compute_view_diff(job: ViewDiffJob) -> ViewDiffResult:
     """The viewer's default diff: last-read version -> latest."""
     store = BlobStore(Path(job.blob_root))
     old, new = _load(store, job.old_blocks_hash), _load(store, job.new_blocks_hash)
+    mode = HighlightMode(job.highlight_mode)
     diff = diff_blocks(
         _texts(old),
         _texts(new),
         ignore_case=job.ignore_case,
-        detect_moves=_moves(HighlightMode(job.highlight_mode)),
+        detect_moves=_moves(mode),
+        table=mode is HighlightMode.TABLE,
     )
     return ViewDiffResult(store.put_json(diff.to_json()), diff.stats, diff.degraded)
+
+
+@dataclass(slots=True)
+class TestFilterJob:
+    """Run the full pipeline over two stored raw versions with a *candidate* configuration."""
+
+    __test__ = False  # not a pytest test class
+
+    blob_root: str
+    baseline_raw_hash: str
+    baseline_content_type: str
+    latest_raw_hash: str
+    latest_content_type: str
+    final_url: str
+    source_type: str
+    filter_cfg: dict[str, Any]
+    gate_cfg: dict[str, Any]
+    highlight_mode: str
+
+
+@dataclass(slots=True)
+class TestFilterResult:
+    __test__ = False
+
+    baseline: list[str]
+    latest: list[str]
+    marks: list[str]
+    diff: dict[str, Any]
+    alert: bool
+    reason: str | None
+    keyword_hits: list[str]
+    identical: bool
+    warnings: list[str] = field(default_factory=list)
+
+
+def test_filter(job: TestFilterJob) -> TestFilterResult:
+    """What the gate would have done if ``latest`` had just been fetched on top of ``baseline``.
+    Reads blobs only; nothing is stored."""
+    store = BlobStore(Path(job.blob_root))
+    fcfg = FilterConfig.model_validate(job.filter_cfg)
+    gcfg = GateConfig.model_validate(job.gate_cfg)
+    mode = HighlightMode(job.highlight_mode)
+    warnings: list[str] = []
+
+    def blocks_of(raw_hash: str, ctype: str) -> list[str]:
+        body = store.get(raw_hash)
+        return _texts(
+            build_blocks(
+                body, ctype, job.final_url, job.source_type, fcfg, raw_hash, warnings.append
+            )
+        )
+
+    old = blocks_of(job.baseline_raw_hash, job.baseline_content_type)
+    new = (
+        old
+        if job.latest_raw_hash == job.baseline_raw_hash
+        else blocks_of(job.latest_raw_hash, job.latest_content_type)
+    )
+    diff = diff_blocks(
+        old,
+        new,
+        ignore_case=fcfg.special.ignore_case,
+        detect_moves=_moves(mode),
+        table=mode is HighlightMode.TABLE,
+    )
+    if diff.is_empty and old == new:
+        return TestFilterResult(old, new, render_marks(diff, old, new), diff.to_json(), False,
+                                "unchanged", [], True, warnings)  # fmt: skip
+    bad = gate_mod.check_bad_fetch(gcfg, new)
+    rules = kw.parse_rules(gcfg.keywords)
+    hits = kw.evaluate(rules, page_text="\n".join(new), changes=diff.change_set(new))
+    verdict = bad or gate_mod.check_change(
+        gcfg, latest_diff=diff, anchor_diff=diff,
+        keywords_configured=bool(rules), keyword_hits=hits,
+    )  # fmt: skip
+    return TestFilterResult(
+        old, new, render_marks(diff, old, new), diff.to_json(), verdict.alert, verdict.reason,
+        verdict.keyword_hits if not bad else [], False, warnings,
+    )  # fmt: skip

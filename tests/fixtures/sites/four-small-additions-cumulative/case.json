@@ -1,0 +1,28 @@
+{
+ "description": "Four one-word additions: nothing alerts until they add up to 4 changed words.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "min_changed_words": 4,
+   "threshold_mode": "cumulative"
+  }
+ },
+ "expect": [
+  {
+   "outcome": "suppressed",
+   "reason": "below_threshold"
+  },
+  {
+   "outcome": "suppressed",
+   "reason": "below_threshold"
+  },
+  {
+   "outcome": "suppressed",
+   "reason": "below_threshold"
+  },
+  {
+   "outcome": "alert",
+   "added_words": 4
+  }
+ ]
+}

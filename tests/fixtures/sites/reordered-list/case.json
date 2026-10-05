@@ -1,0 +1,11 @@
+{
+ "description": "Items are reordered, nothing added or removed: a move is not a change in Standard mode.",
+ "ext": "html",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "suppressed",
+   "reason": "reorder_only"
+  }
+ ]
+}

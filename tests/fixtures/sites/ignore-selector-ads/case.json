@@ -1,0 +1,22 @@
+{
+ "description": "The rotating ad block is ignored.",
+ "ext": "html",
+ "bookmark": {
+  "filter": {
+   "ignore": [
+    {
+     "type": "selector",
+     "selector": ".ads"
+    }
+   ]
+  }
+ },
+ "expect": [
+  {
+   "outcome": "unchanged"
+  },
+  {
+   "outcome": "unchanged"
+  }
+ ]
+}

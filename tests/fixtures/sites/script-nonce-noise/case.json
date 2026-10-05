@@ -1,0 +1,10 @@
+{
+ "description": "Per-request nonces, comments and inline scripts change on every load.",
+ "ext": "html",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "unchanged"
+  }
+ ]
+}

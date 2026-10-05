@@ -1,0 +1,21 @@
+{
+ "description": "Out of stock, then back in stock: alerts with no special option.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "keywords": "\"in stock\""
+  }
+ },
+ "expect": [
+  {
+   "outcome": "suppressed",
+   "reason": "keyword_miss"
+  },
+  {
+   "outcome": "alert",
+   "keyword_hits": [
+    "\"in stock\""
+   ]
+  }
+ ]
+}

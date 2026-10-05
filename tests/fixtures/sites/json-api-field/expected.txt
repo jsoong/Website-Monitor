@@ -1,0 +1,6 @@
+# step 2
+  {
+  "name": "widget",
+  "price": 9.99,
+~ "stock": [-5-]{+4+}
+  }

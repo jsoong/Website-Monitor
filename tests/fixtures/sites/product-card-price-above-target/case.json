@@ -1,0 +1,15 @@
+{
+ "description": "The price drops but is still above the target: keyword miss.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "keywords": "page(\"RTX 4090\") + num(\\$([\\d,.]+)) < 1200"
+  }
+ },
+ "expect": [
+  {
+   "outcome": "suppressed",
+   "reason": "keyword_miss"
+  }
+ ]
+}

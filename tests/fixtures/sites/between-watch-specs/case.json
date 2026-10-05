@@ -1,0 +1,23 @@
+{
+ "description": "Only the Specifications section is watched.",
+ "ext": "html",
+ "bookmark": {
+  "filter": {
+   "watch": [
+    {
+     "type": "between",
+     "start": "Specifications",
+     "end": "Reviews"
+    }
+   ]
+  }
+ },
+ "expect": [
+  {
+   "outcome": "unchanged"
+  },
+  {
+   "outcome": "alert"
+  }
+ ]
+}

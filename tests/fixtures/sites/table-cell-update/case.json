@@ -1,0 +1,14 @@
+{
+ "description": "One cell of a price table changes; Table mode treats rows as blocks.",
+ "ext": "html",
+ "bookmark": {
+  "highlight_mode": "table"
+ },
+ "expect": [
+  {
+   "outcome": "alert",
+   "added_words": 1,
+   "removed_words": 1
+  }
+ ]
+}

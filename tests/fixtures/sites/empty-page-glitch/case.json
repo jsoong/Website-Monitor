@@ -1,0 +1,18 @@
+{
+ "description": "The server briefly returns an empty page; it must not become the baseline.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "min_chars": 100
+  }
+ },
+ "expect": [
+  {
+   "outcome": "rejected",
+   "reason": "too_short"
+  },
+  {
+   "outcome": "unchanged"
+  }
+ ]
+}

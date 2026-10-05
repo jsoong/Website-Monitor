@@ -1,0 +1,10 @@
+{
+ "description": "A script-only app shell: static fetching sees no text, only the bundle hash changes.",
+ "ext": "html",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "unchanged"
+  }
+ ]
+}

@@ -1,0 +1,5 @@
+# step 2
+  Pick a size
+  Small
+~ Large {+and Huge+}
+  Free shipping

@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from pagewatch import __version__
 from pagewatch.engine.api import (
     routes_bookmarks,
+    routes_changes,
     routes_checks,
     routes_folders,
     routes_health,
@@ -33,5 +34,6 @@ def create_app(engine: Engine) -> FastAPI:
     app.include_router(routes_folders.router)
     app.include_router(routes_bookmarks.router)
     app.include_router(routes_checks.router)
+    app.include_router(routes_changes.router)
     app.add_middleware(GuardMiddleware, token=lambda: engine.token)
     return app

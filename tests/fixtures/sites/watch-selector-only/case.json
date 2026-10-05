@@ -1,0 +1,24 @@
+{
+ "description": "Only #price is watched: a nav change is ignored, a price change alerts.",
+ "ext": "html",
+ "bookmark": {
+  "filter": {
+   "watch": [
+    {
+     "type": "selector",
+     "selector": "#price"
+    }
+   ]
+  }
+ },
+ "expect": [
+  {
+   "outcome": "unchanged"
+  },
+  {
+   "outcome": "alert",
+   "added_words": 1,
+   "removed_words": 1
+  }
+ ]
+}

@@ -1,0 +1,16 @@
+{
+ "description": "With 'ignore dropdown entries' off the same change alerts.",
+ "ext": "html",
+ "bookmark": {
+  "filter": {
+   "special": {
+    "ignore_options": false
+   }
+  }
+ },
+ "expect": [
+  {
+   "outcome": "alert"
+  }
+ ]
+}

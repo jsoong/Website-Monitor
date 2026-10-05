@@ -1,0 +1,24 @@
+{
+ "description": "A visitor counter is masked so only a real change would alert.",
+ "ext": "html",
+ "bookmark": {
+  "filter": {
+   "ignore": [
+    {
+     "type": "number_mask",
+     "pattern": "visitors"
+    }
+   ]
+  }
+ },
+ "expect": [
+  {
+   "outcome": "unchanged"
+  },
+  {
+   "outcome": "alert",
+   "added_words": 1,
+   "removed_words": 1
+  }
+ ]
+}

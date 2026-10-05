@@ -1,0 +1,17 @@
+{
+ "description": "AND terms in different changed blocks match by default.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "keywords": "\"lottery\" + \"manhattan\""
+  }
+ },
+ "expect": [
+  {
+   "outcome": "alert",
+   "keyword_hits": [
+    "\"lottery\" + \"manhattan\""
+   ]
+  }
+ ]
+}

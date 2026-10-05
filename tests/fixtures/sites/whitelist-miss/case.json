@@ -1,0 +1,17 @@
+{
+ "description": "A whitelist requires a phrase that the new page lacks.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "whitelist": [
+    "in stock"
+   ]
+  }
+ },
+ "expect": [
+  {
+   "outcome": "rejected",
+   "reason": "whitelist_miss"
+  }
+ ]
+}

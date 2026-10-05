@@ -279,6 +279,21 @@ class FetchConfig(PWModel):
 # --------------------------------------------------------------------------------------
 
 
+def _check_selector(kind: str, selector: str) -> None:
+    """Reject selectors that cannot be compiled (so a typo is a 422, not a silent no-op)."""
+    try:
+        if kind == "css":
+            import cssselect
+
+            cssselect.parse(selector)
+        else:
+            from lxml import etree
+
+            etree.XPath(selector)
+    except Exception as exc:
+        raise ValueError(f"invalid {kind} selector {selector!r}: {exc}") from exc
+
+
 class FilterRule(PWModel):
     """One filter. ``type`` decides which of the other fields apply.
 
@@ -303,8 +318,17 @@ class FilterRule(PWModel):
     def _required(self) -> FilterRule:
         if self.type == "selector" and not self.selector:
             raise ValueError("selector filter needs 'selector'")
-        if self.type == "between" and self.start is None and self.end is None:
-            raise ValueError("between filter needs 'start' or 'end'")
+        if self.selector:
+            _check_selector(self.selector_kind, self.selector)
+        if self.scope:
+            _check_selector("css", self.scope)
+        if self.type == "between":
+            if self.start is None and self.end is None:
+                raise ValueError("between filter needs 'start' or 'end'")
+            if (self.start is not None and not self.start.strip()) or (
+                self.end is not None and not self.end.strip()
+            ):
+                raise ValueError("between markers must not be empty")
         if self.type == "text":
             if not self.pattern:
                 raise ValueError("text filter needs 'pattern'")
@@ -333,6 +357,14 @@ class FilterConfig(PWModel):
     ignore: list[FilterRule] = Field(default_factory=list)
     special: SpecialFilters = Field(default_factory=SpecialFilters)
 
+    @model_validator(mode="after")
+    def _kinds(self) -> FilterConfig:
+        if any(r.type != "selector" for r in self.cosmetic):
+            raise ValueError("cosmetic filters can only be selector filters")
+        if any(r.type == "number_mask" for r in self.watch):
+            raise ValueError("number_mask is an ignore-side filter; it cannot be used to watch")
+        return self
+
 
 # --------------------------------------------------------------------------------------
 # Gate
@@ -349,6 +381,18 @@ class GateConfig(PWModel):
     min_changed_words: int = Field(0, ge=0)
     threshold_mode: ThresholdMode = ThresholdMode.CUMULATIVE
     error_threshold: int = Field(3, ge=1)
+
+    @field_validator("keywords", "highlight_keywords")
+    @classmethod
+    def _keyword_syntax(cls, v: str) -> str:
+        if v.strip():
+            from pagewatch.engine.pipeline.keywords import KeywordSyntaxError, parse_rules
+
+            try:
+                parse_rules(v)
+            except KeywordSyntaxError as exc:
+                raise ValueError(str(exc)) from exc
+        return v
 
 
 # --------------------------------------------------------------------------------------
@@ -621,6 +665,50 @@ class CheckRunOut(PWModel):
     reason: str | None
     duration_ms: int | None
     bytes: int | None
+
+
+class TestFilterRequest(PWModel):
+    """A candidate configuration, as the patch the editor would send to ``PATCH /bookmarks``."""
+
+    __test__ = False  # not a pytest test class
+
+    filter: dict[str, Any] | None = None
+    gate: dict[str, Any] | None = None
+    highlight_mode: HighlightMode | None = None
+    from_version_id: int | None = None  # default: the baseline (last read)
+    to_version_id: int | None = None  # default: the latest
+
+
+class TestFilterOut(PWModel):
+    __test__ = False
+
+    baseline: list[str]  # filtered blocks of the old version
+    latest: list[str]  # filtered blocks of the new version
+    marks: list[str]  # the text diff (see pipeline/render.py)
+    diff: dict[str, Any]
+    alert: bool  # would the gate alert?
+    reason: str | None  # why not, e.g. keyword_miss
+    keyword_hits: list[str]
+    identical: bool
+    warnings: list[str]
+
+
+class ProposalOut(PWModel):
+    rule: FilterRule
+    kind: Literal["volatile_pattern", "element"]
+    pattern_name: str | None
+    explanation: str
+    example_old: str
+    example_new: str
+    verified: bool  # on its own, it makes the false positive disappear
+
+
+class FalsePositiveOut(PWModel):
+    change_id: int
+    proposals: list[ProposalOut]
+    resolves_all: bool  # all proposals together remove the change
+    remaining_changed_blocks: int
+    patch: dict[str, Any]  # a ready `PATCH /bookmarks/{id}` body adding the proposals
 
 
 class AutowatchRequest(PWModel):

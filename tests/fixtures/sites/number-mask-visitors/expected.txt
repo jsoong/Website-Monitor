@@ -1,0 +1,4 @@
+# step 3
+  Stats
+  Visitors today: ####
+~ Open: [-yes-]{+no+}

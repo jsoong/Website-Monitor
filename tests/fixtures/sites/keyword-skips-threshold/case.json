@@ -1,0 +1,18 @@
+{
+ "description": "A keyword hit skips the word threshold: one word is enough when it is the right word.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "keywords": "available",
+   "min_changed_words": 50
+  }
+ },
+ "expect": [
+  {
+   "outcome": "alert",
+   "keyword_hits": [
+    "available"
+   ]
+  }
+ ]
+}

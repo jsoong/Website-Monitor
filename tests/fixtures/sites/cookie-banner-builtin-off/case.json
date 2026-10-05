@@ -1,0 +1,14 @@
+{
+ "description": "With the built-in cosmetic list turned off the banner change is reported.",
+ "ext": "html",
+ "bookmark": {
+  "filter": {
+   "builtin_cosmetic": false
+  }
+ },
+ "expect": [
+  {
+   "outcome": "alert"
+  }
+ ]
+}

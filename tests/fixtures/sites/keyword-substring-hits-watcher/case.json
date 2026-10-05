@@ -1,0 +1,17 @@
+{
+ "description": "Plain keywords are substrings: 'watch' matches 'Watcher'.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "keywords": "watch"
+  }
+ },
+ "expect": [
+  {
+   "outcome": "alert",
+   "keyword_hits": [
+    "watch"
+   ]
+  }
+ ]
+}

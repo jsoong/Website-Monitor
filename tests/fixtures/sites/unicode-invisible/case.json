@@ -1,0 +1,13 @@
+{
+ "description": "Zero-width characters, non-breaking spaces and full-width digits are not changes.",
+ "ext": "html",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "unchanged"
+  },
+  {
+   "outcome": "unchanged"
+  }
+ ]
+}

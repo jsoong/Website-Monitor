@@ -1,0 +1,73 @@
+# Built-in cosmetic filter: consent banners and overlays that change (or appear/disappear)
+# without the page content changing. One CSS selector per line; '#' starts a comment line.
+# Turned off per bookmark with filter.builtin_cosmetic = false.
+
+# Consent-management platforms
+#onetrust-consent-sdk
+#onetrust-banner-sdk
+#onetrust-pc-sdk
+#CybotCookiebotDialog
+#CybotCookiebotDialogBodyUnderlay
+#cookiebanner
+#cookie-banner
+#cookie-notice
+#cookie-consent
+#cookieconsent
+#cookie-law-info-bar
+#cookie-law-info-again
+#cmpbox
+#cmpwrapper
+#didomi-host
+#didomi-popup
+#usercentrics-root
+#truste-consent-track
+#consent_blackbar
+#hs-eu-cookie-confirmation
+#gdpr-cookie-notice
+#gdpr-cookie-message
+#sp-cc
+#qc-cmp2-container
+#termly-code-snippet-support
+.cc-window
+.cc-banner
+.cc-revoke
+.cookie-banner
+.cookie-notice
+.cookie-consent
+.cookie-bar
+.cookie-popup
+.cookie-law-info-bar
+.cookiebanner
+.cookies-banner
+.cookies-notice
+.cmp-banner
+.gdpr-banner
+.gdpr-notice
+.consent-banner
+.consent-modal
+.privacy-banner
+.evidon-banner
+.osano-cm-window
+.osano-cm-dialog
+.truste_overlay
+.fc-consent-root
+.qc-cmp2-container
+.sp_message_container
+.termly-consent-banner
+.cky-consent-container
+.cli-modal-dialog
+.pwa-install-banner
+[id*="cookie-banner"]
+[id*="cookie-consent"]
+[id*="cookie_consent"]
+[id*="cookiebanner"]
+[class*="cookie-banner"]
+[class*="cookie-consent"]
+[class*="cookie_consent"]
+[class*="cookiebanner"]
+[class*="CookieBanner"]
+[class*="CookieConsent"]
+[aria-label="Cookie banner"]
+[aria-label="Cookie consent"]
+[aria-label="Cookie Consent"]
+[data-testid="cookie-banner"]

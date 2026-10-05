@@ -1,0 +1,17 @@
+{
+ "description": "A graphics card drops below the target price: page() + num() fires.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "keywords": "page(\"RTX 4090\") + num(\\$([\\d,.]+)) < 1200"
+  }
+ },
+ "expect": [
+  {
+   "outcome": "alert",
+   "keyword_hits": [
+    "page(\"RTX 4090\") + num(\\$([\\d,.]+)) < 1200"
+   ]
+  }
+ ]
+}

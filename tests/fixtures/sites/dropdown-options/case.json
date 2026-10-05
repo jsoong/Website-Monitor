@@ -1,0 +1,10 @@
+{
+ "description": "Dropdown entries change; ignored by default.",
+ "ext": "html",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "unchanged"
+  }
+ ]
+}

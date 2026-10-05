@@ -1,0 +1,11 @@
+{
+ "description": "A site appends a new section after </html>; it must not be dropped.",
+ "ext": "html",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "alert",
+   "added_words": 4
+  }
+ ]
+}

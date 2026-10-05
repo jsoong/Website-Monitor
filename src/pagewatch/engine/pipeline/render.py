@@ -18,19 +18,24 @@ from pagewatch.engine.pipeline.diff import SEP, DiffResult
 
 
 def _marked(tokens: list[list[str]]) -> list[str]:
+    """Inline marks for one replace run, one line per block. A deleted word that is replaced
+    drops its trailing space (the space follows the insertion), so ``$19`` -> ``$17`` reads
+    ``$[-19-]{+17+} per box`` and a bare deletion keeps its space (``a [-b-] c``)."""
     lines: list[str] = [""]
-    for kind, text in tokens:
+    for idx, (kind, text) in enumerate(tokens):
+        replaced = kind == "del" and idx + 1 < len(tokens) and tokens[idx + 1][0] == "ins"
         for k, part in enumerate(text.split(SEP)):
             if k:
                 lines.append("")
             if not part:
                 continue
+            body, space = part.rstrip(), part[len(part.rstrip()) :]
             if kind == "eq":
                 lines[-1] += part
             elif kind == "del":
-                lines[-1] += f"[-{part.rstrip()}-]" + part[len(part.rstrip()) :]
+                lines[-1] += f"[-{body}-]" + ("" if replaced else space)
             else:
-                lines[-1] += f"{{+{part.rstrip()}+}}" + part[len(part.rstrip()) :]
+                lines[-1] += f"{{+{body}+}}" + space
     return [ln.strip() for ln in lines if ln.strip()]
 
 

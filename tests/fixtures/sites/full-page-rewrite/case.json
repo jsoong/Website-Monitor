@@ -1,0 +1,10 @@
+{
+ "description": "The whole page is replaced by different content.",
+ "ext": "html",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "alert"
+  }
+ ]
+}

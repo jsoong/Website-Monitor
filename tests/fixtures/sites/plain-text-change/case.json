@@ -1,0 +1,12 @@
+{
+ "description": "A plain text file gains a line.",
+ "ext": "txt",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "alert",
+   "added_words": 2
+  }
+ ],
+ "content_type": "text/plain"
+}

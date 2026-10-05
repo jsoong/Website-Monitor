@@ -1,0 +1,10 @@
+{
+ "description": "A consent banner changes wording; the built-in cookie filter removes it.",
+ "ext": "html",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "unchanged"
+  }
+ ]
+}

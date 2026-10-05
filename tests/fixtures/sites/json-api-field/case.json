@@ -1,0 +1,13 @@
+{
+ "description": "A JSON document changes one field.",
+ "ext": "json",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "alert",
+   "added_words": 1,
+   "removed_words": 1
+  }
+ ],
+ "content_type": "application/json"
+}

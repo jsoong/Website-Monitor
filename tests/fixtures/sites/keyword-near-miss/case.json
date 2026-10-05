@@ -1,0 +1,15 @@
+{
+ "description": "[near 10]: the terms are forty words apart.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "keywords": "\"approved\" + \"subsidy\" [near 10]"
+  }
+ },
+ "expect": [
+  {
+   "outcome": "suppressed",
+   "reason": "keyword_miss"
+  }
+ ]
+}

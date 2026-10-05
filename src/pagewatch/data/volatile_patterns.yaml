@@ -1,0 +1,42 @@
+# Text that changes on every load without meaning anything. When the user flags a change as a
+# false positive, a changed span that matches one of these becomes a *text ignore* rule scoped
+# to its block. Add patterns here; no code change is needed. The first pattern that makes the
+# old and new text identical wins, so list the more specific ones first.
+#
+# regex:  Python regular expression, matched case-insensitively.
+patterns:
+  - name: relative_time
+    description: '"5 minutes ago", "just now", "yesterday"'
+    regex: '\b(?:\d+\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?)\s+ago|just now|moments? ago|yesterday|today)\b'
+
+  - name: iso_datetime
+    description: 2026-10-05, 2026-10-05T13:10:00Z
+    regex: '\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?\b'
+
+  - name: long_date
+    description: Oct 5, 2026 / October 5 2026 / 5 October 2026 / Monday, October 5
+    regex: '\b(?:(?:mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)(?:day)?,?\s+)?(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?|\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?(?:,?\s+\d{4})?)\b'
+
+  - name: numeric_date
+    description: 10/05/2026, 05.10.2026, 10-5-26
+    regex: '\b\d{1,2}[/.-]\d{1,2}[/.-](?:\d{4}|\d{2})\b'
+
+  - name: clock_time
+    description: 1:07 PM, 13:10, 13:10:44 UTC
+    regex: '\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?(?:\s*(?:utc|gmt|[ecmp][sd]t))?\b'
+
+  - name: counter
+    description: 1,204 views / 37 visitors online / downloads 5,512
+    regex: '\b(?:\d[\d,. ]*\s*(?:views?|visitors?|visits?|hits?|readers?|users?|viewers?|downloads?|comments?|shares?|likes?|votes?|replies|members?|online|watching)|(?:views?|visitors?|visits?|hits?|readers?|downloads?|comments?|shares?|likes?|votes?|online)\s*[:#]?\s*\d[\d,. ]*)\b'
+
+  - name: unix_timestamp
+    description: 1759669800 or 1759669800000
+    regex: '\b1[5-9]\d{8}(?:\d{3})?\b'
+
+  - name: hex_token
+    description: session ids, nonces, build hashes (16+ hex characters)
+    regex: '\b[0-9a-f]{16,}\b'
+
+  - name: currency_amount
+    description: $1,299.00 / EUR 12,50 / 12,50 €
+    regex: '(?:[$€£¥]\s?\d[\d,.]*|\b(?:usd|eur|gbp)\s?\d[\d,.]*|\d[\d,.]*\s?[€£¥])'

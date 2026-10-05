@@ -1,0 +1,15 @@
+{
+ "description": "Quoted keywords are whole words: 'watch' does not match 'Watcher'.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "keywords": "\"watch\""
+  }
+ },
+ "expect": [
+  {
+   "outcome": "suppressed",
+   "reason": "keyword_miss"
+  }
+ ]
+}

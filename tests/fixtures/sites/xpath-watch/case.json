@@ -1,0 +1,23 @@
+{
+ "description": "An XPath watch region.",
+ "ext": "html",
+ "bookmark": {
+  "filter": {
+   "watch": [
+    {
+     "type": "selector",
+     "selector": "//div[@id='stock']",
+     "selector_kind": "xpath"
+    }
+   ]
+  }
+ },
+ "expect": [
+  {
+   "outcome": "unchanged"
+  },
+  {
+   "outcome": "alert"
+  }
+ ]
+}

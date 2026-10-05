@@ -1,0 +1,6 @@
+# step 2
+  Price list
+  Item | Price
+~ Tea | $[-4.50-]{+4.75+}
+  Coffee | $5.20
+  Cocoa | $6.00

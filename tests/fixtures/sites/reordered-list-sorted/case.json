@@ -1,0 +1,16 @@
+{
+ "description": "With 'sort content' a reorder is not even a difference.",
+ "ext": "html",
+ "bookmark": {
+  "filter": {
+   "special": {
+    "sort_content": true
+   }
+  }
+ },
+ "expect": [
+  {
+   "outcome": "unchanged"
+  }
+ ]
+}

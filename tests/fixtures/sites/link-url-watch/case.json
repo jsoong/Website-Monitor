@@ -1,0 +1,16 @@
+{
+ "description": "Link URLs are watched: the visible text is identical but the href changes.",
+ "ext": "html",
+ "bookmark": {
+  "filter": {
+   "special": {
+    "watch_links": true
+   }
+  }
+ },
+ "expect": [
+  {
+   "outcome": "alert"
+  }
+ ]
+}

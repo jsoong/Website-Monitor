@@ -1,0 +1,17 @@
+{
+ "description": "regex(): flexible whitespace.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "keywords": "regex(in\\s+stock)"
+  }
+ },
+ "expect": [
+  {
+   "outcome": "alert",
+   "keyword_hits": [
+    "regex(in\\s+stock)"
+   ]
+  }
+ ]
+}

@@ -1,0 +1,20 @@
+{
+ "description": "A 200 response that is really an error page.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "blacklist": [
+    "service unavailable"
+   ]
+  }
+ },
+ "expect": [
+  {
+   "outcome": "rejected",
+   "reason": "blacklist"
+  },
+  {
+   "outcome": "unchanged"
+  }
+ ]
+}

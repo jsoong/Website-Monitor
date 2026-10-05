@@ -1352,6 +1352,44 @@
     "title": "CheckRunOut",
     "type": "object"
    },
+   "FalsePositiveOut": {
+    "additionalProperties": false,
+    "properties": {
+     "change_id": {
+      "title": "Change Id",
+      "type": "integer"
+     },
+     "patch": {
+      "additionalProperties": true,
+      "title": "Patch",
+      "type": "object"
+     },
+     "proposals": {
+      "items": {
+       "$ref": "#/components/schemas/ProposalOut"
+      },
+      "title": "Proposals",
+      "type": "array"
+     },
+     "remaining_changed_blocks": {
+      "title": "Remaining Changed Blocks",
+      "type": "integer"
+     },
+     "resolves_all": {
+      "title": "Resolves All",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "change_id",
+     "proposals",
+     "resolves_all",
+     "remaining_changed_blocks",
+     "patch"
+    ],
+    "title": "FalsePositiveOut",
+    "type": "object"
+   },
    "FetchConfig": {
     "additionalProperties": false,
     "properties": {
@@ -2093,6 +2131,60 @@
     "title": "Page[CheckRunOut]",
     "type": "object"
    },
+   "ProposalOut": {
+    "additionalProperties": false,
+    "properties": {
+     "example_new": {
+      "title": "Example New",
+      "type": "string"
+     },
+     "example_old": {
+      "title": "Example Old",
+      "type": "string"
+     },
+     "explanation": {
+      "title": "Explanation",
+      "type": "string"
+     },
+     "kind": {
+      "enum": [
+       "volatile_pattern",
+       "element"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "pattern_name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Pattern Name"
+     },
+     "rule": {
+      "$ref": "#/components/schemas/FilterRule"
+     },
+     "verified": {
+      "title": "Verified",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "rule",
+     "kind",
+     "pattern_name",
+     "explanation",
+     "example_old",
+     "example_new",
+     "verified"
+    ],
+    "title": "ProposalOut",
+    "type": "object"
+   },
    "ScheduleConfig": {
     "additionalProperties": false,
     "properties": {
@@ -2369,6 +2461,147 @@
      }
     },
     "title": "SpecialFilters",
+    "type": "object"
+   },
+   "TestFilterOut": {
+    "additionalProperties": false,
+    "properties": {
+     "alert": {
+      "title": "Alert",
+      "type": "boolean"
+     },
+     "baseline": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Baseline",
+      "type": "array"
+     },
+     "diff": {
+      "additionalProperties": true,
+      "title": "Diff",
+      "type": "object"
+     },
+     "identical": {
+      "title": "Identical",
+      "type": "boolean"
+     },
+     "keyword_hits": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Keyword Hits",
+      "type": "array"
+     },
+     "latest": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Latest",
+      "type": "array"
+     },
+     "marks": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Marks",
+      "type": "array"
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Reason"
+     },
+     "warnings": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+     }
+    },
+    "required": [
+     "baseline",
+     "latest",
+     "marks",
+     "diff",
+     "alert",
+     "reason",
+     "keyword_hits",
+     "identical",
+     "warnings"
+    ],
+    "title": "TestFilterOut",
+    "type": "object"
+   },
+   "TestFilterRequest": {
+    "additionalProperties": false,
+    "description": "A candidate configuration, as the patch the editor would send to ``PATCH /bookmarks``.",
+    "properties": {
+     "filter": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Filter"
+     },
+     "from_version_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "From Version Id"
+     },
+     "gate": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Gate"
+     },
+     "highlight_mode": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/HighlightMode"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "to_version_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "To Version Id"
+     }
+    },
+    "title": "TestFilterRequest",
     "type": "object"
    },
    "ThresholdMode": {
@@ -3111,6 +3344,102 @@
     "summary": "List Runs",
     "tags": [
      "bookmarks"
+    ]
+   }
+  },
+  "/bookmarks/{bookmark_id}/test-filter": {
+   "post": {
+    "description": "Run the full pipeline on the stored baseline and latest raw content with a candidate\nconfiguration. Persists nothing.",
+    "operationId": "test_filter_bookmarks__bookmark_id__test_filter_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/TestFilterRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TestFilterOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Test Filter",
+    "tags": [
+     "changes"
+    ]
+   }
+  },
+  "/changes/{change_id}/false-positive": {
+   "post": {
+    "description": "Flag a change as a false positive; returns proposed automatic filters.",
+    "operationId": "false_positive_changes__change_id__false_positive_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "change_id",
+      "required": true,
+      "schema": {
+       "title": "Change Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/FalsePositiveOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "False Positive",
+    "tags": [
+     "changes"
     ]
    }
   },

@@ -1,0 +1,28 @@
+{
+ "description": "The same additions with a per-check threshold never alert.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "min_changed_words": 4,
+   "threshold_mode": "per_check"
+  }
+ },
+ "expect": [
+  {
+   "outcome": "suppressed",
+   "reason": "below_threshold"
+  },
+  {
+   "outcome": "suppressed",
+   "reason": "below_threshold"
+  },
+  {
+   "outcome": "suppressed",
+   "reason": "below_threshold"
+  },
+  {
+   "outcome": "suppressed",
+   "reason": "below_threshold"
+  }
+ ]
+}

@@ -62,15 +62,24 @@ def check_change(
     *,
     latest_diff: DiffResult,
     anchor_diff: DiffResult | None,
-    keyword_hit: bool = False,
+    keywords_configured: bool = False,
     keyword_hits: list[str] | None = None,
 ) -> GateVerdict:
-    """Rules 5-7 for a version that passed the bad-fetch rules."""
+    """Rules 5-7 for a version that passed the bad-fetch rules.
+
+    ``keyword_hits`` are the rules that fired on the changes since the latest version
+    (computed by the caller, which owns the page text); ``keywords_configured`` says whether
+    there were any keyword rules at all."""
     hits = keyword_hits or []
+    if latest_diff.is_empty:
+        # only moved blocks: a reorder is not a change in Standard / Table mode
+        return GateVerdict(alert=False, reason="reorder_only")
     if cfg.ignore_removed and not latest_diff.has_additions:
         return GateVerdict(alert=False, reason="removed_only")
-    if cfg.min_changed_words and not keyword_hit:
+    if keywords_configured and not hits:
+        return GateVerdict(alert=False, reason="keyword_miss")
+    if cfg.min_changed_words and not hits:  # a keyword hit skips the word threshold
         basis = anchor_diff if (uses_anchor(cfg) and anchor_diff is not None) else latest_diff
         if threshold_words(basis, cfg) < cfg.min_changed_words:
-            return GateVerdict(alert=False, reason="below_threshold", keyword_hits=hits)
+            return GateVerdict(alert=False, reason="below_threshold")
     return GateVerdict(alert=True, keyword_hits=hits)

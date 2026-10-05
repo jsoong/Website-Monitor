@@ -1,0 +1,23 @@
+{
+ "description": "Everything between the Comments and Footer headings is ignored.",
+ "ext": "html",
+ "bookmark": {
+  "filter": {
+   "ignore": [
+    {
+     "type": "between",
+     "start": "Comments",
+     "end": "Footer"
+    }
+   ]
+  }
+ },
+ "expect": [
+  {
+   "outcome": "unchanged"
+  },
+  {
+   "outcome": "unchanged"
+  }
+ ]
+}

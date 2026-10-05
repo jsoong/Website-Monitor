@@ -42,6 +42,10 @@ Data folder (`%LOCALAPPDATA%\PageWatch`, or `--data-dir`):
 | `engine/runner.py` | One check end to end; retry-once; error counting; the atomic commit; events. |
 | `engine/fetch/` | `FetchResult`/`FetchError`; `static.py` (httpx, HTTP/2, conditional GET, body cap). |
 | `engine/pipeline/` | `extract` (bytes→blocks), `special` filters, `differs` (pluggable) + `diff` (two-stage), `gate`, `render`, `core` (the worker entry points). |
+| `engine/pipeline/filters.py` | Cosmetic/watch/ignore filters (marks, regions, ranges, text spans, digit masks). |
+| `engine/pipeline/keywords.py` | Keyword language: parser and evaluator (`page()`, `num()`, `[same_block]`, `[near N]`, NOT). |
+| `engine/pipeline/autofilter.py` | False-positive -> proposed ignore rules, verified; `data/volatile_patterns.yaml`. |
+| `engine/changes.py` | Test filter and false-positive operations behind `routes_changes.py`. |
 | `engine/actions/` | `toast` (coalesced), `builtin` (action registry), `queue` (durable job runner). |
 | `cli/` | `pagewatch-cli`: a synchronous client of the local API. |
 

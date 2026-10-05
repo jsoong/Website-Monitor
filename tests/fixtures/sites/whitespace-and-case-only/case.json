@@ -1,0 +1,10 @@
+{
+ "description": "Only whitespace and letter case differ.",
+ "ext": "html",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "unchanged"
+  }
+ ]
+}

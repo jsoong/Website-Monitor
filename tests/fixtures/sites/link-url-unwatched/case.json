@@ -1,0 +1,10 @@
+{
+ "description": "Without link watching the same href change is invisible.",
+ "ext": "html",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "unchanged"
+  }
+ ]
+}

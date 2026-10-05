@@ -36,6 +36,7 @@ DROP_TAGS = frozenset(
     }
 )  # fmt: skip
 OPTION_TAGS = frozenset({"option", "datalist", "optgroup"})
+SKIP_ATTR = "data-pw-skip"  # set by cosmetic / ignore filters; the extractor skips the element
 
 _WS = re.compile(r"\s+")
 _INVISIBLE = re.compile("[­​-‏‪-‮⁠-⁤⁦-⁯﻿]")
@@ -51,6 +52,9 @@ class Block:
     text: str
     links: tuple[str, ...] = ()
     images: tuple[str, ...] = ()
+    # Document-order key (owner element index, sequence); only filled in when a caller asks
+    # for it (merging several watch regions). Never serialised.
+    order: tuple[int, int] = (0, 0)
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {"p": self.path, "k": self.kind, "t": self.text}
@@ -142,9 +146,10 @@ def parse_html(text: str) -> Any | None:
 
 
 class _Ctx:
-    __slots__ = ("images", "kind", "links", "parts", "path")
+    __slots__ = ("el", "images", "kind", "links", "parts", "path")
 
-    def __init__(self, path: str, kind: str, links: list[str]) -> None:
+    def __init__(self, path: str, kind: str, links: list[str], el: Any = None) -> None:
+        self.el = el
         self.path = path
         self.kind = kind
         self.parts: list[str] = []
@@ -153,7 +158,15 @@ class _Ctx:
 
 
 class _Extractor:
-    def __init__(self, base_url: str, *, ignore_options: bool, nfkc: bool) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        ignore_options: bool,
+        nfkc: bool,
+        index_of: dict[Any, int] | None = None,
+    ) -> None:
+        self.index_of = index_of
         self.base_url = base_url
         self.ignore_options = ignore_options
         self.nfkc = nfkc
@@ -167,14 +180,26 @@ class _Extractor:
             text = normalize_text("".join(ctx.parts), nfkc=self.nfkc)
             if text:
                 self.blocks.append(
-                    Block(ctx.path, ctx.kind, text, _dedupe(ctx.links), _dedupe(ctx.images))
+                    Block(
+                        ctx.path,
+                        ctx.kind,
+                        text,
+                        _dedupe(ctx.links),
+                        _dedupe(ctx.images),
+                        self._order(ctx.el),
+                    )
                 )
         ctx.parts.clear()
         ctx.links = list(self._hrefs)
         ctx.images = []
 
-    def _new(self, path: str, kind: str) -> _Ctx:
-        return _Ctx(path, kind, list(self._hrefs))
+    def _new(self, path: str, kind: str, el: Any = None) -> _Ctx:
+        return _Ctx(path, kind, list(self._hrefs), el)
+
+    def _order(self, el: Any) -> tuple[int, int]:
+        if self.index_of is None or el is None:
+            return (0, 0)
+        return (self.index_of.get(el, 0), len(self.blocks))
 
     # walking --------------------------------------------------------------------------
 
@@ -183,7 +208,7 @@ class _Extractor:
         if tag == "tr":
             self._row(root, path)
             return self.blocks
-        ctx = self._new(path, tag)
+        ctx = self._new(path, tag, root)
         if as_block or tag in BLOCK_TAGS:
             self._add(ctx, root.text)
             self._children(root, path, ctx)
@@ -212,6 +237,8 @@ class _Extractor:
         tag: str = el.tag
         if tag in DROP_TAGS or (self.ignore_options and tag in OPTION_TAGS):
             return
+        if el.get(SKIP_ATTR) is not None:
+            return
         if tag == "br" or tag == "hr":
             self._flush(ctx)
             return
@@ -221,7 +248,7 @@ class _Extractor:
             return
         if tag in BLOCK_TAGS:
             self._flush(ctx)
-            inner = self._new(path, tag)
+            inner = self._new(path, tag, el)
             self._add(inner, el.text)
             self._children(el, path, inner)
             self._flush(inner)
@@ -258,7 +285,9 @@ class _Extractor:
             texts.append(normalize_text("".join(parts), nfkc=self.nfkc))
         if any(texts):
             self.blocks.append(
-                Block(path, "tr", " | ".join(texts), _dedupe(links), _dedupe(images))
+                Block(
+                    path, "tr", " | ".join(texts), _dedupe(links), _dedupe(images), self._order(tr)
+                )
             )
 
     def _collect(self, el: Any, out: list[str], links: list[str], images: list[str]) -> None:
@@ -271,7 +300,11 @@ class _Extractor:
                 if child.tail:
                     out.append(child.tail)
                 continue
-            if tag in DROP_TAGS or (self.ignore_options and tag in OPTION_TAGS):
+            if (
+                tag in DROP_TAGS
+                or (self.ignore_options and tag in OPTION_TAGS)
+                or child.get(SKIP_ATTR) is not None
+            ):
                 pass
             elif tag == "br" or tag in BLOCK_TAGS or tag == "tr":
                 out.append(" ")
@@ -336,11 +369,13 @@ def extract_blocks(
     nfkc: bool = True,
     path: str | None = None,
     as_block: bool = False,
+    index_of: dict[Any, int] | None = None,
 ) -> list[Block]:
-    """Extract the blocks of ``root`` (the document, or a watched sub-tree)."""
+    """Extract the blocks of ``root`` (the document, or a watched sub-tree). Elements marked
+    with ``data-pw-skip`` are skipped but keep their place in every DOM path."""
     if root is None:
         return []
-    ex = _Extractor(base_url, ignore_options=ignore_options, nfkc=nfkc)
+    ex = _Extractor(base_url, ignore_options=ignore_options, nfkc=nfkc, index_of=index_of)
     return ex.run(root, path if path is not None else element_path(root), as_block=as_block)
 
 

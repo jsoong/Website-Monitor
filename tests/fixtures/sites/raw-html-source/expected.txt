@@ -1,0 +1,6 @@
+# step 2
+  <!doctype html>
+  <html><head><title>Site</title></head>
+  <body>
+~ <p class='[-old-]{+new+}'>Same text</p>
+  </body></html>

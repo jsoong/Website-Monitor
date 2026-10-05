@@ -1,0 +1,15 @@
+{
+ "description": "[same_block]: the terms are in different blocks.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "keywords": "\"lottery\" + \"manhattan\" [same_block]"
+  }
+ },
+ "expect": [
+  {
+   "outcome": "suppressed",
+   "reason": "keyword_miss"
+  }
+ ]
+}

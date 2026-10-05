@@ -104,6 +104,11 @@ class Engine:
         self._background.add(task)
         task.add_done_callback(self._background.discard)
 
+    async def drain_background(self) -> None:
+        """Wait for fire-and-forget work (re-normalising after a filter edit, ...)."""
+        while self._background:
+            await asyncio.gather(*list(self._background), return_exceptions=True)
+
     # -- lifecycle ----------------------------------------------------------------------
 
     async def start(self) -> None:

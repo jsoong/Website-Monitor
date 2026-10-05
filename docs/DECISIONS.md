@@ -162,3 +162,98 @@ half rewrite: 10,000 blocks, 50% replaced             5850.5ms /  6485.2ms*(1000
 * **Filter edits re-normalise stored versions.** The raw-hash shortcut would otherwise hide a new
   filter until the page changed, so `PATCH` of `filter`/`highlight_mode`/`source_type` re-runs the
   pipeline over the versions the three pointers reference (`Engine.rebuild_versions`).
+
+## M2 · Noise control
+
+### Keywords
+
+* **A keyword matches the *whole* changed block but only counts if the match overlaps a changed
+  span** (`DiffResult.change_set` -> `ChangedBlock(text, spans)`). Found by the golden corpus: the
+  spec says "in stock" returning after "out of stock" must alert with no special option, but that
+  edit changes only the word *In* (the word *stock* is unchanged context), so matching the phrase
+  against the changed words alone could never succeed. Matching against the whole block fixes
+  that, and the overlap requirement keeps it precise: `sale` does not fire when only an unrelated
+  timestamp in the same paragraph changed, `"in stock"` fires (its match covers the changed word),
+  `$1,299 -> $1,099` keeps its `$` for `num(\$([\d,.]+))`. Inserted blocks count in full.
+  `DiffResult.changed_regions` (changed spans widened to whole words) is kept for plugins'
+  `check_keywords(ctx, added_text)` and for summaries.
+* `num(...)` is evaluated for **every match** of the regex in the changes (any satisfying
+  comparison fires), not only the first; with a page(...) context term this is what a price rule
+  wants. `1,099`, `1.099,50`, `1,5` and `$1,099.00` all parse.
+* `-term` (NOT) vetoes only when its match overlaps the change; `-page(term)` vetoes on the whole page.
+* `//` lines in a keyword list are comments (not in the spec; costs nothing and helps long lists).
+* Keywords are evaluated against changes since the **latest** version even in cumulative mode
+  (spec: rule 6 compares "changes since latest"); only the word threshold uses the anchor.
+* `change.keyword_hits_json` holds the gating rules that fired *plus* matches of the highlight-only
+  list (so the bookmark list can show them); only the former decide the alert.
+* Keyword syntax errors are rejected with a line number at the model boundary (HTTP 422), so a
+  broken rule never reaches a check.
+
+### Filters
+
+* **Cosmetic and `selector` ignore filters mark elements (`data-pw-skip`) instead of deleting
+  them**, so every block keeps its original DOM path (the in-page diff view injects `<ins>/<del>`
+  into the original HTML at those paths in M3).
+* **`between`**: markers match case-insensitively on the normalised text, exclusive by default
+  (`inclusive: true` includes them); every occurrence is a range; open-ended means start/end of
+  page; **a marker that is given but not found yields no range**, so an ignore filter can never
+  silently swallow the rest of a restructured page. Matching is done with regexes on the original
+  text (an earlier version lower-cased and used the offsets, which is wrong for characters such as
+  `İ` whose lower-case form has a different length; there is a regression test).
+* **Wildcards**: `*` is lazy between literal text (`Updated * ago`) but a *trailing* `*` runs to the
+  end of the block (`build *`); `?` is one character.
+* **`scope`** (CSS) limits a text/number_mask rule to blocks inside the matched element, and also
+  to the block that *contains* a matched inline element (`span.views` inside a `<p>`). A scope
+  that matches nothing makes the rule a no-op for that page.
+* **`number_mask`** replaces digits with `#` in the scoped blocks, optionally only blocks whose
+  text matches `pattern`.
+* **Watch** rules are a union in document order; `selector` watch rules cannot apply to sources
+  with no DOM (JSON, text) and are ignored there (if no watch rule can apply, the whole source is
+  watched). A watched region that vanishes gives an empty page, which is a change.
+* **Built-in cookie-banner list** (`data/cookie_banner_selectors.txt`) is compiled once into one CSS
+  union and is on by default. In that file a line starting with `# ` is a comment while `#id`
+  lines are selectors.
+* **Rule validation**: selectors (CSS via `cssselect`, XPath via `lxml`) and scopes must compile,
+  cosmetic rules must be selector rules, `number_mask` cannot watch. A rule that still fails at
+  run time (stored before a fix) is skipped with a warning, never fails the check.
+* **Risk, deferred to M5**: a user-supplied regex can backtrack catastrophically and hang a worker.
+  M5 adds a per-job timeout that kills and rebuilds the pool.
+
+### Gate / diff
+
+* **New gate outcome `reorder_only`**: a diff of only moved blocks is not a change in Standard and
+  Table mode (spec: moves are not counted), whether or not a threshold is configured. In Exact
+  mode moves are not detected, so a reorder is an ordinary change.
+* **Exact mode** reuses the stage-1 block alignment as anchors and word-diffs the replaced runs,
+  with move detection off. It is *not* a single token diff of the whole page: that costs
+  O(tokens²) on pages with 100k tokens, and the two agree wherever blocks line up.
+* **Table mode** is Standard plus, on equal-length row runs, `cells` (indices of changed cells per
+  row) and `numeric` (whether each row's change is numeric only) on the `rep` op, so the viewer can
+  highlight a whole row or just the cell.
+
+### Test filter and automatic filters
+
+* **Test filter**: the candidate config is the *patch* the editor would send to `PATCH
+  /bookmarks/{id}` (same merge semantics, `null` removes an override), run over the stored
+  baseline -> latest raw blobs in a worker; it reads blobs only and writes nothing (tested by
+  counting rows). `from_version_id`/`to_version_id` let it test any two stored versions.
+* **False-positive flag**: marks `change.feedback`, then proposes rules per changed block: a text
+  regex from `data/volatile_patterns.yaml` when removing that pattern from the old and new text
+  makes them identical (scoped to the block when a stable CSS selector exists), otherwise an
+  element ignore (CSS, falling back to an absolute XPath). Every proposal is verified by re-running
+  the comparison; the response says whether each one alone, and all together, remove the false
+  positive, and includes a ready `PATCH` body. Generated-looking ids/classes (`css-1a2b3c9`, hashes)
+  are never used in selectors.
+* The proposals are never saved by the engine: the user confirms by applying the patch
+  (the spec's "saved only if ... the user confirms").
+
+### Golden corpus
+
+* 50 cases in `tests/fixtures/sites/<case>/{case.json, v1.<ext>, v2.<ext>, ..., expected.txt}`:
+  per-step expected outcome (`first | unchanged | alert | suppressed | rejected` + reason, keyword
+  hits, word counts) and a snapshot of the highlighted text diff of every alert. Regenerate
+  snapshots with `UPDATE_GOLDEN=1` and review the diff. Cases that need M4 (PDF, RSS, records,
+  JS-rendered pages) are added with M4.
+* Writing the corpus before running it caught two defects: the keyword/flip-back problem above and
+  a wrong test expectation about word counts.
+* The renderer prints a replaced word as `$[-19-]{+17+}` (no space between the marks).

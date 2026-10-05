@@ -74,8 +74,8 @@ def scenarios() -> dict[str, tuple[list[str], list[str]]]:
         half,
         [b if i % 2 else sentence(rng) for i, b in enumerate(half)],
     )
-    for path in sorted(CORPUS.glob("*/old.html")):
-        new = path.with_name("new.html")
+    for path in sorted(CORPUS.glob("*/v1.html")):
+        new = path.with_name("v2.html")
         if new.exists():
             old_b = [b.text for b in extract_blocks(parse_html(path.read_text(encoding="utf-8")))]
             new_b = [b.text for b in extract_blocks(parse_html(new.read_text(encoding="utf-8")))]

@@ -1,0 +1,23 @@
+{
+ "description": "The same page with an ignore filter for 'Updated * ago' stays quiet.",
+ "ext": "html",
+ "bookmark": {
+  "filter": {
+   "ignore": [
+    {
+     "type": "text",
+     "pattern": "Updated * ago",
+     "pattern_kind": "wildcard"
+    }
+   ]
+  }
+ },
+ "expect": [
+  {
+   "outcome": "unchanged"
+  },
+  {
+   "outcome": "unchanged"
+  }
+ ]
+}

@@ -109,6 +109,32 @@ def test_changed_regions_widen_to_whole_words_so_prices_stay_intact() -> None:
     assert inserted.changed_regions(["a", "whole new block"]) == ["whole new block"]
 
 
+def test_change_set_spans_cover_exactly_the_inserted_tokens() -> None:
+    old = ["Price $19 per box", "static line"]
+    new = ["Price $17 per box", "static line", "brand new block"]
+    cs = diff_blocks(old, new).change_set(new)
+    assert [(c.text, [c.text[a:b] for a, b in c.spans]) for c in cs] == [
+        ("Price $17 per box", ["17"]),
+        ("brand new block", ["brand new block"]),
+    ]
+    # moved blocks are not changes; degraded runs report whole blocks
+    moved = diff_blocks(["a b", "c d", "e f"], ["c d", "e f", "a b"]).change_set(
+        ["c d", "e f", "a b"]
+    )
+    assert moved == []
+    big_old = [" ".join(f"o{i}_{j}" for j in range(50)) for i in range(3)]
+    big_new = [" ".join(f"n{i}_{j}" for j in range(50)) for i in range(3)]
+    degraded = diff_blocks(big_old, big_new, max_tokens=10).change_set(big_new)
+    assert [c.spans for c in degraded] == [[(0, len(t))] for t in big_new]
+
+
+def test_change_set_for_a_run_with_different_block_counts() -> None:
+    old = ["alpha beta", "gamma delta"]
+    new = ["alpha beta gamma", "delta epsilon"]
+    cs = diff_blocks(old, new).change_set(new)
+    assert [c.text for c in cs] == new and all(c.spans for c in cs)
+
+
 def test_numbers_and_contractions_are_single_tokens() -> None:
     assert [k for k, _ in tokenize("Don't pay $1,299.50 or v2.0", True)] == [
         "don't",
@@ -250,3 +276,56 @@ def test_alignment_matrix_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
         "rep",
         "eq",
     ]  # one replace run, no alignment attempted
+
+
+def test_table_mode_reports_which_cells_changed_and_whether_the_change_is_numeric() -> None:
+    old = ["Item | Price | Stock", "Tea | $4.50 | yes", "Cocoa | $6.00 | yes"]
+    new = ["Item | Price | Stock", "Tea | $4.75 | yes", "Cocoa | $6.00 | no"]
+    res = diff_blocks(old, new, table=True)
+    rep = next(op for op in res.ops if op["t"] == "rep")
+    assert rep["cells"] == [[1], [2]] and rep["numeric"] == [True, False]
+    plain = diff_blocks(old, new)
+    assert "cells" not in next(op for op in plain.ops if op["t"] == "rep")
+
+
+def test_table_cells_omitted_when_rows_do_not_line_up() -> None:
+    res = diff_blocks(["a | b"], ["a | b | c"], table=True)
+    assert "cells" not in next(op for op in res.ops if op["t"] == "rep")
+
+
+# -- text rendering -----------------------------------------------------------------------
+
+
+def test_render_marks_all_op_kinds_and_context_trimming() -> None:
+    from pagewatch.engine.pipeline.render import render_marks
+
+    ctx = [f"ctx{i}" for i in range(10)]
+    old = ["h", "gone block", *ctx, "tail x"]
+    new = ["h", *ctx, "tail y", "new block"]
+    res = diff_blocks(old, new)
+    lines = render_marks(res, old, new)
+    assert lines[:2] == ["  h", "- gone block"]
+    assert (
+        "+ new block" in lines
+        and "~ [-tail x-]{+tail y+}" in lines
+        or any(ln.startswith("~ tail") for ln in lines)
+    )
+    trimmed = render_marks(res, old, new, context=2)
+    assert "  ..." in trimmed and len(trimmed) < len(lines)
+    moved_old, moved_new = ["a b", "c d", "e f"], ["c d", "e f", "a b"]
+    assert "> a b" in render_marks(diff_blocks(moved_old, moved_new), moved_old, moved_new)
+    # a degraded run (no word diff) shows the old block deleted and the new one inserted
+    big_old, big_new = ["x y z"], ["p q r"]
+    degraded = diff_blocks(big_old, big_new, max_tokens=1)
+    assert render_marks(degraded, big_old, big_new) == ["- x y z", "+ p q r"]
+
+
+def test_render_marks_keeps_a_space_after_a_bare_deletion_but_not_after_a_replacement() -> None:
+    from pagewatch.engine.pipeline.render import render_marks
+
+    assert render_marks(
+        diff_blocks(["a big cat sat"], ["a cat sat"]), ["a big cat sat"], ["a cat sat"]
+    ) == ["~ a [-big-] cat sat"]
+    assert render_marks(
+        diff_blocks(["a big cat"], ["a red cat"]), ["a big cat"], ["a red cat"]
+    ) == ["~ a [-big-]{+red+} cat"]

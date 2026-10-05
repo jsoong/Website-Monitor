@@ -33,11 +33,22 @@ MAX_CELLS = 600_000_000
 _TOKEN = re.compile(r"(\d+(?:[.,]\d+)+|\w+(?:['\u2019]\w+)*|[^\w\s])(\s*)")
 _WORD = re.compile(r"\w+")
 _HAS_WORD = re.compile(r"\w")
+_NUMERIC_CELL = re.compile(r"[\s\d.,%$\u20ac\u00a3+-]*")
+CELL_SEP = " | "
 SEP = "\n"  # block separator token inside a replace run (blocks never contain newlines)
 
 
 def count_words(text: str) -> int:
     return len(_WORD.findall(text))
+
+
+@dataclass(slots=True)
+class ChangedBlock:
+    """A block of the new page that changed, with the character intervals that did. Keyword
+    rules match against the whole ``text`` but only count matches that overlap a span."""
+
+    text: str
+    spans: list[tuple[int, int]]
 
 
 @dataclass(slots=True)
@@ -101,6 +112,29 @@ class DiffResult:
                 else:
                     regions.extend(_changed_spans(tokens))
         return [r for r in regions if r]
+
+    def change_set(self, new_texts: Sequence[str]) -> list[ChangedBlock]:
+        """Every inserted or edited block of the new page, with its changed character spans
+        (the whole block for insertions and for edits too large for a word diff)."""
+        out: list[ChangedBlock] = []
+
+        def whole(j: int) -> ChangedBlock:
+            return ChangedBlock(new_texts[j], [(0, len(new_texts[j]))])
+
+        for op in self.ops:
+            if op["t"] == "ins":
+                out.extend(whole(j) for j in range(op["new"][0], op["new"][1] + 1))
+            elif op["t"] == "rep":
+                news = list(range(op["new"][0], op["new"][1] + 1))
+                tokens = op.get("tokens")
+                per_block = _block_spans(tokens) if tokens is not None else None
+                if per_block is None or len(per_block) != len(news):
+                    out.extend(whole(j) for j in news)
+                    continue
+                for j, (text, spans) in zip(news, per_block, strict=True):
+                    # the reconstructed text must be the block's own, or offsets would lie
+                    out.append(ChangedBlock(text, spans) if text == new_texts[j] else whole(j))
+        return out
 
     def added_text(self, new_texts: Sequence[str]) -> str:
         return "\n".join(self.changed_regions(new_texts))
@@ -168,6 +202,27 @@ def _changed_spans(tokens: list[list[str]], side: str = "ins") -> list[str]:
                     spans.append((len(buf), len(buf) + len(part.rstrip())))
                 buf += part
     out.extend(_widen(buf, spans))
+    return out
+
+
+def _block_spans(tokens: list[list[str]]) -> list[tuple[str, list[tuple[int, int]]]]:
+    """New-side text of each block of a replace run with the character spans of its inserted
+    tokens (trailing whitespace excluded)."""
+    out: list[tuple[str, list[tuple[int, int]]]] = []
+    buf = ""
+    spans: list[tuple[int, int]] = []
+    for kind, text in tokens:
+        if kind == "del":
+            continue
+        for k, part in enumerate(text.split(SEP)):
+            if k:
+                out.append((buf, spans))
+                buf, spans = "", []
+            if part:
+                if kind == "ins" and part.strip():
+                    spans.append((len(buf), len(buf) + len(part.rstrip())))
+                buf += part
+    out.append((buf, spans))
     return out
 
 
@@ -335,12 +390,39 @@ def _detect_moves(
 # -- public entry -----------------------------------------------------------------------
 
 
+def _table_cells(
+    old_run: Sequence[str], new_run: Sequence[str], ignore_case: bool
+) -> tuple[list[list[int]], list[bool]] | None:
+    """Row pairs of a table: which cells changed, and whether each row's change is numeric only
+    (so a viewer can highlight just the cell). ``None`` if the rows do not line up."""
+    if len(old_run) != len(new_run):
+        return None
+    changed: list[list[int]] = []
+    numeric: list[bool] = []
+    for o, n in zip(old_run, new_run, strict=True):
+        oc, nc = o.split(CELL_SEP), n.split(CELL_SEP)
+        if len(oc) != len(nc):
+            return None
+        idx = [
+            k
+            for k, (a, b) in enumerate(zip(oc, nc, strict=True))
+            if (a.lower() != b.lower() if ignore_case else a != b)
+        ]
+        changed.append(idx)
+        numeric.append(
+            bool(idx)
+            and all(_NUMERIC_CELL.fullmatch(oc[k]) and _NUMERIC_CELL.fullmatch(nc[k]) for k in idx)
+        )
+    return changed, numeric
+
+
 def diff_blocks(
     old: Sequence[str],
     new: Sequence[str],
     *,
     ignore_case: bool = True,
     detect_moves: bool = True,
+    table: bool = False,
     differ: Differ | None = None,
     budget_s: float = BUDGET_S,
     max_blocks: int = MAX_BLOCKS,
@@ -396,6 +478,8 @@ def diff_blocks(
             else:
                 tokens, a, r, c = word_result
                 op["tokens"] = tokens
+                if table and (cells := _table_cells(old_run, new_run, ignore_case)):
+                    op["cells"], op["numeric"] = cells
                 added += a
                 removed += r
                 changed += c

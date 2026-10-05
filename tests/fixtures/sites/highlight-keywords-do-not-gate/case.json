@@ -1,0 +1,17 @@
+{
+ "description": "A highlight-only list marks terms but never decides the alert.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "highlight_keywords": "sale #red"
+  }
+ },
+ "expect": [
+  {
+   "outcome": "alert",
+   "keyword_hits": [
+    "sale"
+   ]
+  }
+ ]
+}

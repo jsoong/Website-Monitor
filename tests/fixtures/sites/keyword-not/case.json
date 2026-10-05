@@ -1,0 +1,15 @@
+{
+ "description": "NOT: the new listing is refurbished, which the rule excludes.",
+ "ext": "html",
+ "bookmark": {
+  "gate": {
+   "keywords": "laptop + -refurbished"
+  }
+ },
+ "expect": [
+  {
+   "outcome": "suppressed",
+   "reason": "keyword_miss"
+  }
+ ]
+}

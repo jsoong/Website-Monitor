@@ -401,9 +401,22 @@ class Settings(PWModel):
     disk_cap_gb: float = Field(10.0, gt=0.0)
     backlog_warning: int = Field(200, ge=1)
     transient_retry_s: float = Field(60.0, ge=1.0)
+    timezone: str | None = None  # IANA name for times/window/days; None = the system zone
     debug_logging: bool = False
     autowatch_state: Literal["running", "paused"] = "running"
     autowatch_paused_until: str | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def _tz(cls, v: str | None) -> str | None:
+        if v:
+            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+            try:
+                ZoneInfo(v)
+            except (ZoneInfoNotFoundError, ValueError) as exc:
+                raise ValueError(f"unknown time zone {v!r}") from exc
+        return v or None
 
 
 # --------------------------------------------------------------------------------------
@@ -535,6 +548,28 @@ class BookmarkOut(PWModel):
     keyword_hits: list[str] = Field(default_factory=list)
     created_at: str
     updated_at: str
+
+
+class BookmarkSummary(PWModel):
+    """The light row the bookmark list pages through (10,000 rows must stay fast)."""
+
+    id: int
+    folder_id: int | None
+    name: str
+    url: str
+    source_type: SourceType
+    check_method: CheckMethod
+    enabled: bool
+    priority: int
+    status: BookmarkStatus
+    unread: bool
+    consecutive_errors: int
+    interval_s: int | None  # effective schedule interval (the adaptive value when adaptive)
+    schedule_mode: ScheduleMode
+    next_due_at: str | None
+    last_checked_at: str | None
+    last_changed_at: str | None
+    keyword_hits: list[str] = Field(default_factory=list)
 
 
 class BulkRequest(PWModel):

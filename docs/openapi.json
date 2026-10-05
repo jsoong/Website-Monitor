@@ -1,0 +1,3390 @@
+{
+ "components": {
+  "schemas": {
+   "ActionConfig": {
+    "additionalProperties": false,
+    "properties": {
+     "params": {
+      "additionalProperties": true,
+      "title": "Params",
+      "type": "object"
+     },
+     "type": {
+      "$ref": "#/components/schemas/ActionType"
+     }
+    },
+    "required": [
+     "type"
+    ],
+    "title": "ActionConfig",
+    "type": "object"
+   },
+   "ActionType": {
+    "enum": [
+     "toast",
+     "sound",
+     "open",
+     "email",
+     "export",
+     "run_program",
+     "webhook",
+     "pushover",
+     "ntfy",
+     "scrape",
+     "script",
+     "mark_read"
+    ],
+    "title": "ActionType",
+    "type": "string"
+   },
+   "ActionsConfig": {
+    "additionalProperties": false,
+    "properties": {
+     "actions": {
+      "items": {
+       "$ref": "#/components/schemas/ActionConfig"
+      },
+      "title": "Actions",
+      "type": "array"
+     },
+     "alert_privacy": {
+      "$ref": "#/components/schemas/AlertPrivacy",
+      "default": "content"
+     }
+    },
+    "title": "ActionsConfig",
+    "type": "object"
+   },
+   "AdaptiveConfig": {
+    "additionalProperties": false,
+    "properties": {
+     "factor": {
+      "default": 1.5,
+      "exclusiveMinimum": 1.0,
+      "maximum": 10.0,
+      "title": "Factor",
+      "type": "number"
+     },
+     "max_s": {
+      "default": 86400,
+      "minimum": 60.0,
+      "title": "Max S",
+      "type": "integer"
+     },
+     "min_s": {
+      "default": 900,
+      "minimum": 60.0,
+      "title": "Min S",
+      "type": "integer"
+     }
+    },
+    "title": "AdaptiveConfig",
+    "type": "object"
+   },
+   "AlertPrivacy": {
+    "enum": [
+     "content",
+     "private"
+    ],
+    "title": "AlertPrivacy",
+    "type": "string"
+   },
+   "AuthConfig": {
+    "additionalProperties": false,
+    "properties": {
+     "kind": {
+      "default": "basic",
+      "enum": [
+       "basic",
+       "digest"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "secret_key": {
+      "title": "Secret Key",
+      "type": "string"
+     },
+     "username": {
+      "title": "Username",
+      "type": "string"
+     }
+    },
+    "required": [
+     "username",
+     "secret_key"
+    ],
+    "title": "AuthConfig",
+    "type": "object"
+   },
+   "AutowatchRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "state": {
+      "enum": [
+       "running",
+       "paused"
+      ],
+      "title": "State",
+      "type": "string"
+     },
+     "until": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Until"
+     }
+    },
+    "required": [
+     "state"
+    ],
+    "title": "AutowatchRequest",
+    "type": "object"
+   },
+   "AutowatchState": {
+    "additionalProperties": false,
+    "properties": {
+     "state": {
+      "enum": [
+       "running",
+       "paused"
+      ],
+      "title": "State",
+      "type": "string"
+     },
+     "until": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Until"
+     }
+    },
+    "required": [
+     "state"
+    ],
+    "title": "AutowatchState",
+    "type": "object"
+   },
+   "BookmarkIn": {
+    "additionalProperties": false,
+    "properties": {
+     "actions": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "items": {},
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Actions"
+     },
+     "check_method": {
+      "$ref": "#/components/schemas/CheckMethod",
+      "default": "auto"
+     },
+     "enabled": {
+      "default": true,
+      "title": "Enabled",
+      "type": "boolean"
+     },
+     "fetch": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Fetch"
+     },
+     "filter": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Filter"
+     },
+     "folder_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Folder Id"
+     },
+     "gate": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Gate"
+     },
+     "highlight_mode": {
+      "$ref": "#/components/schemas/HighlightMode",
+      "default": "standard"
+     },
+     "info1": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Info1"
+     },
+     "info2": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Info2"
+     },
+     "info3": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Info3"
+     },
+     "macro_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Macro Id"
+     },
+     "name": {
+      "anyOf": [
+       {
+        "maxLength": 300,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Name"
+     },
+     "note": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Note"
+     },
+     "plugin": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Plugin"
+     },
+     "priority": {
+      "default": 0,
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Priority",
+      "type": "integer"
+     },
+     "schedule": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Schedule"
+     },
+     "source_type": {
+      "$ref": "#/components/schemas/SourceType",
+      "default": "auto"
+     },
+     "url": {
+      "minLength": 1,
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "url"
+    ],
+    "title": "BookmarkIn",
+    "type": "object"
+   },
+   "BookmarkOut": {
+    "additionalProperties": false,
+    "properties": {
+     "actions": {
+      "$ref": "#/components/schemas/ActionsConfig"
+     },
+     "baseline_version_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Baseline Version Id"
+     },
+     "check_method": {
+      "$ref": "#/components/schemas/CheckMethod"
+     },
+     "consecutive_errors": {
+      "title": "Consecutive Errors",
+      "type": "integer"
+     },
+     "created_at": {
+      "title": "Created At",
+      "type": "string"
+     },
+     "current_interval_s": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Current Interval S"
+     },
+     "enabled": {
+      "title": "Enabled",
+      "type": "boolean"
+     },
+     "fetch": {
+      "$ref": "#/components/schemas/FetchConfig"
+     },
+     "filter": {
+      "$ref": "#/components/schemas/FilterConfig"
+     },
+     "folder_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Folder Id"
+     },
+     "gate": {
+      "$ref": "#/components/schemas/GateConfig"
+     },
+     "gate_anchor_version_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Gate Anchor Version Id"
+     },
+     "highlight_mode": {
+      "$ref": "#/components/schemas/HighlightMode"
+     },
+     "id": {
+      "title": "Id",
+      "type": "integer"
+     },
+     "info1": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Info1"
+     },
+     "info2": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Info2"
+     },
+     "info3": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Info3"
+     },
+     "keyword_hits": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Keyword Hits",
+      "type": "array"
+     },
+     "last_changed_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Changed At"
+     },
+     "last_checked_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Checked At"
+     },
+     "latest_version_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Latest Version Id"
+     },
+     "macro_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Macro Id"
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "next_due_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Next Due At"
+     },
+     "note": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Note"
+     },
+     "overrides": {
+      "additionalProperties": true,
+      "title": "Overrides",
+      "type": "object"
+     },
+     "plugin": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Plugin"
+     },
+     "priority": {
+      "title": "Priority",
+      "type": "integer"
+     },
+     "schedule": {
+      "$ref": "#/components/schemas/ScheduleConfig"
+     },
+     "source_type": {
+      "$ref": "#/components/schemas/SourceType"
+     },
+     "status": {
+      "$ref": "#/components/schemas/BookmarkStatus"
+     },
+     "unread": {
+      "title": "Unread",
+      "type": "boolean"
+     },
+     "updated_at": {
+      "title": "Updated At",
+      "type": "string"
+     },
+     "url": {
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "folder_id",
+     "name",
+     "url",
+     "source_type",
+     "check_method",
+     "enabled",
+     "priority",
+     "schedule",
+     "fetch",
+     "filter",
+     "gate",
+     "highlight_mode",
+     "actions",
+     "overrides",
+     "macro_id",
+     "plugin",
+     "info1",
+     "info2",
+     "info3",
+     "note",
+     "status",
+     "unread",
+     "consecutive_errors",
+     "current_interval_s",
+     "next_due_at",
+     "last_checked_at",
+     "last_changed_at",
+     "latest_version_id",
+     "baseline_version_id",
+     "gate_anchor_version_id",
+     "created_at",
+     "updated_at"
+    ],
+    "title": "BookmarkOut",
+    "type": "object"
+   },
+   "BookmarkPatch": {
+    "additionalProperties": false,
+    "description": "Partial update. Config dicts are merged into the stored overrides; ``null`` inside\none removes that override (the value falls back to the inherited default).",
+    "properties": {
+     "actions": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "items": {},
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Actions"
+     },
+     "check_method": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/CheckMethod"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "enabled": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Enabled"
+     },
+     "fetch": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Fetch"
+     },
+     "filter": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Filter"
+     },
+     "folder_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Folder Id"
+     },
+     "gate": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Gate"
+     },
+     "highlight_mode": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/HighlightMode"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "info1": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Info1"
+     },
+     "info2": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Info2"
+     },
+     "info3": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Info3"
+     },
+     "macro_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Macro Id"
+     },
+     "move_to_root": {
+      "default": false,
+      "title": "Move To Root",
+      "type": "boolean"
+     },
+     "name": {
+      "anyOf": [
+       {
+        "maxLength": 300,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Name"
+     },
+     "note": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Note"
+     },
+     "plugin": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Plugin"
+     },
+     "priority": {
+      "anyOf": [
+       {
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Priority"
+     },
+     "schedule": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Schedule"
+     },
+     "source_type": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/SourceType"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "url": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Url"
+     }
+    },
+    "title": "BookmarkPatch",
+    "type": "object"
+   },
+   "BookmarkStatus": {
+    "enum": [
+     "new",
+     "ok",
+     "changed",
+     "error",
+     "needs_login",
+     "disabled"
+    ],
+    "title": "BookmarkStatus",
+    "type": "string"
+   },
+   "BookmarkSummary": {
+    "additionalProperties": false,
+    "description": "The light row the bookmark list pages through (10,000 rows must stay fast).",
+    "properties": {
+     "check_method": {
+      "$ref": "#/components/schemas/CheckMethod"
+     },
+     "consecutive_errors": {
+      "title": "Consecutive Errors",
+      "type": "integer"
+     },
+     "enabled": {
+      "title": "Enabled",
+      "type": "boolean"
+     },
+     "folder_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Folder Id"
+     },
+     "id": {
+      "title": "Id",
+      "type": "integer"
+     },
+     "interval_s": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Interval S"
+     },
+     "keyword_hits": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Keyword Hits",
+      "type": "array"
+     },
+     "last_changed_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Changed At"
+     },
+     "last_checked_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Checked At"
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "next_due_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Next Due At"
+     },
+     "priority": {
+      "title": "Priority",
+      "type": "integer"
+     },
+     "schedule_mode": {
+      "$ref": "#/components/schemas/ScheduleMode"
+     },
+     "source_type": {
+      "$ref": "#/components/schemas/SourceType"
+     },
+     "status": {
+      "$ref": "#/components/schemas/BookmarkStatus"
+     },
+     "unread": {
+      "title": "Unread",
+      "type": "boolean"
+     },
+     "url": {
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "folder_id",
+     "name",
+     "url",
+     "source_type",
+     "check_method",
+     "enabled",
+     "priority",
+     "status",
+     "unread",
+     "consecutive_errors",
+     "interval_s",
+     "schedule_mode",
+     "next_due_at",
+     "last_checked_at",
+     "last_changed_at"
+    ],
+    "title": "BookmarkSummary",
+    "type": "object"
+   },
+   "BulkRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "action": {
+      "enum": [
+       "update",
+       "move",
+       "enable",
+       "disable",
+       "delete"
+      ],
+      "title": "Action",
+      "type": "string"
+     },
+     "folder_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Folder Id"
+     },
+     "ids": {
+      "items": {
+       "type": "integer"
+      },
+      "minItems": 1,
+      "title": "Ids",
+      "type": "array"
+     },
+     "patch": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/BookmarkPatch"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "ids",
+     "action"
+    ],
+    "title": "BulkRequest",
+    "type": "object"
+   },
+   "BulkResult": {
+    "additionalProperties": false,
+    "properties": {
+     "affected": {
+      "title": "Affected",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "affected"
+    ],
+    "title": "BulkResult",
+    "type": "object"
+   },
+   "ChangeOut": {
+    "additionalProperties": false,
+    "properties": {
+     "added_words": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Added Words"
+     },
+     "bookmark_id": {
+      "title": "Bookmark Id",
+      "type": "integer"
+     },
+     "changed_blocks": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Changed Blocks"
+     },
+     "checks_accumulated": {
+      "title": "Checks Accumulated",
+      "type": "integer"
+     },
+     "detected_at": {
+      "title": "Detected At",
+      "type": "string"
+     },
+     "feedback": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Feedback"
+     },
+     "id": {
+      "title": "Id",
+      "type": "integer"
+     },
+     "keyword_hits": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Keyword Hits",
+      "type": "array"
+     },
+     "new_version_id": {
+      "title": "New Version Id",
+      "type": "integer"
+     },
+     "old_version_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Old Version Id"
+     },
+     "read_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Read At"
+     },
+     "removed_words": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Removed Words"
+     },
+     "summary": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Summary"
+     }
+    },
+    "required": [
+     "id",
+     "bookmark_id",
+     "old_version_id",
+     "new_version_id",
+     "detected_at",
+     "added_words",
+     "removed_words",
+     "changed_blocks",
+     "checks_accumulated",
+     "summary",
+     "feedback",
+     "read_at"
+    ],
+    "title": "ChangeOut",
+    "type": "object"
+   },
+   "CheckMethod": {
+    "enum": [
+     "auto",
+     "static",
+     "browser",
+     "screenshot"
+    ],
+    "title": "CheckMethod",
+    "type": "string"
+   },
+   "CheckQueued": {
+    "additionalProperties": false,
+    "properties": {
+     "queued": {
+      "title": "Queued",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "queued"
+    ],
+    "title": "CheckQueued",
+    "type": "object"
+   },
+   "CheckRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "all": {
+      "default": false,
+      "title": "All",
+      "type": "boolean"
+     },
+     "folder_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Folder Id"
+     },
+     "force": {
+      "default": false,
+      "title": "Force",
+      "type": "boolean"
+     },
+     "ids": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "integer"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ids"
+     }
+    },
+    "title": "CheckRequest",
+    "type": "object"
+   },
+   "CheckRunOut": {
+    "additionalProperties": false,
+    "properties": {
+     "bookmark_id": {
+      "title": "Bookmark Id",
+      "type": "integer"
+     },
+     "bytes": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Bytes"
+     },
+     "duration_ms": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Duration Ms"
+     },
+     "finished_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Finished At"
+     },
+     "id": {
+      "title": "Id",
+      "type": "integer"
+     },
+     "method": {
+      "title": "Method",
+      "type": "string"
+     },
+     "outcome": {
+      "title": "Outcome",
+      "type": "string"
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Reason"
+     },
+     "started_at": {
+      "title": "Started At",
+      "type": "string"
+     },
+     "trigger": {
+      "title": "Trigger",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "bookmark_id",
+     "started_at",
+     "finished_at",
+     "trigger",
+     "method",
+     "outcome",
+     "reason",
+     "duration_ms",
+     "bytes"
+    ],
+    "title": "CheckRunOut",
+    "type": "object"
+   },
+   "FetchConfig": {
+    "additionalProperties": false,
+    "properties": {
+     "auth": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/AuthConfig"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "body": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Body"
+     },
+     "cookies_file": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Cookies File"
+     },
+     "headers": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "title": "Headers",
+      "type": "object"
+     },
+     "max_bytes": {
+      "default": 20971520,
+      "minimum": 1024.0,
+      "title": "Max Bytes",
+      "type": "integer"
+     },
+     "method": {
+      "default": "GET",
+      "enum": [
+       "GET",
+       "POST"
+      ],
+      "title": "Method",
+      "type": "string"
+     },
+     "proxy": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Proxy"
+     },
+     "timeout_s": {
+      "default": 30.0,
+      "maximum": 300.0,
+      "minimum": 1.0,
+      "title": "Timeout S",
+      "type": "number"
+     },
+     "user_agent": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "User Agent"
+     },
+     "verify_tls": {
+      "default": true,
+      "title": "Verify Tls",
+      "type": "boolean"
+     }
+    },
+    "title": "FetchConfig",
+    "type": "object"
+   },
+   "FilterConfig": {
+    "additionalProperties": false,
+    "properties": {
+     "builtin_cosmetic": {
+      "default": true,
+      "title": "Builtin Cosmetic",
+      "type": "boolean"
+     },
+     "cosmetic": {
+      "items": {
+       "$ref": "#/components/schemas/FilterRule"
+      },
+      "title": "Cosmetic",
+      "type": "array"
+     },
+     "ignore": {
+      "items": {
+       "$ref": "#/components/schemas/FilterRule"
+      },
+      "title": "Ignore",
+      "type": "array"
+     },
+     "special": {
+      "$ref": "#/components/schemas/SpecialFilters"
+     },
+     "watch": {
+      "items": {
+       "$ref": "#/components/schemas/FilterRule"
+      },
+      "title": "Watch",
+      "type": "array"
+     }
+    },
+    "title": "FilterConfig",
+    "type": "object"
+   },
+   "FilterRule": {
+    "additionalProperties": false,
+    "description": "One filter. ``type`` decides which of the other fields apply.\n\nselector      ``selector`` (+ ``selector_kind``): whole elements.\nbetween       ``start`` / ``end`` text markers; ``None`` means start / end of page.\ntext          ``pattern`` (+ ``pattern_kind``): spans inside block text; optional ``scope``.\nnumber_mask   digits become ``#`` in blocks inside ``scope`` (or everywhere without one).",
+    "properties": {
+     "end": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "End"
+     },
+     "inclusive": {
+      "default": false,
+      "title": "Inclusive",
+      "type": "boolean"
+     },
+     "note": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Note"
+     },
+     "pattern": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Pattern"
+     },
+     "pattern_kind": {
+      "default": "literal",
+      "enum": [
+       "literal",
+       "wildcard",
+       "regex"
+      ],
+      "title": "Pattern Kind",
+      "type": "string"
+     },
+     "scope": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Scope"
+     },
+     "selector": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Selector"
+     },
+     "selector_kind": {
+      "default": "css",
+      "enum": [
+       "css",
+       "xpath"
+      ],
+      "title": "Selector Kind",
+      "type": "string"
+     },
+     "start": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Start"
+     },
+     "type": {
+      "enum": [
+       "selector",
+       "between",
+       "text",
+       "number_mask"
+      ],
+      "title": "Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "type"
+    ],
+    "title": "FilterRule",
+    "type": "object"
+   },
+   "FolderIn": {
+    "additionalProperties": false,
+    "properties": {
+     "defaults": {
+      "additionalProperties": true,
+      "title": "Defaults",
+      "type": "object"
+     },
+     "is_virtual": {
+      "default": false,
+      "title": "Is Virtual",
+      "type": "boolean"
+     },
+     "name": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+     },
+     "parent_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Parent Id"
+     },
+     "query": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Query"
+     },
+     "sort_order": {
+      "default": 0,
+      "title": "Sort Order",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "name"
+    ],
+    "title": "FolderIn",
+    "type": "object"
+   },
+   "FolderOut": {
+    "additionalProperties": false,
+    "properties": {
+     "defaults": {
+      "additionalProperties": true,
+      "title": "Defaults",
+      "type": "object"
+     },
+     "id": {
+      "title": "Id",
+      "type": "integer"
+     },
+     "is_virtual": {
+      "title": "Is Virtual",
+      "type": "boolean"
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "parent_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Parent Id"
+     },
+     "query": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Query"
+     },
+     "sort_order": {
+      "title": "Sort Order",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "id",
+     "parent_id",
+     "name",
+     "sort_order",
+     "is_virtual",
+     "query",
+     "defaults"
+    ],
+    "title": "FolderOut",
+    "type": "object"
+   },
+   "FolderPatch": {
+    "additionalProperties": false,
+    "properties": {
+     "defaults": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Defaults"
+     },
+     "name": {
+      "anyOf": [
+       {
+        "maxLength": 200,
+        "minLength": 1,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Name"
+     },
+     "parent_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Parent Id"
+     },
+     "query": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Query"
+     },
+     "sort_order": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Sort Order"
+     }
+    },
+    "title": "FolderPatch",
+    "type": "object"
+   },
+   "GateConfig": {
+    "additionalProperties": false,
+    "properties": {
+     "blacklist": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Blacklist",
+      "type": "array"
+     },
+     "error_threshold": {
+      "default": 3,
+      "minimum": 1.0,
+      "title": "Error Threshold",
+      "type": "integer"
+     },
+     "highlight_keywords": {
+      "default": "",
+      "title": "Highlight Keywords",
+      "type": "string"
+     },
+     "ignore_removed": {
+      "default": false,
+      "title": "Ignore Removed",
+      "type": "boolean"
+     },
+     "keywords": {
+      "default": "",
+      "title": "Keywords",
+      "type": "string"
+     },
+     "min_changed_words": {
+      "default": 0,
+      "minimum": 0.0,
+      "title": "Min Changed Words",
+      "type": "integer"
+     },
+     "min_chars": {
+      "default": 0,
+      "minimum": 0.0,
+      "title": "Min Chars",
+      "type": "integer"
+     },
+     "threshold_mode": {
+      "$ref": "#/components/schemas/ThresholdMode",
+      "default": "cumulative"
+     },
+     "whitelist": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Whitelist",
+      "type": "array"
+     }
+    },
+    "title": "GateConfig",
+    "type": "object"
+   },
+   "HTTPValidationError": {
+    "properties": {
+     "detail": {
+      "items": {
+       "$ref": "#/components/schemas/ValidationError"
+      },
+      "title": "Detail",
+      "type": "array"
+     }
+    },
+    "title": "HTTPValidationError",
+    "type": "object"
+   },
+   "HealthOut": {
+    "additionalProperties": false,
+    "properties": {
+     "autowatch": {
+      "$ref": "#/components/schemas/AutowatchState"
+     },
+     "backlog_warning": {
+      "default": false,
+      "title": "Backlog Warning",
+      "type": "boolean"
+     },
+     "bookmarks": {
+      "title": "Bookmarks",
+      "type": "integer"
+     },
+     "browser_state": {
+      "default": "stopped",
+      "enum": [
+       "stopped",
+       "running",
+       "unavailable"
+      ],
+      "title": "Browser State",
+      "type": "string"
+     },
+     "in_flight": {
+      "title": "In Flight",
+      "type": "integer"
+     },
+     "on_battery": {
+      "default": false,
+      "title": "On Battery",
+      "type": "boolean"
+     },
+     "online": {
+      "default": true,
+      "title": "Online",
+      "type": "boolean"
+     },
+     "outcomes_24h": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Outcomes 24H",
+      "type": "object"
+     },
+     "pid": {
+      "title": "Pid",
+      "type": "integer"
+     },
+     "queue_length": {
+      "title": "Queue Length",
+      "type": "integer"
+     },
+     "rss_mb": {
+      "title": "Rss Mb",
+      "type": "number"
+     },
+     "uptime_s": {
+      "title": "Uptime S",
+      "type": "number"
+     },
+     "version": {
+      "title": "Version",
+      "type": "string"
+     }
+    },
+    "required": [
+     "version",
+     "uptime_s",
+     "pid",
+     "queue_length",
+     "in_flight",
+     "outcomes_24h",
+     "rss_mb",
+     "autowatch",
+     "bookmarks"
+    ],
+    "title": "HealthOut",
+    "type": "object"
+   },
+   "HighlightMode": {
+    "enum": [
+     "standard",
+     "exact",
+     "table"
+    ],
+    "title": "HighlightMode",
+    "type": "string"
+   },
+   "HostOverride": {
+    "additionalProperties": false,
+    "properties": {
+     "concurrency": {
+      "anyOf": [
+       {
+        "maximum": 32.0,
+        "minimum": 1.0,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Concurrency"
+     },
+     "min_gap_s": {
+      "anyOf": [
+       {
+        "minimum": 0.0,
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Min Gap S"
+     }
+    },
+    "title": "HostOverride",
+    "type": "object"
+   },
+   "OnBattery": {
+    "enum": [
+     "normal",
+     "slow",
+     "pause"
+    ],
+    "title": "OnBattery",
+    "type": "string"
+   },
+   "Page_BookmarkSummary_": {
+    "additionalProperties": false,
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/BookmarkSummary"
+      },
+      "title": "Items",
+      "type": "array"
+     },
+     "next_cursor": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Next Cursor"
+     },
+     "total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Total"
+     }
+    },
+    "required": [
+     "items"
+    ],
+    "title": "Page[BookmarkSummary]",
+    "type": "object"
+   },
+   "Page_ChangeOut_": {
+    "additionalProperties": false,
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/ChangeOut"
+      },
+      "title": "Items",
+      "type": "array"
+     },
+     "next_cursor": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Next Cursor"
+     },
+     "total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Total"
+     }
+    },
+    "required": [
+     "items"
+    ],
+    "title": "Page[ChangeOut]",
+    "type": "object"
+   },
+   "Page_CheckRunOut_": {
+    "additionalProperties": false,
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/CheckRunOut"
+      },
+      "title": "Items",
+      "type": "array"
+     },
+     "next_cursor": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Next Cursor"
+     },
+     "total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Total"
+     }
+    },
+    "required": [
+     "items"
+    ],
+    "title": "Page[CheckRunOut]",
+    "type": "object"
+   },
+   "ScheduleConfig": {
+    "additionalProperties": false,
+    "properties": {
+     "adaptive": {
+      "$ref": "#/components/schemas/AdaptiveConfig"
+     },
+     "days": {
+      "items": {
+       "enum": [
+        "mon",
+        "tue",
+        "wed",
+        "thu",
+        "fri",
+        "sat",
+        "sun"
+       ],
+       "type": "string"
+      },
+      "title": "Days",
+      "type": "array"
+     },
+     "interval_s": {
+      "default": 3600,
+      "minimum": 60.0,
+      "title": "Interval S",
+      "type": "integer"
+     },
+     "jitter_pct": {
+      "default": 10,
+      "maximum": 50.0,
+      "minimum": 0.0,
+      "title": "Jitter Pct",
+      "type": "integer"
+     },
+     "mode": {
+      "$ref": "#/components/schemas/ScheduleMode",
+      "default": "interval"
+     },
+     "on_battery": {
+      "$ref": "#/components/schemas/OnBattery",
+      "default": "normal"
+     },
+     "times": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Times",
+      "type": "array"
+     },
+     "window": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/Window"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "title": "ScheduleConfig",
+    "type": "object"
+   },
+   "ScheduleMode": {
+    "enum": [
+     "interval",
+     "times",
+     "adaptive",
+     "manual"
+    ],
+    "title": "ScheduleMode",
+    "type": "string"
+   },
+   "Settings": {
+    "additionalProperties": false,
+    "properties": {
+     "autowatch_paused_until": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Autowatch Paused Until"
+     },
+     "autowatch_state": {
+      "default": "running",
+      "enum": [
+       "running",
+       "paused"
+      ],
+      "title": "Autowatch State",
+      "type": "string"
+     },
+     "backlog_warning": {
+      "default": 200,
+      "minimum": 1.0,
+      "title": "Backlog Warning",
+      "type": "integer"
+     },
+     "browser_pool": {
+      "default": 3,
+      "maximum": 16.0,
+      "minimum": 1.0,
+      "title": "Browser Pool",
+      "type": "integer"
+     },
+     "debug_logging": {
+      "default": false,
+      "title": "Debug Logging",
+      "type": "boolean"
+     },
+     "default_schedule": {
+      "$ref": "#/components/schemas/ScheduleConfig"
+     },
+     "default_user_agent": {
+      "default": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      "title": "Default User Agent",
+      "type": "string"
+     },
+     "disk_cap_gb": {
+      "default": 10.0,
+      "exclusiveMinimum": 0.0,
+      "title": "Disk Cap Gb",
+      "type": "number"
+     },
+     "global_proxy": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Global Proxy"
+     },
+     "host_overrides": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/HostOverride"
+      },
+      "title": "Host Overrides",
+      "type": "object"
+     },
+     "keep_changed_versions": {
+      "default": 20,
+      "minimum": 1.0,
+      "title": "Keep Changed Versions",
+      "type": "integer"
+     },
+     "notify_on_first_check": {
+      "default": false,
+      "title": "Notify On First Check",
+      "type": "boolean"
+     },
+     "per_host_concurrency": {
+      "default": 2,
+      "maximum": 32.0,
+      "minimum": 1.0,
+      "title": "Per Host Concurrency",
+      "type": "integer"
+     },
+     "per_host_min_gap_s": {
+      "default": 2.0,
+      "minimum": 0.0,
+      "title": "Per Host Min Gap S",
+      "type": "number"
+     },
+     "startup_delay_s": {
+      "default": 30.0,
+      "minimum": 0.0,
+      "title": "Startup Delay S",
+      "type": "number"
+     },
+     "static_pool": {
+      "default": 32,
+      "maximum": 256.0,
+      "minimum": 1.0,
+      "title": "Static Pool",
+      "type": "integer"
+     },
+     "timezone": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Timezone"
+     },
+     "toast_coalesce_s": {
+      "default": 30.0,
+      "minimum": 0.0,
+      "title": "Toast Coalesce S",
+      "type": "number"
+     },
+     "transient_retry_s": {
+      "default": 60.0,
+      "minimum": 1.0,
+      "title": "Transient Retry S",
+      "type": "number"
+     },
+     "worker_processes": {
+      "default": 3,
+      "maximum": 32.0,
+      "minimum": 1.0,
+      "title": "Worker Processes",
+      "type": "integer"
+     }
+    },
+    "title": "Settings",
+    "type": "object"
+   },
+   "SourceType": {
+    "enum": [
+     "auto",
+     "html",
+     "feed",
+     "pdf",
+     "docx",
+     "xlsx",
+     "ftp",
+     "file",
+     "folder",
+     "image",
+     "binary",
+     "records"
+    ],
+    "title": "SourceType",
+    "type": "string"
+   },
+   "SpecialFilters": {
+    "additionalProperties": false,
+    "properties": {
+     "ignore_case": {
+      "default": true,
+      "title": "Ignore Case",
+      "type": "boolean"
+     },
+     "ignore_options": {
+      "default": true,
+      "title": "Ignore Options",
+      "type": "boolean"
+     },
+     "normalize_unicode": {
+      "default": true,
+      "title": "Normalize Unicode",
+      "type": "boolean"
+     },
+     "sort_content": {
+      "default": false,
+      "title": "Sort Content",
+      "type": "boolean"
+     },
+     "text_only": {
+      "default": true,
+      "title": "Text Only",
+      "type": "boolean"
+     },
+     "watch_images": {
+      "default": false,
+      "title": "Watch Images",
+      "type": "boolean"
+     },
+     "watch_links": {
+      "default": false,
+      "title": "Watch Links",
+      "type": "boolean"
+     }
+    },
+    "title": "SpecialFilters",
+    "type": "object"
+   },
+   "ThresholdMode": {
+    "enum": [
+     "cumulative",
+     "per_check"
+    ],
+    "title": "ThresholdMode",
+    "type": "string"
+   },
+   "ValidationError": {
+    "properties": {
+     "ctx": {
+      "title": "Context",
+      "type": "object"
+     },
+     "input": {
+      "title": "Input"
+     },
+     "loc": {
+      "items": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      },
+      "title": "Location",
+      "type": "array"
+     },
+     "msg": {
+      "title": "Message",
+      "type": "string"
+     },
+     "type": {
+      "title": "Error Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "loc",
+     "msg",
+     "type"
+    ],
+    "title": "ValidationError",
+    "type": "object"
+   },
+   "Window": {
+    "additionalProperties": false,
+    "properties": {
+     "end": {
+      "default": "23:59",
+      "title": "End",
+      "type": "string"
+     },
+     "start": {
+      "default": "00:00",
+      "title": "Start",
+      "type": "string"
+     }
+    },
+    "title": "Window",
+    "type": "object"
+   }
+  }
+ },
+ "info": {
+  "title": "PageWatch engine",
+  "version": "0.1.0"
+ },
+ "openapi": "3.1.0",
+ "paths": {
+  "/autowatch": {
+   "get": {
+    "operationId": "get_autowatch_autowatch_get",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AutowatchState"
+        }
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "summary": "Get Autowatch",
+    "tags": [
+     "checks"
+    ]
+   },
+   "post": {
+    "operationId": "set_autowatch_autowatch_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/AutowatchRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AutowatchState"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Set Autowatch",
+    "tags": [
+     "checks"
+    ]
+   }
+  },
+  "/bookmarks": {
+   "get": {
+    "operationId": "list_bookmarks_bookmarks_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "folder",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Folder"
+      }
+     },
+     {
+      "in": "query",
+      "name": "subfolders",
+      "required": false,
+      "schema": {
+       "default": true,
+       "title": "Subfolders",
+       "type": "boolean"
+      }
+     },
+     {
+      "in": "query",
+      "name": "status",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Status"
+      }
+     },
+     {
+      "in": "query",
+      "name": "unread",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "boolean"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Unread"
+      }
+     },
+     {
+      "in": "query",
+      "name": "enabled",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "boolean"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Enabled"
+      }
+     },
+     {
+      "in": "query",
+      "name": "q",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Q"
+      }
+     },
+     {
+      "in": "query",
+      "name": "sort",
+      "required": false,
+      "schema": {
+       "default": "id",
+       "title": "Sort",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "desc",
+      "required": false,
+      "schema": {
+       "default": false,
+       "title": "Desc",
+       "type": "boolean"
+      }
+     },
+     {
+      "in": "query",
+      "name": "cursor",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Cursor"
+      }
+     },
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 100,
+       "maximum": 500,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Page_BookmarkSummary_"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "List Bookmarks",
+    "tags": [
+     "bookmarks"
+    ]
+   },
+   "post": {
+    "operationId": "create_bookmark_bookmarks_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/BookmarkIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "201": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BookmarkOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Create Bookmark",
+    "tags": [
+     "bookmarks"
+    ]
+   }
+  },
+  "/bookmarks/bulk": {
+   "post": {
+    "operationId": "bulk_bookmarks_bulk_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/BulkRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BulkResult"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Bulk",
+    "tags": [
+     "bookmarks"
+    ]
+   }
+  },
+  "/bookmarks/{bookmark_id}": {
+   "delete": {
+    "operationId": "delete_bookmark_bookmarks__bookmark_id__delete",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Delete Bookmark",
+    "tags": [
+     "bookmarks"
+    ]
+   },
+   "get": {
+    "operationId": "get_bookmark_bookmarks__bookmark_id__get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BookmarkOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Get Bookmark",
+    "tags": [
+     "bookmarks"
+    ]
+   },
+   "patch": {
+    "operationId": "patch_bookmark_bookmarks__bookmark_id__patch",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/BookmarkPatch"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BookmarkOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Patch Bookmark",
+    "tags": [
+     "bookmarks"
+    ]
+   }
+  },
+  "/bookmarks/{bookmark_id}/changes": {
+   "get": {
+    "operationId": "list_changes_bookmarks__bookmark_id__changes_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 50,
+       "maximum": 500,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "before",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Before"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Page_ChangeOut_"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "List Changes",
+    "tags": [
+     "bookmarks"
+    ]
+   }
+  },
+  "/bookmarks/{bookmark_id}/check": {
+   "post": {
+    "operationId": "check_bookmark_bookmarks__bookmark_id__check_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "force",
+      "required": false,
+      "schema": {
+       "default": false,
+       "title": "Force",
+       "type": "boolean"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/CheckQueued"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Check Bookmark",
+    "tags": [
+     "bookmarks"
+    ]
+   }
+  },
+  "/bookmarks/{bookmark_id}/read": {
+   "post": {
+    "operationId": "mark_read_bookmarks__bookmark_id__read_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BookmarkOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Mark Read",
+    "tags": [
+     "bookmarks"
+    ]
+   }
+  },
+  "/bookmarks/{bookmark_id}/runs": {
+   "get": {
+    "operationId": "list_runs_bookmarks__bookmark_id__runs_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 100,
+       "maximum": 500,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "before",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Before"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Page_CheckRunOut_"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "List Runs",
+    "tags": [
+     "bookmarks"
+    ]
+   }
+  },
+  "/check": {
+   "post": {
+    "description": "Check a list of bookmark ids, a folder (with its subfolders), or everything.",
+    "operationId": "check_check_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/CheckRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/CheckQueued"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Check",
+    "tags": [
+     "checks"
+    ]
+   }
+  },
+  "/folders": {
+   "get": {
+    "operationId": "list_folders_folders_get",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "$ref": "#/components/schemas/FolderOut"
+         },
+         "title": "Response List Folders Folders Get",
+         "type": "array"
+        }
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "summary": "List Folders",
+    "tags": [
+     "folders"
+    ]
+   },
+   "post": {
+    "operationId": "create_folder_folders_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/FolderIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "201": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/FolderOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Create Folder",
+    "tags": [
+     "folders"
+    ]
+   }
+  },
+  "/folders/{folder_id}": {
+   "delete": {
+    "operationId": "delete_folder_folders__folder_id__delete",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "folder_id",
+      "required": true,
+      "schema": {
+       "title": "Folder Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Delete Folder",
+    "tags": [
+     "folders"
+    ]
+   },
+   "patch": {
+    "operationId": "patch_folder_folders__folder_id__patch",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "folder_id",
+      "required": true,
+      "schema": {
+       "title": "Folder Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/FolderPatch"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/FolderOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Patch Folder",
+    "tags": [
+     "folders"
+    ]
+   }
+  },
+  "/health": {
+   "get": {
+    "operationId": "health_health_get",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HealthOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "summary": "Health"
+   }
+  },
+  "/settings": {
+   "get": {
+    "operationId": "get_settings_settings_get",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Settings"
+        }
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "summary": "Get Settings",
+    "tags": [
+     "checks"
+    ]
+   },
+   "put": {
+    "description": "Partial update: only the keys given change.",
+    "operationId": "put_settings_settings_put",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "additionalProperties": true,
+        "title": "Patch",
+        "type": "object"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Settings"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Put Settings",
+    "tags": [
+     "checks"
+    ]
+   }
+  }
+ }
+}

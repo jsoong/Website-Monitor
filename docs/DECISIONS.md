@@ -48,3 +48,117 @@ is logged here with its reason. Newest entries at the bottom of each milestone s
 - **Windows `time.monotonic()` may include suspended time** on some builds, which would hide a
   sleep from the wall-vs-monotonic drift check. M5 therefore also watches heartbeat lateness
   (a timer that fires hours late) in addition to `WM_POWERBROADCAST`.
+
+## M1 · Core loop
+
+### Differ: `rapidfuzz`
+
+Differ: `rapidfuzz` (``rapidfuzz.distance.Indel.opcodes``, bit-parallel LCS in C++). Chosen by
+`tools/bench_differ.py` (medians of 5; "opcodes" is the raw differ call, "full" is the whole
+two-stage `diff_blocks` including the word diff and stats; `*` = a bound was hit and
+`degraded` set; `(n)` = edit-script size, identical across differs wherever all finished):
+
+```
+scenario                                                               difflib                  cdifflib                 rapidfuzz                       dmp
+                                                       opcodes / full (script)   opcodes / full (script)   opcodes / full (script)   opcodes / full (script)
+typical: 800 blocks, 3 edits                             0.6ms /     0.5ms (    3)     0.4ms /     0.4ms (    3)     0.0ms /     0.2ms (    3)     0.2ms /     0.4ms (    3)
+large: 5,000 blocks, 25 edits                            6.0ms /     8.4ms (   34)     3.9ms /     5.9ms (   34)     6.1ms /     8.0ms (   34)     1.5ms /     3.8ms (   34)
+reorder: 5,000 blocks, 500-block section moved           3.0ms /     3.0ms ( 1000)     2.0ms /     2.6ms ( 1000)     1.8ms /     3.4ms ( 1000)     2.2ms /     3.3ms ( 1000)
+duplicates: 5,000 blocks from 40 distinct              241.8ms /   230.0ms (   57)   165.4ms /   155.3ms (   57)     1.9ms /     3.8ms (   57)     0.8ms /     2.8ms (   57)
+rewrite: 5,000 blocks all different                      1.9ms /    30.9ms*(10000)     1.4ms /    28.4ms*(10000)     7.0ms /    34.4ms*(10000)    94.8ms /   125.4ms*(10000)
+rewrite: 20,000 blocks all different                     7.8ms /   118.7ms*(40000)     6.0ms /   113.6ms*(40000)   140.7ms /   253.8ms*(40000)  1439.0ms /  1520.2ms*(40000)
+half rewrite: 10,000 blocks, 50% replaced             5850.5ms /  6485.2ms*(10000)  1745.7ms /  2293.3ms*(10000)    37.2ms /   238.8ms (10000)   271.3ms /   499.8ms (10000)
+
+* = diff_blocks degraded (hit a bound).  (n) = size of the edit script.
+```
+
+* **difflib and cdifflib are unsafe as the stage-1 differ**: on a 10,000-block page with half the
+  blocks replaced they take 5.9 s and 1.7 s *inside a single call*, which the 2 s time budget
+  (checked between replace runs) cannot interrupt; on many-duplicate pages they are ~100x slower.
+* **fast-diff-match-patch** is good on typical pages but slow on full rewrites (1.4 s at 20,000
+  blocks) because blocks must be mapped to characters first.
+* **rapidfuzz** stays within 3-250 ms on every scenario, including a full-page rewrite at the
+  20,000-block cap (254 ms, well inside the 2 s budget). A unit test pins that bound.
+* Two extra bounds the benchmark showed were needed, both in `pipeline/diff.py`: (1) a replace run
+  is rejected on a cheap lower bound (`spaces + 1` per block) *before* tokenizing, since tokenizing
+  700k tokens just to refuse them cost ~800 ms; (2) `MAX_CELLS` (6e8) caps `len(old) * len(new)` so
+  Indel's bit matrix cannot allocate gigabytes on a pathological 100k-block page (the middle then
+  becomes one block-level replace run, `degraded`).
+* The implementation is selectable with `PAGEWATCH_DIFFER` for comparison; `DEFAULT_DIFFER_NAME`
+  lives in `pipeline/differs.py`.
+
+### Diff semantics
+
+* **Tokens follow UAX #29 word boundaries closely enough to matter:** `1,099`, `3.5.2` and `don't`
+  are single tokens; every other punctuation mark is its own token; trailing whitespace is attached
+  to the token (so `"".join` of the tokens reproduces the text, as in the spec's `"Price "`).
+  Consequence: the spec's illustrative `["del","$19"],["ins","$17"]` is, strictly, `eq "$"` then
+  `del "19"` / `ins "17"`, because the `$` is common to both sides.
+* **`stats.changed_words` added** (not in the spec's example). "Changed words" for thresholds means
+  `max(removed, added)` per change hunk, so replacing one word is one changed word, not two; pure
+  insertions and deletions count in full. `added_words`/`removed_words` keep their literal meaning.
+* **"Changed text" for keywords (M2) is block-aware.** `DiffResult.changed_regions` returns whole
+  inserted blocks and, for edited blocks, the changed spans *widened to whole whitespace-delimited
+  words*. Without this an edit `$1,299 -> $1,099` would surface only as `1,099` and the spec's
+  `num(\$([\d,.]+)) < 1200` price rule could never match.
+* **`mov` ops sit at the new position** and the old position emits nothing; moves are neither
+  counted in stats nor shown as changes in Standard mode, and are changes in Exact mode.
+* **Oversized runs set `degraded`** as well as a time-budget overrun (the spec only names the
+  latter): the output is block-level either way and the UI should say so.
+
+### Extraction
+
+* **Content after `</html>` is kept.** libxml2 silently discards anything after the closing tag,
+  which for a monitor would hide real changes (some CMSes append sections there). `</body>` and
+  `</html>` are removed before parsing, which is what browsers effectively do.
+* **`<option>`/`<select>` are block elements** so adjacent options never fuse into one word when
+  "ignore dropdown entries" is turned off.
+* **Special filters run in two places.** NFKC/invisible characters/whitespace and `<option>`
+  removal happen during extraction (idempotent text maps, equivalent to applying them last);
+  sort, link/image URL blocks and case folding happen in `special.py`. Case folding is a
+  *comparison key*, not a rewrite: stored blocks keep their original case so the viewer shows the
+  page as written.
+* **Raw-HTML mode** (`text_only: false`) compares the decoded HTML source line by line.
+
+### Gate
+
+* M1 implements rules 1-5 and 7 (including cumulative and per-check thresholds). Rule 6 (keywords)
+  and rule 8 (plugin hooks) arrive with M2 and M7. Rules 2-4 run *before* anything is stored, so a
+  rejected fetch writes no blobs and never moves a pointer (unit-tested).
+* **A cumulative alert reports the diff from the gate anchor only when a cumulative threshold is
+  active** (`min_changed_words > 0`); otherwise it reports latest -> new. `checks_accumulated` is the
+  number of stored versions newer than the anchor.
+* A **bad fetch is not an error**: it is `suppressed` with a reason and does not touch
+  `consecutive_errors`.
+
+### Runtime
+
+* **Per-host politeness lives in the scheduler's dispatch**, not in the runner. Waiting inside a
+  check would tie up one of the 32 global slots per rate-limited item (head-of-line blocking); the
+  scheduler instead keeps ready queues per host and starts only items whose host is free.
+* **The scheduler re-reads the wall clock at least every 30 s** (`MAX_IDLE_WAIT_S`) so clock
+  changes and sleep cannot strand it on a stale timer.
+* **Transient errors** (timeout, DNS, connection, 5xx/408/425/429) retry once after
+  `transient_retry_s` (60) with trigger `retry` and do not count; a second failure counts. The
+  retry marker is carried by the scheduler, not persisted: after a restart one extra free retry is
+  possible. `Retry-After` backs the whole host off.
+* **Action queue is at-least-once** (a job interrupted by a crash runs again). Jobs re-verify they
+  are still `queued` before running: an acceptance test found that a stale snapshot in the poll
+  loop could otherwise start a finished job again and send duplicate alerts.
+* **Toast coalescing**: changes within `toast_coalesce_s` (30) produce one summary toast; a lone
+  change gets its own toast with Open / Mark read. The M1 acceptance criterion "each fixture change
+  produces exactly one toast" is verified as *each change id appears in exactly one toast*, with
+  coalescing disabled for the one-at-a-time test and enabled in a dedicated test.
+* **Time zone**: `Settings.timezone` (IANA name) drives `times`/`days`/`window` through `zoneinfo`;
+  unset, the OS local zone is used (DST handled by the C library). `tzdata` is added on Windows
+  because `zoneinfo` has no system database there (PEP 615). Times in a DST gap move forward and an
+  ambiguous time fires once, at its first occurrence.
+* **Jitter never goes below the 60 s floor** (it is applied after the floor, then clamped).
+* **Randomness is injectable** (`Engine(rng=...)`) so scheduling tests are deterministic.
+* **List endpoints return `BookmarkSummary`**, a light row; the full effective config is returned
+  by `GET /bookmarks/{id}`. Paging is keyset-based on `(sort key, id)`.
+* **CLI** (`pause`/`resume`): without ids they pause/resume AutoWatch; with ids they disable/enable
+  those bookmarks.
+* **Filter edits re-normalise stored versions.** The raw-hash shortcut would otherwise hide a new
+  filter until the page changed, so `PATCH` of `filter`/`highlight_mode`/`source_type` re-runs the
+  pipeline over the versions the three pointers reference (`Engine.rebuild_versions`).

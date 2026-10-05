@@ -33,6 +33,17 @@ Data folder (`%LOCALAPPDATA%\PageWatch`, or `--data-dir`):
 | `engine/core.py` | `Engine`: owns db, blobs, pool, event bus, settings; lifecycle and `/health`. |
 | `engine/api/` | FastAPI app, ASGI guard (token, no Origin, loopback Host), `/events` WebSocket. |
 | `engine/main.py` | Entry point `pagewatch-engine`: guard → logging → engine → API → lockfile → wait. |
+| `engine/store/repo.py` | All SQL. `commit_check` applies one check atomically; `mark_read`; keyset-paged list query. |
+| `engine/config.py` | `FolderCache` and effective config: `global defaults ← folder chain ← bookmark overrides`. |
+| `engine/bookmarks.py` | Create / patch / delete service: validation, inheritance, scheduler sync, events. |
+| `engine/schedule.py` | Pure schedule math: interval, times, adaptive, days/window, jitter, battery; DST-correct. |
+| `engine/hostgate.py` | Per-host concurrency cap, request spacing, `Retry-After` back-off. |
+| `engine/scheduler.py` | Due-time heap, per-host ready queues, pools, pause/resume, manual & hotsite priority. |
+| `engine/runner.py` | One check end to end; retry-once; error counting; the atomic commit; events. |
+| `engine/fetch/` | `FetchResult`/`FetchError`; `static.py` (httpx, HTTP/2, conditional GET, body cap). |
+| `engine/pipeline/` | `extract` (bytes→blocks), `special` filters, `differs` (pluggable) + `diff` (two-stage), `gate`, `render`, `core` (the worker entry points). |
+| `engine/actions/` | `toast` (coalesced), `builtin` (action registry), `queue` (durable job runner). |
+| `cli/` | `pagewatch-cli`: a synchronous client of the local API. |
 
 ## Rules that hold everywhere
 
@@ -47,3 +58,40 @@ Data folder (`%LOCALAPPDATA%\PageWatch`, or `--data-dir`):
 The API binds `127.0.0.1` on a random port. Every request needs `Authorization: Bearer <token>`
 (token regenerated at every start, in `engine.lock`, owner-only). Requests with an `Origin`
 header or a non-loopback `Host` are rejected. WebSockets send the token in their first message.
+
+## Life of a check (as built)
+
+```
+Scheduler ──due──▶ ready queue (per host) ──host gate + pool──▶ Runner.run(id, trigger)
+   │                                                               │
+   │                                  db.read: bookmark + latest/anchor versions
+   │                                  db.write: check_run(started)           ◀── crash here = "interrupted"
+   │                                  StaticFetcher (httpx; If-None-Match / If-Modified-Since)
+   │                                  WorkerPool ▶ process_check(job)
+   │                                       1. raw hash == latest.raw_hash?      → unchanged_raw (stop)
+   │                                       2. parse → blocks → special filters
+   │                                          filtered hash == latest's?         → unchanged (stop)
+   │                                       3. bad-fetch gate (min chars/blacklist/whitelist) → rejected (stop)
+   │                                       4. write raw + blocks blobs; diff latest→new (+ anchor→new)
+   │                                       5. gate verdict (ignore-removed, thresholds)
+   │                                  db.write: commit_check  (ONE transaction)
+   │                                       version, change, latest/baseline/anchor pointers,
+   │                                       next_due_at + adaptive interval, action_job rows, check_run(finished)
+   ◀── RunResult(next_due, next_trigger) ──  events: check_finished, change_detected, bookmark_updated
+                                              ActionQueue.kick() ▶ toast / sound / open / mark_read ...
+```
+
+### The three pointers
+
+| Pointer | Moves when | Used for |
+| --- | --- | --- |
+| `latest_version_id` | every good fetch whose filtered text changed (alerted or not) | what every check compares against; keeps the unchanged shortcut working |
+| `baseline_version_id` | mark read (and the first check) | start of the viewer's diff: unread changes accumulate until read |
+| `gate_anchor_version_id` | an alert, or mark read (and the first check) | cumulative word thresholds compare the new page with this |
+
+### Bounds worth knowing
+
+* Worker work per check is bounded: diff budget 2 s, 20,000 blocks, 5,000 tokens per replace run,
+  6×10⁸ alignment cells; exceeding any sets `degraded` on the diff.
+* The scheduler wakes at least every 30 s; the action queue every 60 s.
+* The API list endpoints are keyset-paged (`limit` ≤ 500).

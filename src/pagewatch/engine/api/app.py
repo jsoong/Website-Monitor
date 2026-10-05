@@ -7,7 +7,12 @@ from typing import TYPE_CHECKING
 from fastapi import FastAPI
 
 from pagewatch import __version__
-from pagewatch.engine.api import routes_health
+from pagewatch.engine.api import (
+    routes_bookmarks,
+    routes_checks,
+    routes_folders,
+    routes_health,
+)
 from pagewatch.engine.api.guard import GuardMiddleware
 
 if TYPE_CHECKING:
@@ -25,5 +30,8 @@ def create_app(engine: Engine) -> FastAPI:
     )
     app.state.engine = engine
     app.include_router(routes_health.router)
+    app.include_router(routes_folders.router)
+    app.include_router(routes_bookmarks.router)
+    app.include_router(routes_checks.router)
     app.add_middleware(GuardMiddleware, token=lambda: engine.token)
     return app

@@ -22,6 +22,7 @@ dependencies = [
     "rapidfuzz>=3.9",
     "cdifflib>=1.2",
     "fast-diff-match-patch>=2.1",
+    "tzdata>=2024.1; sys_platform == 'win32'",
     "windows-toasts>=1.1; sys_platform == 'win32'",
     "pystray>=0.19; sys_platform == 'win32'",
 ]

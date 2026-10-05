@@ -46,6 +46,9 @@ Data folder (`%LOCALAPPDATA%\PageWatch`, or `--data-dir`):
 | `engine/pipeline/keywords.py` | Keyword language: parser and evaluator (`page()`, `num()`, `[same_block]`, `[near N]`, NOT). |
 | `engine/pipeline/autofilter.py` | False-positive -> proposed ignore rules, verified; `data/volatile_patterns.yaml`. |
 | `engine/changes.py` | Test filter and false-positive operations behind `routes_changes.py`. |
+| `engine/pipeline/viewer.py` | HTML views: text view, in-page highlight (offset mapping through raw text nodes), sanitising, CSP. |
+| `engine/pipeline/detect.py` | Resource classification and JavaScript-shell detection. |
+| `engine/tray.py` | `TrayController` (state, menu) + Windows `pystray` adapter; icons drawn with Pillow. |
 | `engine/actions/` | `toast` (coalesced), `builtin` (action registry), `queue` (durable job runner). |
 | `cli/` | `pagewatch-cli`: a synchronous client of the local API. |
 
@@ -99,3 +102,16 @@ Scheduler ──due──▶ ready queue (per host) ──host gate + pool──
   6×10⁸ alignment cells; exceeding any sets `degraded` on the diff.
 * The scheduler wakes at least every 30 s; the action queue every 60 s.
 * The API list endpoints are keyset-paged (`limit` ≤ 500).
+
+## The UI (`pagewatch.ui`, optional `ui` extra)
+
+```
+MainWindow ── FolderTree (built-ins + folders + counts) ─┐
+           ── QTableView ◀── BookmarkListModel ◀── ApiClient (httpx, worker threads) ──▶ engine API
+           ── ViewerPanel (history list, toggles, tab bar) ── one shared QWebEngineView
+           ── EventStream (QWebSocket /events) ──▶ refresh rows / counts / viewer
+dialogs:   BookmarkEditor · AddBookmarkDialog · FalsePositiveDialog
+```
+
+Closing the window stops only its own timers and WebSocket; the engine is a separate process and
+keeps checking. Lazy list: the engine pages (`/bookmarks` keyset cursor), the model appends.

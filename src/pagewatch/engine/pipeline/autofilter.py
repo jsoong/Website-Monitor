@@ -14,6 +14,7 @@ only ``verified`` if the false positive disappears. Nothing is saved here; the u
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -178,8 +179,24 @@ def _candidates(
     return out
 
 
+class MemoryBlobStore:
+    """In-memory content-addressed store: lets ``propose`` run over samples that must never
+    be persisted (the add-bookmark preview)."""
+
+    def __init__(self) -> None:
+        self._data: dict[str, bytes] = {}
+
+    def put(self, data: bytes) -> str:
+        digest = hashlib.sha256(data).hexdigest()
+        self._data[digest] = data
+        return digest
+
+    def get(self, digest: str) -> bytes:
+        return self._data[digest]
+
+
 def propose(
-    store: BlobStore,
+    store: BlobStore | MemoryBlobStore,
     *,
     old_raw: str,
     new_raw: str,

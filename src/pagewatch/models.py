@@ -616,6 +616,21 @@ class BookmarkSummary(PWModel):
     keyword_hits: list[str] = Field(default_factory=list)
 
 
+class FolderCounts(PWModel):
+    total: int
+    unread: int
+
+
+class BookmarkCounts(PWModel):
+    total: int
+    unread: int
+    errors: int
+    needs_login: int
+    changed_today: int
+    keyword_hits: int
+    by_folder: dict[int, FolderCounts]  # key 0 = bookmarks outside any folder
+
+
 class BulkRequest(PWModel):
     ids: list[int] = Field(min_length=1)
     action: Literal["update", "move", "enable", "disable", "delete"]
@@ -709,6 +724,48 @@ class FalsePositiveOut(PWModel):
     resolves_all: bool  # all proposals together remove the change
     remaining_changed_blocks: int
     patch: dict[str, Any]  # a ready `PATCH /bookmarks/{id}` body adding the proposals
+
+
+class RenderOut(PWModel):
+    """A rendered view (``format=json``); ``GET`` without it returns the HTML itself."""
+
+    html: str
+    view: str  # the view actually produced (highlight falls back to text for non-HTML)
+    identical: bool = False  # nothing unread: baseline == latest
+    degraded: bool = False  # too large for a word-level diff
+    stats: dict[str, int] = Field(default_factory=dict)
+
+
+class PreviewRequest(PWModel):
+    url: str = Field(min_length=1)
+    fetch: dict[str, Any] | None = None
+    source_type: SourceType = SourceType.AUTO
+    check_method: CheckMethod = CheckMethod.AUTO
+    samples: int = Field(1, ge=1, le=3)  # fetch this many times to find what already differs
+    gap_s: float = Field(5.0, ge=0.0, le=60.0)
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, v: str) -> str:
+        return BookmarkIn.model_validate({"url": v}).url
+
+
+class PreviewOut(PWModel):
+    final_url: str
+    status: int | None
+    content_type: str
+    kind: str  # page | js-app | feed | pdf | docx | xlsx | json | text | image | binary
+    method: str  # the method auto-detection would pick: static | browser
+    js_app: bool
+    readable_chars: int
+    words: int
+    blocks: int
+    html: str  # the page as the viewer would show it (sanitised)
+    unstable_blocks: int = 0  # blocks that differed between the samples
+    proposals: list[ProposalOut] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    error: str | None = None
+    elapsed_ms: int = 0
 
 
 class AutowatchRequest(PWModel):

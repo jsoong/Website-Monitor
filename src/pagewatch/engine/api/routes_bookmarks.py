@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -12,9 +13,11 @@ from pagewatch.engine.api.serializers import (
     change_out,
     check_run_out,
 )
+from pagewatch.engine.clock import iso
 from pagewatch.engine.core import Engine
 from pagewatch.engine.store import repo
 from pagewatch.models import (
+    BookmarkCounts,
     BookmarkIn,
     BookmarkOut,
     BookmarkPatch,
@@ -53,6 +56,8 @@ async def list_bookmarks(
     unread: bool | None = None,
     enabled: bool | None = None,
     q: str | None = None,
+    changed_since: str | None = None,
+    keyword_hits: bool | None = None,
     sort: str = "id",
     desc: bool = False,
     cursor: str | None = None,
@@ -64,16 +69,30 @@ async def list_bookmarks(
             folder_ids = repo.folder_with_descendants(conn, folder) if subfolders else [folder]
         return repo.bookmark_query(
             conn, folder_ids=folder_ids, status=status, unread=unread, enabled=enabled,
-            q=q, sort=sort, desc=desc, cursor=cursor, limit=limit,
+            q=q, changed_since=changed_since, keyword_hits=keyword_hits,
+            sort=sort, desc=desc, cursor=cursor, limit=limit,
         )  # fmt: skip
 
+    def read_page(conn: Any) -> Any:
+        rows, nxt, total = read(conn)
+        return rows, nxt, total, repo.unread_keyword_hits(conn, [r["id"] for r in rows])
+
     try:
-        rows, nxt, total = await engine.db.read(read)
+        rows, nxt, total, hits = await engine.db.read(read_page)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    return Page[BookmarkSummary](
-        items=[bookmark_summary(engine, r) for r in rows], next_cursor=nxt, total=total
-    )
+    items = [bookmark_summary(engine, r) for r in rows]
+    for item in items:
+        item.keyword_hits = hits.get(item.id, [])
+    return Page[BookmarkSummary](items=items, next_cursor=nxt, total=total)
+
+
+@router.get("/bookmarks/counts", response_model=BookmarkCounts)
+async def counts(engine: EngineDep) -> BookmarkCounts:
+    """Totals for the folder tree and the built-in virtual folders."""
+    since = iso(engine.clock.now() - timedelta(hours=24))
+    data = await engine.db.read(lambda c: repo.bookmark_counts(c, since))
+    return BookmarkCounts.model_validate(data)
 
 
 @router.post("/bookmarks", response_model=BookmarkOut, status_code=201)

@@ -1,14 +1,21 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from pagewatch.engine import bookmarks as svc
 from pagewatch.engine import changes as ops
 from pagewatch.engine.api.app_deps import engine_dep
 from pagewatch.engine.core import Engine
-from pagewatch.models import FalsePositiveOut, TestFilterOut, TestFilterRequest
+from pagewatch.models import (
+    FalsePositiveOut,
+    PreviewOut,
+    PreviewRequest,
+    RenderOut,
+    TestFilterOut,
+    TestFilterRequest,
+)
 
 router = APIRouter(tags=["changes"])
 EngineDep = Annotated[Engine, Depends(engine_dep)]
@@ -40,4 +47,67 @@ async def false_positive(change_id: int, engine: EngineDep) -> FalsePositiveOut:
     try:
         return await ops.flag_false_positive(engine, change_id)
     except (svc.NotFoundError, ops.ConflictError) as exc:
+        raise _http(exc) from exc
+
+
+def _html_or_json(out: RenderOut, fmt: str) -> Response | RenderOut:
+    if fmt == "json":
+        return out
+    return Response(
+        content=out.html,
+        media_type="text/html",
+        headers={
+            "X-PageWatch-View": out.view,
+            "X-PageWatch-Identical": str(out.identical).lower(),
+            "X-PageWatch-Degraded": str(out.degraded).lower(),
+        },
+    )
+
+
+@router.get("/changes/{change_id}/render", response_model=None)
+async def render_change(
+    change_id: int,
+    engine: EngineDep,
+    view: Literal["highlight", "text", "new", "old", "screenshot"] = "highlight",
+    format: Literal["html", "json"] = "html",
+    images: bool = False,
+    context: Annotated[int | None, Query(ge=0, le=100)] = None,
+) -> Response | RenderOut:
+    """One change's own gate diff (the history view), as sanitised HTML (or ``format=json``)."""
+    try:
+        out = await ops.render_change(engine, change_id, view, allow_remote=images, context=context)
+    except (svc.NotFoundError, ops.ConflictError, svc.InvalidError) as exc:
+        raise _http(exc) from exc
+    return _html_or_json(out, format)
+
+
+@router.get("/bookmarks/{bookmark_id}/diff", response_model=None)
+async def unread_diff(
+    bookmark_id: int,
+    engine: EngineDep,
+    view: Literal["highlight", "text", "new", "old"] = "highlight",
+    format: Literal["html", "json"] = "html",
+    images: bool = False,
+    context: Annotated[int | None, Query(ge=0, le=100)] = None,
+) -> Response | RenderOut:
+    """The viewer's default: everything unread (last-read version -> latest). ``view=new`` and
+    ``view=old`` return the stored pages unmarked."""
+    try:
+        if view in ("new", "old"):
+            out = await ops.render_version(engine, bookmark_id, view, allow_remote=images)
+        else:
+            out = await ops.render_unread(
+                engine, bookmark_id, view, allow_remote=images, context=context
+            )
+    except (svc.NotFoundError, ops.ConflictError, svc.InvalidError) as exc:
+        raise _http(exc) from exc
+    return _html_or_json(out, format)
+
+
+@router.post("/preview", response_model=PreviewOut)
+async def preview(body: PreviewRequest, engine: EngineDep) -> PreviewOut:
+    """Trial fetch of a URL and options for the add-bookmark assistant; nothing is stored."""
+    try:
+        return await ops.run_preview(engine, body)
+    except (svc.InvalidError, svc.NotFoundError) as exc:
         raise _http(exc) from exc

@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urljoin
 
@@ -55,6 +55,9 @@ class Block:
     # Document-order key (owner element index, sequence); only filled in when a caller asks
     # for it (merging several watch regions). Never serialised.
     order: tuple[int, int] = (0, 0)
+    # The raw text nodes the block's text was built from, in order: (owner element,
+    # "text" | "tail", raw string). Only recorded on request (the viewer); never serialised.
+    pieces: tuple[tuple[Any, str, str], ...] = field(default=(), compare=False, repr=False)
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {"p": self.path, "k": self.kind, "t": self.text}
@@ -146,13 +149,14 @@ def parse_html(text: str) -> Any | None:
 
 
 class _Ctx:
-    __slots__ = ("el", "images", "kind", "links", "parts", "path")
+    __slots__ = ("el", "images", "kind", "links", "parts", "path", "pieces")
 
     def __init__(self, path: str, kind: str, links: list[str], el: Any = None) -> None:
         self.el = el
         self.path = path
         self.kind = kind
         self.parts: list[str] = []
+        self.pieces: list[tuple[Any, str, str]] = []
         self.links = links
         self.images: list[str] = []
 
@@ -165,8 +169,10 @@ class _Extractor:
         ignore_options: bool,
         nfkc: bool,
         index_of: dict[Any, int] | None = None,
+        record: bool = False,
     ) -> None:
         self.index_of = index_of
+        self.record = record
         self.base_url = base_url
         self.ignore_options = ignore_options
         self.nfkc = nfkc
@@ -187,9 +193,11 @@ class _Extractor:
                         _dedupe(ctx.links),
                         _dedupe(ctx.images),
                         self._order(ctx.el),
+                        tuple(ctx.pieces),
                     )
                 )
         ctx.parts.clear()
+        ctx.pieces = []
         ctx.links = list(self._hrefs)
         ctx.images = []
 
@@ -210,7 +218,7 @@ class _Extractor:
             return self.blocks
         ctx = self._new(path, tag, root)
         if as_block or tag in BLOCK_TAGS:
-            self._add(ctx, root.text)
+            self._add(ctx, root.text, root, "text")
             self._children(root, path, ctx)
             self._flush(ctx)
         else:  # an inline element chosen as a watch region: treat it as one block
@@ -218,20 +226,22 @@ class _Extractor:
             self._flush(ctx)
         return self.blocks
 
-    def _add(self, ctx: _Ctx, text: str | None) -> None:
+    def _add(self, ctx: _Ctx, text: str | None, owner: Any = None, attr: str = "") -> None:
         if text:
             ctx.parts.append(text)
+            if self.record and owner is not None:
+                ctx.pieces.append((owner, attr, text))
 
     def _children(self, el: Any, path: str, ctx: _Ctx) -> None:
         counters: dict[str, int] = {}
         for child in el:
             tag = child.tag
             if not isinstance(tag, str):  # comment, processing instruction, entity
-                self._add(ctx, child.tail)
+                self._add(ctx, child.tail, child, "tail")
                 continue
             counters[tag] = counters.get(tag, 0) + 1
             self._element(child, f"{path}/{tag}[{counters[tag]}]", ctx)
-            self._add(ctx, child.tail)
+            self._add(ctx, child.tail, child, "tail")
 
     def _element(self, el: Any, path: str, ctx: _Ctx) -> None:
         tag: str = el.tag
@@ -249,7 +259,7 @@ class _Extractor:
         if tag in BLOCK_TAGS:
             self._flush(ctx)
             inner = self._new(path, tag, el)
-            self._add(inner, el.text)
+            self._add(inner, el.text, el, "text")
             self._children(el, path, inner)
             self._flush(inner)
             return
@@ -265,7 +275,7 @@ class _Extractor:
             src = _clean_url(el.get("src") or el.get("data-src"), self.base_url)
             if src:
                 ctx.images.append(src)
-        self._add(ctx, el.text)
+        self._add(ctx, el.text, el, "text")
         self._children(el, path, ctx)
         if pushed:
             self._hrefs.pop()
@@ -370,12 +380,15 @@ def extract_blocks(
     path: str | None = None,
     as_block: bool = False,
     index_of: dict[Any, int] | None = None,
+    record: bool = False,
 ) -> list[Block]:
     """Extract the blocks of ``root`` (the document, or a watched sub-tree). Elements marked
     with ``data-pw-skip`` are skipped but keep their place in every DOM path."""
     if root is None:
         return []
-    ex = _Extractor(base_url, ignore_options=ignore_options, nfkc=nfkc, index_of=index_of)
+    ex = _Extractor(
+        base_url, ignore_options=ignore_options, nfkc=nfkc, index_of=index_of, record=record
+    )
     return ex.run(root, path if path is not None else element_path(root), as_block=as_block)
 
 

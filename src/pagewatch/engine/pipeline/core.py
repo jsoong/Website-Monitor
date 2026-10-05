@@ -472,3 +472,174 @@ def test_filter(job: TestFilterJob) -> TestFilterResult:
         old, new, render_marks(diff, old, new), diff.to_json(), verdict.alert, verdict.reason,
         verdict.keyword_hits if not bad else [], False, warnings,
     )  # fmt: skip
+
+
+# -- views --------------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class ViewVersion:
+    raw_hash: str | None
+    content_type: str
+    blocks_hash: str
+
+
+@dataclass(slots=True)
+class RenderJob:
+    blob_root: str
+    view: str  # highlight | text | new | old
+    url: str
+    new: ViewVersion | None
+    old: ViewVersion | None
+    diff_hash: str | None = None
+    filter_cfg: dict[str, Any] = field(default_factory=dict)
+    highlight_mode: str = "standard"
+    allow_remote: bool = False
+    context: int | None = None
+
+
+@dataclass(slots=True)
+class RenderResult:
+    html: str
+    view: str  # the view actually produced (highlight falls back to text)
+    identical: bool = False
+    degraded: bool = False
+    stats: dict[str, int] = field(default_factory=dict)
+
+
+def render_view(job: RenderJob) -> RenderResult:
+    """Render a stored version or the diff between two stored versions as a sanitised
+    HTML document. Reads blobs only."""
+    from pagewatch.engine.pipeline import viewer
+
+    store = BlobStore(Path(job.blob_root))
+    if job.view in ("new", "old"):
+        v = job.new if job.view == "new" else job.old
+        if v is None or not v.raw_hash:
+            return RenderResult(
+                viewer.wrap_document('<div class="pw-note">No stored copy of this version.</div>'),
+                job.view,
+            )
+        plain = viewer.render_plain(
+            store.get(v.raw_hash), v.content_type, job.url, allow_remote=job.allow_remote
+        )
+        return RenderResult(
+            viewer.wrap_document(plain, allow_remote=job.allow_remote, base_url=job.url), job.view
+        )
+
+    assert job.new is not None
+    fcfg = FilterConfig.model_validate(job.filter_cfg)
+    new_blocks = _load(store, job.new.blocks_hash)
+    old_blocks = _load(store, job.old.blocks_hash) if job.old is not None else []
+    new_texts, old_texts = _texts(new_blocks), _texts(old_blocks)
+    if job.diff_hash:
+        diff = DiffResult.from_json(store.get_json(job.diff_hash))
+    else:
+        mode = HighlightMode(job.highlight_mode)
+        diff = diff_blocks(
+            old_texts, new_texts, ignore_case=fcfg.special.ignore_case,
+            detect_moves=_moves(mode), table=mode is HighlightMode.TABLE,
+        )  # fmt: skip
+    identical = job.old is not None and old_texts == new_texts
+    produced = "text"
+    body: str | None = None
+    if job.view == "highlight" and job.new.raw_hash:
+        body = viewer.render_highlight(
+            store.get(job.new.raw_hash), job.new.content_type, job.url, new_blocks, old_texts,
+            diff, nfkc=fcfg.special.normalize_unicode, ignore_options=fcfg.special.ignore_options,
+            allow_remote=job.allow_remote,
+        )  # fmt: skip
+        if body is not None:
+            produced = "highlight"
+    if body is None:
+        body = viewer.render_text(diff, old_texts, new_texts, context=job.context)
+    if identical:
+        body = (
+            '<div class="pw-note">No unread changes: this is the last page you read.</div>' + body
+        )
+    return RenderResult(
+        viewer.wrap_document(body, allow_remote=job.allow_remote, base_url=job.url),
+        produced,
+        identical,
+        diff.degraded,
+        diff.stats,
+    )
+
+
+# -- preview ------------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class PreviewJob:
+    samples: list[tuple[bytes, str]]  # (body, content type), fetched `gap` apart
+    url: str
+    source_type: str
+    filter_cfg: dict[str, Any]
+
+
+@dataclass(slots=True)
+class PreviewAnalysis:
+    kind: str
+    js_app: bool
+    chars: int
+    words: int
+    blocks: int
+    html: str
+    unstable_blocks: int
+    proposals: list[Any]
+    warnings: list[str]
+
+
+def preview_analyze(job: PreviewJob) -> PreviewAnalysis:
+    """What the add-bookmark assistant shows: type, size, a rendered page, and (given two
+    samples) which blocks already differ between fetches, with proposed ignore filters."""
+    from pagewatch.engine.pipeline import autofilter, detect, viewer
+
+    fcfg = FilterConfig.model_validate(job.filter_cfg)
+    warnings: list[str] = []
+    body, ctype = job.samples[0]
+    raw_hash = sha256_hex(body)
+    blocks = build_blocks(body, ctype, job.url, job.source_type, fcfg, raw_hash, warnings.append)
+    texts = _texts(blocks)
+    chars = sum(len(t) for t in texts)
+    kind = detect.classify(ctype, body, chars)
+    js_app = kind == "js-app"
+    html = viewer.wrap_document(viewer.render_plain(body, ctype, job.url), base_url=job.url)
+
+    unstable = 0
+    proposals: list[Any] = []
+    if len(job.samples) > 1:
+        mem = autofilter.MemoryBlobStore()
+        first = mem.put(body)
+        for other, other_type in job.samples[1:]:
+            other_blocks = _texts(
+                build_blocks(
+                    other,
+                    other_type,
+                    job.url,
+                    job.source_type,
+                    fcfg,
+                    sha256_hex(other),
+                    warnings.append,
+                )
+            )
+            diff = diff_blocks(texts, other_blocks, ignore_case=fcfg.special.ignore_case)
+            if diff.is_empty:
+                continue
+            unstable += diff.changed_blocks
+            result = autofilter.propose(
+                mem,
+                old_raw=first,
+                new_raw=mem.put(other),
+                old_ctype=ctype,
+                new_ctype=other_type,
+                url=job.url,
+                source_type=job.source_type,
+                filter_cfg=job.filter_cfg,
+                highlight_mode="standard",
+            )
+            proposals.extend(result.proposals)
+    return PreviewAnalysis(
+        kind, js_app, chars, sum(count_words(t) for t in texts), len(blocks), html, unstable,
+        proposals, warnings,
+    )  # fmt: skip

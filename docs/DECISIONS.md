@@ -257,3 +257,81 @@ half rewrite: 10,000 blocks, 50% replaced             5850.5ms /  6485.2ms*(1000
 * Writing the corpus before running it caught two defects: the keyword/flip-back problem above and
   a wrong test expectation about word counts.
 * The renderer prints a replaced word as `$[-19-]{+17+}` (no space between the marks).
+
+## M3 · Desktop UI
+
+### Engine side (the UI is only a client)
+
+* **Views are rendered in the engine, in the worker pool, as sanitised HTML** (`pipeline/viewer.py`):
+  `highlight` (the new version's own HTML with `<ins class="pw-add">` / `<del class="pw-del">`
+  injected at each changed block's DOM path), `text` (blocks with inline marks, always works),
+  `new` / `old` (stored pages, unmarked). The UI never parses or sanitises page content itself.
+* **Highlights are injected at exact character offsets, through inline markup.** The extractor can
+  record the raw text nodes each block was built from; changed offsets of the normalised text
+  (whitespace collapsed, NFKC) are mapped back through those nodes, so a change inside
+  `<a><b>text</b></a>` is wrapped inside the `<b>`. Where mapping is impossible (table rows; a block
+  whose text a text filter altered; combining sequences) the block or changed *cell* gets a class
+  instead (`pw-ins-block`, `pw-rep-block`, `pw-changed-cell`). Edge whitespace stays outside the mark.
+* **Deleted blocks are shown in place** (before the next surviving block, using a `tr`/`li`/`div`
+  holder that is valid where it lands) *and* in a side panel; the viewer's "deletions" toggle is a
+  class on `<body>` (`pw-del-inline | panel | none`), so toggling needs no round trip.
+* **Sanitising**: nh3 allow-list (no script, style, form, iframe, object, svg, event handlers, `javascript:`
+  URLs), `rel="noopener noreferrer nofollow"` on links, and a Content-Security-Policy meta
+  (`default-src 'none'`). Remote images become `[alt]` placeholders and remote stylesheets are removed
+  unless the caller passes `images=true`, which relaxes only `img-src`/`style-src` and adds `<base>`.
+  `QWebEngineView` additionally refuses navigation and sends link clicks to the OS browser.
+* **The viewer's default diff (`GET /bookmarks/{id}/diff`) is baseline -> latest**, computed in the pool
+  and cached as one `view_diff_cache` row per bookmark. The commit that moves either pointer deletes the
+  row; the cache write re-checks the pointers so a slow computation cannot store a stale pair. The history
+  view (`GET /changes/{id}/render`) uses each change's own gate diff blob. Both return HTML (with
+  `X-PageWatch-*` headers) or `format=json`. `view=screenshot` answers 404 until M4 stores screenshots.
+* **`POST /preview`** (add assistant) fetches once or up to three times `gap_s` apart on the engine
+  clock, builds blocks, classifies the resource (`page | js-app | feed | pdf | json | ...`; a JavaScript
+  shell is detected by < 200 readable characters or an empty app mount point) and, with two samples,
+  proposes ignore filters for whatever already differs, reusing the false-positive machinery over an
+  in-memory blob store. Nothing is persisted; a fetch failure is a 200 with `error` set.
+* **List endpoint additions** for the built-in folders: `changed_since`, `keyword_hits`, per-row
+  `keyword_hits` (from unread changes), and `GET /bookmarks/counts` (totals, built-ins, per-folder unread).
+* **Tray** (`engine/tray.py`): `TrayController` holds all logic (state precedence offline > paused >
+  error > unread > normal, tooltips, the six menu actions, refresh on events and every 30 s) and is
+  tested here; `PystrayBackend` and the Windows dark-mode registry read are the thin Windows-only parts
+  (manual check, M8). Menu callbacks run on the tray's thread and hop onto the engine loop. Icons are
+  drawn with Pillow (now a regular dependency: pystray requires it and M4's pixel diff will use it).
+* `Engine.drain_background()` waits for fire-and-forget work (re-normalising after a filter edit).
+
+### UI
+
+* **PySide6 is an optional extra** (`uv sync --extra ui`); the engine has no Qt dependency.
+* **Threading**: API calls are blocking `httpx` on a `QThreadPool`; `ui/workers.run_async` delivers the
+  result *on the GUI thread* through a dispatcher QObject (a plain callable connected to a signal would
+  run on the worker thread). Live events use `QWebSocket` (token as the first message, auto-reconnect).
+* **The bookmark list is paged by the engine, not by Qt**: `fetchMore` requests the next keyset page
+  (200 rows); sort and filter are engine queries; a generation counter drops answers to a superseded
+  query. Measured with 10,000 bookmarks against a real engine over HTTP (offscreen Qt, one machine):
+  first page 49 ms, worst scroll page 107 ms, sort 41-44 ms, text filter 56 ms, unread/error filters
+  43/28 ms, 10,000 `data()` calls 110 ms (spec budget: < 200 ms for scroll, sort and filter).
+* **One shared `QWebEngineView`** sits behind the viewer's tab bar (Highlighted, Text diff, New, Old
+  are four renderings into it), so a window costs one Chromium view, not four.
+* **Keyboard**: N or Space next unread, R mark read, O open URL, F flag false positive, C check
+  selected, Ctrl+E edit, Ctrl+N add, Ctrl+Shift+C check all, Ctrl+P AutoWatch, Ctrl+F search,
+  Ctrl+1..6 viewer tabs, Delete. Shortcuts are window-wide actions, so they work from any pane, and a
+  focused text field keeps its own typing (Qt's ShortcutOverride). "Next unread" pages through the lazy
+  list when the next unread row has not been loaded yet, and wraps once.
+* **Status bar**: viewer notes ("Nothing unread", "Large change: shown by block") and action feedback
+  ("Queued 3 checks", "No more unread changes") have separate labels; they originally shared one and
+  the late render of a just-read bookmark overwrote the end-of-review message (found by the
+  keyboard-only test).
+* **Bookmark editor** edits *effective* values and sends only the difference as a `PATCH`, so untouched
+  settings stay inherited; opening and saving an untouched bookmark sends nothing. Bulk edit sends the
+  full values of the tabs the user ticks. Filter rules are normalised through `FilterRule` before
+  comparing. The tab's **Test filter** posts the candidate to `/test-filter` without saving.
+* **Add assistant** defaults to two fetches 5 s apart; verified proposals are pre-ticked, unverified
+  ones are not; "watch only this CSS selector" becomes a `watch` rule; a JavaScript app keeps
+  `check_method=auto` (the engine switches to the browser in M4).
+* **Not in M3** (by the milestone list): the Filter Assistant with Alt+select and the QWebChannel
+  bridge (M7), Settings and Problems screens (M5/M6), screenshot diff tab content (M4; the tab shows
+  a placeholder), the Login tab (M6).
+* **Tests**: `tests/support/engine_thread.py` runs a real engine (fake clock, fixture web server, real
+  API) in a background thread so the Qt main thread uses real HTTP and WebSocket. Qt runs with
+  `QT_QPA_PLATFORM=offscreen`; QtWebEngine runs headless with `--no-sandbox --disable-gpu` (CI needs
+  `libegl1 libnss3 libxkbcommon0 ...`; UI tests skip when PySide6 is not installed).

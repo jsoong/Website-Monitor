@@ -1,0 +1,6 @@
+/* Extra rules the UI injects into the engine's rendered pages. The base diff styles (marks,
+   moved blocks, removed blocks) ship with the engine's HTML so emails and the API reuse them;
+   this file only adapts them to the viewer. */
+body.pw-view { user-select: text; cursor: default; }
+ins.pw-add, del.pw-del { scroll-margin: 4rem; }
+a { pointer-events: none; }

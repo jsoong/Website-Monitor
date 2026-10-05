@@ -35,6 +35,7 @@ from pagewatch.engine.settings import SettingsStore
 from pagewatch.engine.store import repo
 from pagewatch.engine.store.blobs import BlobStore
 from pagewatch.engine.store.db import Database, migrate
+from pagewatch.engine.tray import TrayBackend, TrayController
 from pagewatch.engine.workers import WorkerPool
 from pagewatch.models import AutowatchState, HealthOut, Settings, Trigger
 
@@ -56,6 +57,8 @@ class Engine:
         settings_overrides: dict[str, Any] | None = None,
         toast_backend: ToastBackend | None = None,
         rng: random.Random | None = None,
+        tray_backend: TrayBackend | None = None,
+        enable_tray: bool = False,
     ) -> None:
         self.data_dir = data_dir
         self.clock: Clock = clock or SystemClock()
@@ -81,6 +84,9 @@ class Engine:
             on_autowatch_change=self._autowatch_changed,
         )
         self.actions = ActionQueue(self)
+        self.tray: TrayController | None = (
+            TrayController(self, tray_backend) if (enable_tray or tray_backend) else None
+        )
         self._toast_backend = toast_backend
         self.toasts: ToastService
         self._started_mono: float | None = None
@@ -146,6 +152,8 @@ class Engine:
         self._started = True
         self.scheduler.start()
         self.actions.start()
+        if self.tray is not None:
+            await self.tray.start()
         log.info(
             "engine_started", version=self.version, schema=schema, data=str(self.data_dir.root)
         )
@@ -166,6 +174,8 @@ class Engine:
             return
         self._started = False
         log.info("engine_stopping")
+        if self.tray is not None:
+            await self.tray.stop()
         await self.scheduler.stop(grace_s=10.0)
         await self.actions.stop()
         await self.toasts.aclose()

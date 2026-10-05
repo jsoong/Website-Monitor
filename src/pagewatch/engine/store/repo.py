@@ -173,6 +173,8 @@ def bookmark_query(
     unread: bool | None = None,
     enabled: bool | None = None,
     q: str | None = None,
+    changed_since: str | None = None,
+    keyword_hits: bool | None = None,
     sort: str = "id",
     desc: bool = False,
     cursor: str | None = None,
@@ -196,6 +198,14 @@ def bookmark_query(
     if enabled is not None:
         where.append("enabled=?")
         args.append(int(enabled))
+    if changed_since:
+        where.append("last_changed_at >= ?")
+        args.append(changed_since)
+    if keyword_hits:
+        where.append(
+            "EXISTS (SELECT 1 FROM change c WHERE c.bookmark_id = bookmark.id "
+            "AND c.read_at IS NULL AND c.keyword_hits_json IS NOT NULL)"
+        )
     if q:
         where.append("(name LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\')")
         like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
@@ -532,3 +542,56 @@ def mark_read(conn: sqlite3.Connection, bookmark_id: int, now: str) -> bool:
     )
     conn.execute("DELETE FROM view_diff_cache WHERE bookmark_id=?", (bookmark_id,))
     return was_unread
+
+
+def unread_keyword_hits(conn: sqlite3.Connection, ids: Sequence[int]) -> dict[int, list[str]]:
+    """Keyword hits of each bookmark's unread changes (newest change first, de-duplicated)."""
+    out: dict[int, list[str]] = {}
+    for chunk in _chunks(list(ids), 500):
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"SELECT bookmark_id, keyword_hits_json FROM change WHERE bookmark_id IN ({marks}) "
+            "AND read_at IS NULL AND keyword_hits_json IS NOT NULL ORDER BY id DESC",
+            chunk,
+        ).fetchall()
+        for r in rows:
+            hits = out.setdefault(r["bookmark_id"], [])
+            for h in json.loads(r["keyword_hits_json"]):
+                if h not in hits:
+                    hits.append(h)
+    return out
+
+
+def bookmark_counts(conn: sqlite3.Connection, since: str) -> dict[str, Any]:
+    """Numbers for the folder tree: totals, built-in virtual folders, per-folder unread."""
+    one = conn.execute(
+        "SELECT COUNT(*) AS total, "
+        "SUM(unread) AS unread, "
+        "SUM(status='error') AS errors, "
+        "SUM(status='needs_login') AS needs_login, "
+        "SUM(last_changed_at >= ?) AS changed_today "
+        "FROM bookmark",
+        (since,),
+    ).fetchone()
+    hits = conn.execute(
+        "SELECT COUNT(DISTINCT bookmark_id) FROM change "
+        "WHERE read_at IS NULL AND keyword_hits_json IS NOT NULL"
+    ).fetchone()[0]
+    by_folder = {
+        (r["folder_id"] if r["folder_id"] is not None else 0): {
+            "total": r["n"],
+            "unread": r["u"] or 0,
+        }
+        for r in conn.execute(
+            "SELECT folder_id, COUNT(*) AS n, SUM(unread) AS u FROM bookmark GROUP BY folder_id"
+        )
+    }
+    return {
+        "total": one["total"],
+        "unread": one["unread"] or 0,
+        "errors": one["errors"] or 0,
+        "needs_login": one["needs_login"] or 0,
+        "changed_today": one["changed_today"] or 0,
+        "keyword_hits": hits,
+        "by_folder": by_folder,
+    }

@@ -175,6 +175,53 @@
     "title": "AutowatchState",
     "type": "object"
    },
+   "BookmarkCounts": {
+    "additionalProperties": false,
+    "properties": {
+     "by_folder": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/FolderCounts"
+      },
+      "title": "By Folder",
+      "type": "object"
+     },
+     "changed_today": {
+      "title": "Changed Today",
+      "type": "integer"
+     },
+     "errors": {
+      "title": "Errors",
+      "type": "integer"
+     },
+     "keyword_hits": {
+      "title": "Keyword Hits",
+      "type": "integer"
+     },
+     "needs_login": {
+      "title": "Needs Login",
+      "type": "integer"
+     },
+     "total": {
+      "title": "Total",
+      "type": "integer"
+     },
+     "unread": {
+      "title": "Unread",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "total",
+     "unread",
+     "errors",
+     "needs_login",
+     "changed_today",
+     "keyword_hits",
+     "by_folder"
+    ],
+    "title": "BookmarkCounts",
+    "type": "object"
+   },
    "BookmarkIn": {
     "additionalProperties": false,
     "properties": {
@@ -1632,6 +1679,25 @@
     "title": "FilterRule",
     "type": "object"
    },
+   "FolderCounts": {
+    "additionalProperties": false,
+    "properties": {
+     "total": {
+      "title": "Total",
+      "type": "integer"
+     },
+     "unread": {
+      "title": "Unread",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "total",
+     "unread"
+    ],
+    "title": "FolderCounts",
+    "type": "object"
+   },
    "FolderIn": {
     "additionalProperties": false,
     "properties": {
@@ -2129,6 +2195,156 @@
      "items"
     ],
     "title": "Page[CheckRunOut]",
+    "type": "object"
+   },
+   "PreviewOut": {
+    "additionalProperties": false,
+    "properties": {
+     "blocks": {
+      "title": "Blocks",
+      "type": "integer"
+     },
+     "content_type": {
+      "title": "Content Type",
+      "type": "string"
+     },
+     "elapsed_ms": {
+      "default": 0,
+      "title": "Elapsed Ms",
+      "type": "integer"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Error"
+     },
+     "final_url": {
+      "title": "Final Url",
+      "type": "string"
+     },
+     "html": {
+      "title": "Html",
+      "type": "string"
+     },
+     "js_app": {
+      "title": "Js App",
+      "type": "boolean"
+     },
+     "kind": {
+      "title": "Kind",
+      "type": "string"
+     },
+     "method": {
+      "title": "Method",
+      "type": "string"
+     },
+     "proposals": {
+      "items": {
+       "$ref": "#/components/schemas/ProposalOut"
+      },
+      "title": "Proposals",
+      "type": "array"
+     },
+     "readable_chars": {
+      "title": "Readable Chars",
+      "type": "integer"
+     },
+     "status": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Status"
+     },
+     "unstable_blocks": {
+      "default": 0,
+      "title": "Unstable Blocks",
+      "type": "integer"
+     },
+     "warnings": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+     },
+     "words": {
+      "title": "Words",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "final_url",
+     "status",
+     "content_type",
+     "kind",
+     "method",
+     "js_app",
+     "readable_chars",
+     "words",
+     "blocks",
+     "html"
+    ],
+    "title": "PreviewOut",
+    "type": "object"
+   },
+   "PreviewRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "check_method": {
+      "$ref": "#/components/schemas/CheckMethod",
+      "default": "auto"
+     },
+     "fetch": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Fetch"
+     },
+     "gap_s": {
+      "default": 5.0,
+      "maximum": 60.0,
+      "minimum": 0.0,
+      "title": "Gap S",
+      "type": "number"
+     },
+     "samples": {
+      "default": 1,
+      "maximum": 3.0,
+      "minimum": 1.0,
+      "title": "Samples",
+      "type": "integer"
+     },
+     "source_type": {
+      "$ref": "#/components/schemas/SourceType",
+      "default": "auto"
+     },
+     "url": {
+      "minLength": 1,
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "url"
+    ],
+    "title": "PreviewRequest",
     "type": "object"
    },
    "ProposalOut": {
@@ -2833,6 +3049,38 @@
      },
      {
       "in": "query",
+      "name": "changed_since",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Changed Since"
+      }
+     },
+     {
+      "in": "query",
+      "name": "keyword_hits",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "boolean"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Keyword Hits"
+      }
+     },
+     {
+      "in": "query",
       "name": "sort",
       "required": false,
       "schema": {
@@ -2983,6 +3231,28 @@
      }
     },
     "summary": "Bulk",
+    "tags": [
+     "bookmarks"
+    ]
+   }
+  },
+  "/bookmarks/counts": {
+   "get": {
+    "description": "Totals for the folder tree and the built-in virtual folders.",
+    "operationId": "counts_bookmarks_counts_get",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BookmarkCounts"
+        }
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "summary": "Counts",
     "tags": [
      "bookmarks"
     ]
@@ -3235,6 +3505,105 @@
     ]
    }
   },
+  "/bookmarks/{bookmark_id}/diff": {
+   "get": {
+    "description": "The viewer's default: everything unread (last-read version -> latest). ``view=new`` and\n``view=old`` return the stored pages unmarked.",
+    "operationId": "unread_diff_bookmarks__bookmark_id__diff_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "view",
+      "required": false,
+      "schema": {
+       "default": "highlight",
+       "enum": [
+        "highlight",
+        "text",
+        "new",
+        "old"
+       ],
+       "title": "View",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "format",
+      "required": false,
+      "schema": {
+       "default": "html",
+       "enum": [
+        "html",
+        "json"
+       ],
+       "title": "Format",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "images",
+      "required": false,
+      "schema": {
+       "default": false,
+       "title": "Images",
+       "type": "boolean"
+      }
+     },
+     {
+      "in": "query",
+      "name": "context",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maximum": 100,
+         "minimum": 0,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Context"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Unread Diff",
+    "tags": [
+     "changes"
+    ]
+   }
+  },
   "/bookmarks/{bookmark_id}/read": {
    "post": {
     "operationId": "mark_read_bookmarks__bookmark_id__read_post",
@@ -3438,6 +3807,106 @@
      }
     },
     "summary": "False Positive",
+    "tags": [
+     "changes"
+    ]
+   }
+  },
+  "/changes/{change_id}/render": {
+   "get": {
+    "description": "One change's own gate diff (the history view), as sanitised HTML (or ``format=json``).",
+    "operationId": "render_change_changes__change_id__render_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "change_id",
+      "required": true,
+      "schema": {
+       "title": "Change Id",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "view",
+      "required": false,
+      "schema": {
+       "default": "highlight",
+       "enum": [
+        "highlight",
+        "text",
+        "new",
+        "old",
+        "screenshot"
+       ],
+       "title": "View",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "format",
+      "required": false,
+      "schema": {
+       "default": "html",
+       "enum": [
+        "html",
+        "json"
+       ],
+       "title": "Format",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "images",
+      "required": false,
+      "schema": {
+       "default": false,
+       "title": "Images",
+       "type": "boolean"
+      }
+     },
+     {
+      "in": "query",
+      "name": "context",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maximum": 100,
+         "minimum": 0,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Context"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Render Change",
     "tags": [
      "changes"
     ]
@@ -3650,6 +4119,48 @@
      }
     },
     "summary": "Health"
+   }
+  },
+  "/preview": {
+   "post": {
+    "description": "Trial fetch of a URL and options for the add-bookmark assistant; nothing is stored.",
+    "operationId": "preview_preview_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PreviewRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PreviewOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Preview",
+    "tags": [
+     "changes"
+    ]
    }
   },
   "/settings": {

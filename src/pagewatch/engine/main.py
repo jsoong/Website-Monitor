@@ -38,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--data-dir", help="data folder (default: %%LOCALAPPDATA%%\\PageWatch)")
     p.add_argument("--workers", choices=("process", "thread"), default="process")
     p.add_argument("--no-console-log", action="store_true", help="log to the file only")
+    p.add_argument("--no-tray", action="store_true", help="do not create a tray icon")
     p.add_argument("--version", action="version", version=f"pagewatch-engine {__version__}")
     return p
 
@@ -95,7 +96,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_ALREADY_RUNNING
     try:
         configure_logging(data_dir.logs_dir, console=not args.no_console_log)
-        engine = Engine(data_dir, worker_mode=args.workers)
+        engine = Engine(data_dir, worker_mode=args.workers, enable_tray=not args.no_tray)
         return asyncio.run(run_engine(data_dir, engine))
     except SchemaTooNew as exc:
         print(f"error: {exc}", file=sys.stderr)

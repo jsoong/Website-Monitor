@@ -10,12 +10,14 @@ from pydantic import ValidationError
 
 from pagewatch.engine.bookmarks import InvalidError, NotFoundError
 from pagewatch.engine.clock import iso
-from pagewatch.engine.config import Resolved, resolve, resolve_candidate
-from pagewatch.engine.fetch.base import FetchRequest
+from pagewatch.engine.config import Resolved, resolve, resolve_candidate, source_options
+from pagewatch.engine.fetch.base import FetchRequest, FetchResult
+from pagewatch.engine.fetch.select import BROWSER, route_for
 from pagewatch.engine.pipeline.autofilter import ProposeJob, propose_job
 from pagewatch.engine.pipeline.core import (
     PreviewJob,
     RenderJob,
+    RenderResult,
     TestFilterJob,
     ViewDiffJob,
     ViewVersion,
@@ -88,6 +90,7 @@ async def run_test_filter(
         filter_cfg=resolved.filter.model_dump(mode="json"),
         gate_cfg=resolved.gate.model_dump(mode="json"),
         highlight_mode=(req.highlight_mode.value if req.highlight_mode else row["highlight_mode"]),
+        source_cfg=source_options(resolved.fetch),
     )
     res = await engine.pool.run(test_filter, job)
     return TestFilterOut(
@@ -139,6 +142,7 @@ async def flag_false_positive(engine: Engine, change_id: int) -> FalsePositiveOu
             source_type=row["source_type"],
             filter_cfg=resolved.filter.model_dump(mode="json"),
             highlight_mode=row["highlight_mode"],
+            source_cfg=source_options(resolved.fetch),
         ),
     )
     proposals = [
@@ -169,18 +173,24 @@ async def flag_false_positive(engine: Engine, change_id: int) -> FalsePositiveOu
 def _view_version(row: Any) -> ViewVersion | None:
     if row is None:
         return None
-    return ViewVersion(row["raw_hash"], row["content_type"] or "", row["blocks_hash"])
+    return ViewVersion(
+        row["raw_hash"], row["content_type"] or "", row["blocks_hash"], row["screenshot_hash"]
+    )
 
 
 VIEWS = ("highlight", "text", "new", "old", "screenshot")
 
 
-async def render_change(
+def _out(res: RenderResult) -> RenderOut:
+    return RenderOut(html=res.html, view=res.view, identical=res.identical,
+                     degraded=res.degraded, stats=res.stats)  # fmt: skip
+
+
+async def render_change_raw(
     engine: Engine, change_id: int, view: str, *, allow_remote: bool, context: int | None
-) -> RenderOut:
-    """One change's own gate diff (the history view): old version -> new version."""
-    if view == "screenshot":
-        raise NotFoundError("no screenshot was stored for this change")
+) -> RenderResult:
+    """One change's own gate diff (the history view): old version -> new version. The worker's
+    result, which also carries the picture for ``view=screenshot``."""
 
     def load(conn: sqlite3.Connection) -> tuple[Any, Any, Any, Any]:
         change = repo.change_get(conn, change_id)
@@ -197,8 +207,10 @@ async def render_change(
     change, row, old, new = await engine.db.read(load)
     if change is None or row is None or new is None:
         raise NotFoundError(f"change {change_id} not found")
+    if view == "screenshot" and not new["screenshot_hash"]:
+        raise NotFoundError("no screenshot was stored for this change")
     resolved = resolve(row, engine.folders, engine.settings)
-    res = await engine.pool.run(
+    return await engine.pool.run(
         render_view,
         RenderJob(
             blob_root=str(engine.data_dir.blobs_dir),
@@ -211,19 +223,28 @@ async def render_change(
             highlight_mode=row["highlight_mode"],
             allow_remote=allow_remote,
             context=context,
+            source_type=row["source_type"],
+            source_cfg=source_options(resolved.fetch),
         ),
     )
-    return RenderOut(html=res.html, view=res.view, identical=res.identical,
-                     degraded=res.degraded, stats=res.stats)  # fmt: skip
 
 
-async def render_unread(
-    engine: Engine, bookmark_id: int, view: str, *, allow_remote: bool, context: int | None
+async def render_change(
+    engine: Engine, change_id: int, view: str, *, allow_remote: bool, context: int | None
 ) -> RenderOut:
-    """The viewer's default: everything unread, baseline -> latest. The diff is computed in
-    the worker pool and cached (one row per bookmark, replaced when either pointer moves)."""
-    if view not in ("highlight", "text"):
-        raise InvalidError("the unread diff supports view=highlight or view=text")
+    return _out(
+        await render_change_raw(engine, change_id, view, allow_remote=allow_remote, context=context)
+    )
+
+
+async def render_unread_raw(
+    engine: Engine, bookmark_id: int, view: str, *, allow_remote: bool, context: int | None
+) -> RenderResult:
+    """The viewer's default: everything unread, baseline -> latest. The text diff is computed in
+    the worker pool and cached (one row per bookmark, replaced when either pointer moves); a
+    screenshot comparison is cheap and is computed on demand."""
+    if view not in ("highlight", "text", "screenshot"):
+        raise InvalidError("the unread diff supports view=highlight, text or screenshot")
 
     def load(conn: sqlite3.Connection) -> tuple[Any, Any, Any, Any]:
         row = repo.bookmark_get(conn, bookmark_id)
@@ -247,7 +268,10 @@ async def render_unread(
     resolved = resolve(row, engine.folders, engine.settings)
     base = baseline if baseline is not None else latest
     diff_hash: str | None = None
-    if base["id"] != latest["id"]:
+    if view == "screenshot":
+        if latest["screenshot_hash"] is None:
+            raise NotFoundError("no screenshot was stored for this bookmark")
+    elif base["id"] != latest["id"]:
         if (
             cache is not None
             and cache["baseline_version_id"] == base["id"]
@@ -283,7 +307,7 @@ async def render_unread(
                     )
 
             await engine.db.write(store)
-    res = await engine.pool.run(
+    return await engine.pool.run(
         render_view,
         RenderJob(
             blob_root=str(engine.data_dir.blobs_dir),
@@ -296,10 +320,20 @@ async def render_unread(
             highlight_mode=row["highlight_mode"],
             allow_remote=allow_remote,
             context=context,
+            source_type=row["source_type"],
+            source_cfg=source_options(resolved.fetch),
         ),
     )
-    return RenderOut(html=res.html, view=res.view, identical=res.identical,
-                     degraded=res.degraded, stats=res.stats)  # fmt: skip
+
+
+async def render_unread(
+    engine: Engine, bookmark_id: int, view: str, *, allow_remote: bool, context: int | None
+) -> RenderOut:
+    return _out(
+        await render_unread_raw(
+            engine, bookmark_id, view, allow_remote=allow_remote, context=context
+        )
+    )
 
 
 async def render_version(
@@ -323,6 +357,7 @@ async def render_version(
     version = latest if which == "new" else baseline
     if version is None:
         raise ConflictError("this bookmark has not been checked yet")
+    resolved = resolve(row, engine.folders, engine.settings)
     res = await engine.pool.run(
         render_view,
         RenderJob(
@@ -332,6 +367,8 @@ async def render_version(
             new=_view_version(version) if which == "new" else None,
             old=_view_version(version) if which == "old" else None,
             allow_remote=allow_remote,
+            source_type=row["source_type"],
+            source_cfg=source_options(resolved.fetch),
         ),
     )
     return RenderOut(html=res.html, view=res.view)
@@ -341,11 +378,20 @@ async def render_version(
 
 
 async def run_preview(engine: Engine, req: PreviewRequest) -> PreviewOut:
-    """Trial fetch(es) of a URL with the given options. Nothing is stored."""
+    """Trial fetch(es) of a URL with the given options. Nothing is stored.
+
+    With ``check_method=auto`` a web page that shows (almost) nothing to a static fetch is fetched
+    again in the browser and the rendered page is what the assistant shows, exactly as the first
+    check of a saved bookmark would do (spec: Add-bookmark assistant, steps 1-2)."""
     try:
         fetch_cfg = FetchConfig.model_validate(req.fetch or {})
     except ValidationError as exc:
         raise InvalidError(str(exc.errors()[0]["msg"])) from exc
+    if req.source_type.value == "records" and fetch_cfg.records is None:
+        raise InvalidError("a records source needs a 'records' configuration")
+    route = route_for(req.url, req.source_type.value, req.check_method.value, fetch_cfg)
+    if route is None:
+        raise InvalidError("unsupported url scheme")
     resolved = Resolved(
         schedule=engine.settings.default_schedule,
         fetch=fetch_cfg,
@@ -354,31 +400,62 @@ async def run_preview(engine: Engine, req: PreviewRequest) -> PreviewOut:
         actions=ActionsConfig(),
         overrides={},
     )
-    samples: list[tuple[bytes, str]] = []
-    first = None
+    source_cfg = source_options(fetch_cfg)
     elapsed = 0
-    for n in range(req.samples):
-        if n:
-            await engine.clock.sleep(req.gap_s)
-        result = await engine.static_fetcher.fetch(
-            FetchRequest(url=req.url, resolved=resolved, settings=engine.settings, force=True)
-        )
-        elapsed += result.elapsed_ms
-        if result.error is not None:
-            return PreviewOut(
-                final_url=result.final_url, status=result.status, content_type="", kind="error",
-                method="static", js_app=False, readable_chars=0, words=0, blocks=0, html="",
-                error=f"{result.error.reason}: {result.error.message}", elapsed_ms=elapsed,
-            )  # fmt: skip
-        first = first or result
-        samples.append((result.body, result.content_type))
-    assert first is not None
-    analysis = await engine.pool.run(
-        preview_analyze,
-        PreviewJob(
-            samples, first.final_url, req.source_type.value, FilterConfig().model_dump(mode="json")
-        ),
-    )
+
+    async def sample(fetcher_route: Any) -> tuple[list[tuple[bytes, str]], FetchResult | None, str]:
+        nonlocal elapsed
+        samples: list[tuple[bytes, str]] = []
+        first: FetchResult | None = None
+        for n in range(req.samples):
+            if n:
+                await engine.clock.sleep(req.gap_s)
+            result = await engine.fetchers.get(fetcher_route).fetch(
+                FetchRequest(url=req.url, resolved=resolved, settings=engine.settings, force=True)
+            )
+            elapsed += result.elapsed_ms
+            if result.error is not None:
+                return [], result, f"{result.error.reason}: {result.error.message}"
+            first = first or result
+            samples.append((result.body, result.content_type))
+        return samples, first, ""
+
+    def failed(result: FetchResult | None, message: str, method: str) -> PreviewOut:
+        return PreviewOut(
+            final_url=result.final_url if result else req.url,
+            status=result.status if result else None,
+            content_type="", kind="error", method=method, js_app=False, readable_chars=0,
+            words=0, blocks=0, html="", error=message, elapsed_ms=elapsed,
+        )  # fmt: skip
+
+    async def analyze(samples: list[tuple[bytes, str]], first: FetchResult) -> Any:
+        return await engine.pool.run(
+            preview_analyze,
+            PreviewJob(samples, first.final_url, req.source_type.value,
+                       FilterConfig().model_dump(mode="json"), source_cfg),
+        )  # fmt: skip
+
+    method = route.name
+    samples, first, error = await sample(route)
+    if error or first is None:
+        return failed(first, error, method)
+    analysis = await analyze(samples, first)
+    warnings: list[str] = list(analysis.warnings)
+    js_app = bool(analysis.js_app)
+    if (
+        req.check_method.value == "auto"
+        and route.name == "static"
+        and req.source_type.value in ("auto", "html")
+        and analysis.js_app
+    ):
+        method = "browser"
+        b_samples, b_first, b_error = await sample(BROWSER)
+        if b_error or b_first is None:
+            warnings.append(f"this page needs a browser, but one could not be used: {b_error}")
+        else:
+            samples, first = b_samples, b_first
+            analysis = await analyze(samples, first)
+            warnings = [*analysis.warnings, "rendered in the browser"]
     proposals = [
         ProposalOut(
             rule=p.rule, kind=p.kind, pattern_name=p.pattern_name, explanation=p.explanation,
@@ -391,14 +468,14 @@ async def run_preview(engine: Engine, req: PreviewRequest) -> PreviewOut:
         status=first.status,
         content_type=first.content_type,
         kind=analysis.kind,
-        method="browser" if analysis.js_app else "static",
-        js_app=analysis.js_app,
+        method=method,
+        js_app=js_app,
         readable_chars=analysis.chars,
         words=analysis.words,
         blocks=analysis.blocks,
         html=analysis.html,
         unstable_blocks=analysis.unstable_blocks,
         proposals=proposals,
-        warnings=analysis.warnings,
+        warnings=warnings,
         elapsed_ms=elapsed,
     )

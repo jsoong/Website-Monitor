@@ -41,13 +41,21 @@ Data folder (`%LOCALAPPDATA%\PageWatch`, or `--data-dir`):
 | `engine/scheduler.py` | Due-time heap, per-host ready queues, pools, pause/resume, manual & hotsite priority. |
 | `engine/runner.py` | One check end to end; retry-once; error counting; the atomic commit; events. |
 | `engine/fetch/` | `FetchResult`/`FetchError`; `static.py` (httpx, HTTP/2, conditional GET, body cap). |
+| `engine/fetch/select.py` | `route_for` (URL scheme + `check_method` -> fetcher), `method_kind` (the name `check_run.method` gets once the content is known), `FetcherSet`. |
+| `engine/fetch/browser.py` | `BrowserManager` (one shared browser, generations, idle close, recycle, Edge -> bundled Chromium) and `BrowserFetcher`; `screenshot.py` is its PNG-taking subclass. |
+| `engine/fetch/localfile.py`, `ftp.py`, `feed.py` | Files and folders (mtime+size shortcut, listing table), FTP/FTPS (aioftp), feeds (static fetch + optional enclosure download). |
+| `engine/secrets.py` | `SecretStore` interface (passwords are looked up by key name; the keyring implementation is M6). |
 | `engine/pipeline/` | `extract` (bytes→blocks), `special` filters, `differs` (pluggable) + `diff` (two-stage), `gate`, `render`, `core` (the worker entry points). |
 | `engine/pipeline/filters.py` | Cosmetic/watch/ignore filters (marks, regions, ranges, text spans, digit masks). |
 | `engine/pipeline/keywords.py` | Keyword language: parser and evaluator (`page()`, `num()`, `[same_block]`, `[near N]`, NOT). |
 | `engine/pipeline/autofilter.py` | False-positive -> proposed ignore rules, verified; `data/volatile_patterns.yaml`. |
 | `engine/changes.py` | Test filter and false-positive operations behind `routes_changes.py`. |
 | `engine/pipeline/viewer.py` | HTML views: text view, in-page highlight (offset mapping through raw text nodes), sanitising, CSP. |
-| `engine/pipeline/detect.py` | Resource classification and JavaScript-shell detection. |
+| `engine/pipeline/detect.py` | Resource classification and JavaScript-shell detection (`browser_reason`). |
+| `engine/pipeline/sources.py` | `resolve_kind` (explicit type, content type, extension, magic bytes), conversion dispatch, `view_bytes` (what the viewer re-reads). |
+| `engine/pipeline/documents.py`, `feeds.py` | PDF/DOCX/XLSX and RSS/Atom -> deterministic HTML. |
+| `engine/pipeline/records.py` | Records sources: JSONPath subset, row filter, JSON/CSV rows -> one block per record, new/changed/removed events. |
+| `engine/pipeline/screenshot.py` | The pixel diff (grayscale, ignore rectangles, threshold, regions, overlay PNG). Pillow only. |
 | `engine/tray.py` | `TrayController` (state, menu) + Windows `pystray` adapter; icons drawn with Pillow. |
 | `engine/actions/` | `toast` (coalesced), `builtin` (action registry), `queue` (durable job runner). |
 | `cli/` | `pagewatch-cli`: a synchronous client of the local API. |
@@ -73,20 +81,54 @@ Scheduler ──due──▶ ready queue (per host) ──host gate + pool──
    │                                                               │
    │                                  db.read: bookmark + latest/anchor versions
    │                                  db.write: check_run(started)           ◀── crash here = "interrupted"
-   │                                  StaticFetcher (httpx; If-None-Match / If-Modified-Since)
+   │                                  route_for(url, source_type, check_method) → one fetcher:
+   │                                       static (httpx; If-None-Match / If-Modified-Since) · feed
+   │                                       browser / screenshot (BrowserManager; the DOM, plus a PNG)
+   │                                       file (mtime+size → not_modified) · ftp (size+mtime)
    │                                  WorkerPool ▶ process_check(job)
+   │                                       0. resolve_kind(source_type, content type, URL, magic bytes)
+   │                                          auto-detection (first check of an `auto` page): a shell → "needs_browser"
+   │                                          └─▶ the runner re-fetches with the browser, persists `browser`, runs again
    │                                       1. raw hash == latest.raw_hash?      → unchanged_raw (stop)
-   │                                       2. parse → blocks → special filters
+   │                                          (screenshot method: screenshot hash == latest's)
+   │                                       2. convert (PDF/DOCX/XLSX/feed → HTML; records → blocks) → parse → blocks → special filters
    │                                          filtered hash == latest's?         → unchanged (stop)
    │                                       3. bad-fetch gate (min chars/blacklist/whitelist) → rejected (stop)
    │                                       4. write raw + blocks blobs; diff latest→new (+ anchor→new)
-   │                                       5. gate verdict (ignore-removed, thresholds)
+   │                                          (screenshot method: pixel diff latest.png→new.png instead, below
+   │                                           threshold → unchanged and nothing stored; else PNG + overlay blobs)
+   │                                       5. gate verdict (ignore-removed, keywords, thresholds; records: events)
    │                                  db.write: commit_check  (ONE transaction)
-   │                                       version, change, latest/baseline/anchor pointers,
-   │                                       next_due_at + adaptive interval, action_job rows, check_run(finished)
-   ◀── RunResult(next_due, next_trigger) ──  events: check_finished, change_detected, bookmark_updated
+   │                                       version, change, latest/baseline/anchor pointers, check_run.method,
+   │                                       check_method (auto → browser), next_due_at + adaptive interval, action_job rows
+   ◀── RunResult(next_due, next_trigger, browser) ──  events: check_finished, change_detected, bookmark_updated
                                               ActionQueue.kick() ▶ toast / sound / open / mark_read ...
 ```
+
+### Sources
+
+| Source | Fetcher | Becomes | `check_run.method` |
+| --- | --- | --- | --- |
+| web page | `static` | HTML | `static` |
+| JavaScript page | `browser` (rendered DOM, same-origin iframes inlined) | HTML | `browser` |
+| visual monitoring | `screenshot` (browser + 1366×900 PNG) | picture compared by pixels; text stored too | `screenshot` |
+| PDF / DOCX / XLSX | `static`, `file` or `ftp` | HTML (page / paragraphs and tables / one table per sheet) | `document` (`file`, `ftp` keep theirs) |
+| RSS / Atom | `static` (`feed` when downloading enclosures) | one `<li>` per entry | `feed` |
+| JSON / CSV records | `static`, `file` or `ftp` | one block per record, keyed by ID | `records` |
+| local file / folder | `file` | text, document or a listing table | `file` |
+| FTP / FTPS | `ftp` | file as above, or a listing table | `ftp` |
+
+### The browser
+
+```
+BrowserFetcher / ScreenshotFetcher ──ensure()──▶ BrowserManager ──launch plan──▶ Playwright
+      page(): ≤ 3 at once, a fresh page in the shared context (a second one for "don't verify TLS")
+      plan order: browser_executable → channel msedge (--headless=new) → bundled Chromium (installed on demand)
+      generation = one launched browser; retired after 500 pages or 3 crashes in a row, closed when drained
+      idle for 10 minutes (engine clock) → closed;  nothing launches → state `unavailable`, retry in 5 minutes
+```
+
+`/health.browser_state` is `stopped`, `running` or `unavailable`.
 
 ### The three pointers
 
@@ -109,6 +151,7 @@ Scheduler ──due──▶ ready queue (per host) ──host gate + pool──
 MainWindow ── FolderTree (built-ins + folders + counts) ─┐
            ── QTableView ◀── BookmarkListModel ◀── ApiClient (httpx, worker threads) ──▶ engine API
            ── ViewerPanel (history list, toggles, tab bar) ── one shared QWebEngineView
+                                  └─ Screenshot diff tab: the overlay PNG from the engine, fitted to the pane
            ── EventStream (QWebSocket /events) ──▶ refresh rows / counts / viewer
 dialogs:   BookmarkEditor · AddBookmarkDialog · FalsePositiveDialog
 ```

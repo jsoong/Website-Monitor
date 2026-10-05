@@ -1,0 +1,24 @@
+{
+ "description": "The feed returns the same records in another order: records are sorted by ID.",
+ "ext": "json",
+ "bookmark": {
+  "source_type": "records",
+  "fetch": {
+   "records": {
+    "path": "$.lotteries",
+    "id_field": "lottery_id",
+    "fields": [
+     "name",
+     "borough",
+     "status"
+    ]
+   }
+  }
+ },
+ "expect": [
+  {
+   "outcome": "unchanged"
+  }
+ ],
+ "content_type": "application/json"
+}

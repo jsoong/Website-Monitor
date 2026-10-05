@@ -1,0 +1,4 @@
+# step 2
+  Library opening hours
+~ Monday to [-Friday-]{+Saturday+} 9 to [-5-]{+6+}
+  Closed on public holidays

@@ -1,0 +1,29 @@
+{
+ "description": "This bookmark alerts only on new and changed records; a removal is stored silently.",
+ "ext": "json",
+ "bookmark": {
+  "source_type": "records",
+  "fetch": {
+   "records": {
+    "path": "$.lotteries",
+    "id_field": "lottery_id",
+    "fields": [
+     "name",
+     "borough",
+     "status"
+    ],
+    "events": [
+     "new",
+     "changed"
+    ]
+   }
+  }
+ },
+ "expect": [
+  {
+   "outcome": "suppressed",
+   "reason": "records_events"
+  }
+ ],
+ "content_type": "application/json"
+}

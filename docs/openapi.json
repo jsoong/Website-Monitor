@@ -1056,6 +1056,58 @@
     "title": "BookmarkSummary",
     "type": "object"
    },
+   "BrowserOptions": {
+    "additionalProperties": false,
+    "description": "How the browser and screenshot methods drive the page (spec: Fetch layer, browser row).",
+    "properties": {
+     "clip": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/Rect"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "delay_after_load_s": {
+      "default": 0.0,
+      "maximum": 60.0,
+      "minimum": 0.0,
+      "title": "Delay After Load S",
+      "type": "number"
+     },
+     "full_page": {
+      "default": true,
+      "title": "Full Page",
+      "type": "boolean"
+     },
+     "keys": {
+      "items": {
+       "type": "string"
+      },
+      "maxItems": 10,
+      "title": "Keys",
+      "type": "array"
+     },
+     "mouse_moves": {
+      "default": 0,
+      "maximum": 20.0,
+      "minimum": 0.0,
+      "title": "Mouse Moves",
+      "type": "integer"
+     },
+     "scroll_count": {
+      "default": 0,
+      "maximum": 50.0,
+      "minimum": 0.0,
+      "title": "Scroll Count",
+      "type": "integer"
+     }
+    },
+    "title": "BrowserOptions",
+    "type": "object"
+   },
    "BulkRequest": {
     "additionalProperties": false,
     "properties": {
@@ -1437,6 +1489,47 @@
     "title": "FalsePositiveOut",
     "type": "object"
    },
+   "FeedOptions": {
+    "additionalProperties": false,
+    "properties": {
+     "download_enclosures": {
+      "default": false,
+      "title": "Download Enclosures",
+      "type": "boolean"
+     },
+     "enclosure_max_bytes": {
+      "default": 20971520,
+      "minimum": 1024.0,
+      "title": "Enclosure Max Bytes",
+      "type": "integer"
+     },
+     "enclosures_dir": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Enclosures Dir"
+     },
+     "max_entries": {
+      "default": 200,
+      "maximum": 2000.0,
+      "minimum": 1.0,
+      "title": "Max Entries",
+      "type": "integer"
+     },
+     "summary": {
+      "default": true,
+      "title": "Summary",
+      "type": "boolean"
+     }
+    },
+    "title": "FeedOptions",
+    "type": "object"
+   },
    "FetchConfig": {
     "additionalProperties": false,
     "properties": {
@@ -1461,6 +1554,9 @@
       ],
       "title": "Body"
      },
+     "browser": {
+      "$ref": "#/components/schemas/BrowserOptions"
+     },
      "cookies_file": {
       "anyOf": [
        {
@@ -1472,12 +1568,18 @@
       ],
       "title": "Cookies File"
      },
+     "feed": {
+      "$ref": "#/components/schemas/FeedOptions"
+     },
      "headers": {
       "additionalProperties": {
        "type": "string"
       },
       "title": "Headers",
       "type": "object"
+     },
+     "listing": {
+      "$ref": "#/components/schemas/ListingOptions"
      },
      "max_bytes": {
       "default": 20971520,
@@ -1504,6 +1606,16 @@
        }
       ],
       "title": "Proxy"
+     },
+     "records": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/RecordsConfig"
+       },
+       {
+        "type": "null"
+       }
+      ]
      },
      "timeout_s": {
       "default": 30.0,
@@ -1553,6 +1665,9 @@
       },
       "title": "Ignore",
       "type": "array"
+     },
+     "screenshot": {
+      "$ref": "#/components/schemas/ScreenshotFilters"
      },
      "special": {
       "$ref": "#/components/schemas/SpecialFilters"
@@ -2071,6 +2186,26 @@
     "title": "HostOverride",
     "type": "object"
    },
+   "ListingOptions": {
+    "additionalProperties": false,
+    "description": "Folder and FTP directory listings.",
+    "properties": {
+     "max_entries": {
+      "default": 5000,
+      "maximum": 100000.0,
+      "minimum": 1.0,
+      "title": "Max Entries",
+      "type": "integer"
+     },
+     "recursive": {
+      "default": false,
+      "title": "Recursive",
+      "type": "boolean"
+     }
+    },
+    "title": "ListingOptions",
+    "type": "object"
+   },
    "OnBattery": {
     "enum": [
      "normal",
@@ -2401,6 +2536,109 @@
     "title": "ProposalOut",
     "type": "object"
    },
+   "RecordsConfig": {
+    "additionalProperties": false,
+    "description": "A JSON or CSV feed whose rows are watched record by record (spec: Records sources).",
+    "properties": {
+     "delimiter": {
+      "default": ",",
+      "maxLength": 1,
+      "minLength": 1,
+      "title": "Delimiter",
+      "type": "string"
+     },
+     "events": {
+      "items": {
+       "enum": [
+        "new",
+        "changed",
+        "removed"
+       ],
+       "type": "string"
+      },
+      "minItems": 1,
+      "title": "Events",
+      "type": "array"
+     },
+     "fields": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Fields",
+      "type": "array"
+     },
+     "filter": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Filter"
+     },
+     "format": {
+      "default": "auto",
+      "enum": [
+       "auto",
+       "json",
+       "csv"
+      ],
+      "title": "Format",
+      "type": "string"
+     },
+     "id_field": {
+      "minLength": 1,
+      "title": "Id Field",
+      "type": "string"
+     },
+     "path": {
+      "default": "$",
+      "title": "Path",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id_field"
+    ],
+    "title": "RecordsConfig",
+    "type": "object"
+   },
+   "Rect": {
+    "additionalProperties": false,
+    "description": "A pixel rectangle on a screenshot (origin top-left).",
+    "properties": {
+     "h": {
+      "exclusiveMinimum": 0.0,
+      "title": "H",
+      "type": "integer"
+     },
+     "w": {
+      "exclusiveMinimum": 0.0,
+      "title": "W",
+      "type": "integer"
+     },
+     "x": {
+      "minimum": 0.0,
+      "title": "X",
+      "type": "integer"
+     },
+     "y": {
+      "minimum": 0.0,
+      "title": "Y",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "x",
+     "y",
+     "w",
+     "h"
+    ],
+    "title": "Rect",
+    "type": "object"
+   },
    "ScheduleConfig": {
     "additionalProperties": false,
     "properties": {
@@ -2475,6 +2713,35 @@
     "title": "ScheduleMode",
     "type": "string"
    },
+   "ScreenshotFilters": {
+    "additionalProperties": false,
+    "description": "Screenshot comparison (spec: Screenshot comparison): what counts as a visual change.",
+    "properties": {
+     "height_change_pct": {
+      "default": 5.0,
+      "maximum": 100.0,
+      "minimum": 0.0,
+      "title": "Height Change Pct",
+      "type": "number"
+     },
+     "ignore": {
+      "items": {
+       "$ref": "#/components/schemas/Rect"
+      },
+      "title": "Ignore",
+      "type": "array"
+     },
+     "min_ratio": {
+      "default": 0.002,
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Min Ratio",
+      "type": "number"
+     }
+    },
+    "title": "ScreenshotFilters",
+    "type": "object"
+   },
    "Settings": {
     "additionalProperties": false,
     "properties": {
@@ -2503,6 +2770,36 @@
       "minimum": 1.0,
       "title": "Backlog Warning",
       "type": "integer"
+     },
+     "browser_args": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Browser Args",
+      "type": "array"
+     },
+     "browser_channel": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": "msedge",
+      "title": "Browser Channel"
+     },
+     "browser_executable": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Browser Executable"
      },
      "browser_pool": {
       "default": 3,
@@ -3507,7 +3804,7 @@
   },
   "/bookmarks/{bookmark_id}/diff": {
    "get": {
-    "description": "The viewer's default: everything unread (last-read version -> latest). ``view=new`` and\n``view=old`` return the stored pages unmarked.",
+    "description": "The viewer's default: everything unread (last-read version -> latest). ``view=new`` and\n``view=old`` return the stored pages unmarked; ``view=screenshot`` compares the last-read\nand latest screenshots (``format=png`` for the overlay picture).",
     "operationId": "unread_diff_bookmarks__bookmark_id__diff_get",
     "parameters": [
      {
@@ -3529,7 +3826,8 @@
         "highlight",
         "text",
         "new",
-        "old"
+        "old",
+        "screenshot"
        ],
        "title": "View",
        "type": "string"
@@ -3543,7 +3841,8 @@
        "default": "html",
        "enum": [
         "html",
-        "json"
+        "json",
+        "png"
        ],
        "title": "Format",
        "type": "string"
@@ -3814,7 +4113,7 @@
   },
   "/changes/{change_id}/render": {
    "get": {
-    "description": "One change's own gate diff (the history view), as sanitised HTML (or ``format=json``).",
+    "description": "One change's own gate diff (the history view), as sanitised HTML (or ``format=json``).\n``view=screenshot`` is the visual diff: its overlay as ``format=png``, or wrapped in HTML.",
     "operationId": "render_change_changes__change_id__render_get",
     "parameters": [
      {
@@ -3851,7 +4150,8 @@
        "default": "html",
        "enum": [
         "html",
-        "json"
+        "json",
+        "png"
        ],
        "title": "Format",
        "type": "string"

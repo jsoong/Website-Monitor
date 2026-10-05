@@ -1,0 +1,4 @@
+# step 2
+  City News
+  Council approves budget — The vote was 7 to 2.
+~ Road work begins — Main Street closes [-Monday-]{+Tuesday instead+}.

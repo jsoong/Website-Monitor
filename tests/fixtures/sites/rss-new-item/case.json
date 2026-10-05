@@ -1,0 +1,11 @@
+{
+ "description": "A new entry appears at the top of the feed.",
+ "ext": "xml",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "alert"
+  }
+ ],
+ "content_type": "application/rss+xml"
+}

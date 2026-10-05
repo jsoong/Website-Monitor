@@ -5,6 +5,7 @@ changed as a ``PATCH`` (so untouched settings stay inherited); in bulk mode each
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from pydantic import ValidationError
@@ -35,6 +36,8 @@ from pagewatch.models import (
     BookmarkOut,
     FilterRule,
     FolderOut,
+    RecordsConfig,
+    Rect,
     TestFilterOut,
 )
 from pagewatch.ui.client import ApiClient
@@ -54,6 +57,28 @@ SPECIALS = [
     ("watch_links", "Watch link URLs"),
     ("watch_images", "Watch image URLs"),
 ]
+
+
+class SettingError(ValueError):
+    """A value typed into a free-form field (records JSON, screenshot rectangles) is unusable."""
+
+
+def parse_rects(text: str) -> list[dict[str, int]]:
+    """``x y width height`` per line (commas allowed) to the screenshot ignore rectangles."""
+    out: list[dict[str, int]] = []
+    for n, line in enumerate(text.splitlines(), start=1):
+        parts = line.replace(",", " ").split()
+        if not parts:
+            continue
+        try:
+            x, y, w, h = (int(p) for p in parts)
+            out.append(Rect(x=x, y=y, w=w, h=h).model_dump(mode="json"))
+        except (ValueError, ValidationError) as exc:
+            raise SettingError(
+                f"Screenshot rectangle on line {n} must be 'x y width height' "
+                "(whole pixels, width and height above zero)"
+            ) from exc
+    return out
 
 
 def diff_dict(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
@@ -316,6 +341,29 @@ class BookmarkEditor(QDialog):
             box.setChecked(getattr(f.special, key))
             self.specials[key] = box
             form.addRow(box)
+        shot = f.screenshot
+        self.shot_min = QDoubleSpinBox()
+        self.shot_min.setDecimals(3)
+        self.shot_min.setRange(0.0, 100.0)
+        self.shot_min.setSingleStep(0.1)
+        self.shot_min.setSuffix(" %")
+        self.shot_min.setValue(round(shot.min_ratio * 100, 4))
+        self.shot_min.setToolTip("Screenshot method: the share of changed pixels that is a change")
+        self.shot_height = QDoubleSpinBox()
+        self.shot_height.setRange(0.0, 100.0)
+        self.shot_height.setSuffix(" %")
+        self.shot_height.setValue(shot.height_change_pct)
+        self.shot_height.setToolTip(
+            "Screenshot method: a taller or shorter page counts as a change"
+        )
+        self.shot_ignore = QPlainTextEdit(
+            "\n".join(f"{r.x} {r.y} {r.w} {r.h}" for r in shot.ignore)
+        )
+        self.shot_ignore.setPlaceholderText("x y width height, one rectangle per line")
+        self.shot_ignore.setMaximumHeight(70)
+        form.addRow("Screenshots: changed pixels that count", self.shot_min)
+        form.addRow("Screenshots: page height change that counts", self.shot_height)
+        form.addRow("Screenshots: ignore rectangles", self.shot_ignore)
         self.test_btn = QPushButton("Test filter against the stored pages")
         self.test_btn.setEnabled(not self.bulk)
         self.test_btn.clicked.connect(self.run_test_filter)
@@ -397,11 +445,19 @@ class BookmarkEditor(QDialog):
             **lists,
             "builtin_cosmetic": self.builtin.isChecked(),
             "special": {k: box.isChecked() for k, box in self.specials.items()},
+            "screenshot": {
+                "ignore": parse_rects(self.shot_ignore.toPlainText()),
+                "min_ratio": round(self.shot_min.value() / 100, 6),
+                "height_change_pct": float(self.shot_height.value()),
+            },
         }
 
     def run_test_filter(self) -> None:
         try:
             candidate = {"filter": self.filter_dict()}
+        except SettingError as exc:
+            self.test_summary.setText(str(exc))
+            return
         except ValidationError as exc:
             self.test_summary.setText(f"Invalid rule: {exc.errors()[0]['msg']}")
             return
@@ -516,6 +572,29 @@ class BookmarkEditor(QDialog):
         self.timeout.setValue(f.timeout_s)
         self.verify = QCheckBox("Verify TLS certificates")
         self.verify.setChecked(f.verify_tls)
+        b = f.browser
+        self.b_delay = QDoubleSpinBox()
+        self.b_delay.setRange(0, 60)
+        self.b_delay.setValue(b.delay_after_load_s)
+        self.b_scrolls = QSpinBox()
+        self.b_scrolls.setRange(0, 50)
+        self.b_scrolls.setValue(b.scroll_count)
+        self.b_scrolls.setToolTip(
+            "Scroll down this many times (800 px, 500 ms apart) before reading"
+        )
+        self.b_mouse = QSpinBox()
+        self.b_mouse.setRange(0, 20)
+        self.b_mouse.setValue(b.mouse_moves)
+        self.b_full = QCheckBox("Screenshots capture the whole page (not just the first screen)")
+        self.b_full.setChecked(b.full_page)
+        self.records_json = QPlainTextEdit(
+            json.dumps(f.records.model_dump(mode="json"), indent=2) if f.records else ""
+        )
+        self.records_json.setPlaceholderText(
+            '{"path": "$.items", "id_field": "id", "filter": "status = Active", '
+            '"fields": [], "events": ["new", "changed", "removed"]}'
+        )
+        self.records_json.setMaximumHeight(110)
         form.addRow("HTTP method", self.http_method)
         form.addRow("Extra headers (Name: value)", self.headers)
         form.addRow("POST body", self.body)
@@ -523,6 +602,11 @@ class BookmarkEditor(QDialog):
         form.addRow("Proxy", self.proxy)
         form.addRow("Timeout (s)", self.timeout)
         form.addRow(self.verify)
+        form.addRow("Browser: wait after load (s)", self.b_delay)
+        form.addRow("Browser: scroll times", self.b_scrolls)
+        form.addRow("Browser: mouse moves", self.b_mouse)
+        form.addRow(self.b_full)
+        form.addRow("Records source (JSON)", self.records_json)
 
     def _build_notes(self) -> None:
         o = self._orig
@@ -554,7 +638,25 @@ class BookmarkEditor(QDialog):
             if ":" in line:
                 name, _, value = line.partition(":")
                 headers[name.strip()] = value.strip()
+        records: dict[str, Any] | None = None
+        raw = self.records_json.toPlainText().strip()
+        if raw:
+            try:
+                records = RecordsConfig.model_validate_json(raw).model_dump(mode="json")
+            except ValidationError as exc:
+                first = exc.errors()[0]
+                where = ".".join(str(p) for p in first["loc"])
+                raise SettingError(
+                    f"Records configuration: {where + ': ' if where else ''}{first['msg']}"
+                ) from exc
         return {
+            "browser": {
+                "delay_after_load_s": float(self.b_delay.value()),
+                "scroll_count": self.b_scrolls.value(),
+                "mouse_moves": self.b_mouse.value(),
+                "full_page": self.b_full.isChecked(),
+            },
+            "records": records,
             "method": self.http_method.currentText(),
             "headers": headers,
             "body": self.body.toPlainText() or None,
@@ -621,6 +723,7 @@ class BookmarkEditor(QDialog):
                 ]
             orig["builtin_cosmetic"] = o.filter.builtin_cosmetic
             orig["special"] = o.filter.special.model_dump(mode="json")
+            orig["screenshot"] = o.filter.screenshot.model_dump(mode="json")
             d = new if self.bulk else diff_dict(orig, new)
             if d:
                 patch["filter"] = d
@@ -661,6 +764,9 @@ class BookmarkEditor(QDialog):
     def save(self) -> None:
         try:
             patch = self.build_patch()
+        except SettingError as exc:
+            self.error.setText(str(exc))
+            return
         except ValidationError as exc:
             self.error.setText(f"Invalid filter rule: {exc.errors()[0]['msg']}")
             return

@@ -1,0 +1,6 @@
+{
+ "description": "The DOM the browser fetcher returns for a JavaScript app: a new article renders.",
+ "ext": "html",
+ "bookmark": {"check_method": "browser"},
+ "expect": [{"outcome": "alert"}]
+}

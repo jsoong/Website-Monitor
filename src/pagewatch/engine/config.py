@@ -147,10 +147,24 @@ def resolve_candidate(
     )
 
 
+def source_options(fetch: FetchConfig) -> dict[str, Any]:
+    """The part of a bookmark's fetch config the worker pipeline needs to read its content
+    (records layout, feed options): small, picklable, and nothing secret."""
+    out: dict[str, Any] = {"feed": fetch.feed.model_dump(mode="json")}
+    if fetch.records is not None:
+        out["records"] = fetch.records.model_dump(mode="json")
+    return out
+
+
 def validate_sections(
-    sections: dict[str, Any], folder_id: int | None, folders: FolderCache, settings: Settings
+    sections: dict[str, Any],
+    folder_id: int | None,
+    folders: FolderCache,
+    settings: Settings,
+    source_type: str | None = None,
 ) -> None:
-    """Validate would-be stored overrides against the defaults they will be merged with."""
+    """Validate would-be stored overrides against the defaults they will be merged with.
+    A ``records`` source must end up with a ``fetch.records`` configuration."""
     models: dict[str, type[BaseModel]] = {
         "schedule": ScheduleConfig,
         "fetch": FetchConfig,
@@ -167,3 +181,7 @@ def validate_sections(
             value = {"actions": value}
         base = deep_merge(_section_defaults(name, settings), inherited.get(name, {}) or {})
         model.model_validate(deep_merge(base, value or {}))
+    if source_type == "records":
+        fetch = deep_merge(inherited.get("fetch", {}) or {}, sections.get("fetch", {}) or {})
+        if not fetch.get("records"):
+            raise ValueError("a records source needs a 'records' configuration (fetch.records)")

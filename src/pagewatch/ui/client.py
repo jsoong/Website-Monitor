@@ -7,6 +7,7 @@ into the shared models of ``pagewatch.models``.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -31,7 +32,17 @@ from pagewatch.models import (
     TestFilterOut,
 )
 
-__all__ = ["ApiClient", "ApiError", "EngineNotRunning", "connect"]
+__all__ = ["ApiClient", "ApiError", "EngineNotRunning", "ScreenshotDiff", "connect"]
+
+
+@dataclass(frozen=True, slots=True)
+class ScreenshotDiff:
+    """A screenshot comparison as the viewer shows it: the overlay picture and its numbers."""
+
+    png: bytes
+    regions: int  # changed regions, boxed in red on the picture
+    changed_pixels: int
+    identical: bool  # nothing unread: the picture is just the last screenshot you read
 
 
 class ApiClient:
@@ -49,7 +60,7 @@ class ApiClient:
     def close(self) -> None:
         self._http.close()
 
-    def _call(self, method: str, path: str, **kw: Any) -> Any:
+    def _raw(self, method: str, path: str, **kw: Any) -> httpx.Response:
         try:
             resp = self._http.request(method, path, **kw)
         except httpx.TransportError as exc:
@@ -60,6 +71,10 @@ class ApiClient:
             except ValueError:
                 detail = resp.text
             raise ApiError(resp.status_code, str(detail))
+        return resp
+
+    def _call(self, method: str, path: str, **kw: Any) -> Any:
+        resp = self._raw(method, path, **kw)
         if resp.status_code == 204 or not resp.content:
             return None
         return resp.json()
@@ -164,6 +179,22 @@ class ApiClient:
         )
         return RenderOut.model_validate(
             self._call("GET", f"/changes/{change_id}/render", params=params)
+        )
+
+    def screenshot_diff(self, bookmark_id: int, change_id: int | None = None) -> ScreenshotDiff:
+        """The screenshot diff overlay: one alert's own (``change_id``), or everything unread
+        (last read -> latest). Raises ``ApiError`` 404 when no screenshot was stored."""
+        path = (
+            f"/changes/{change_id}/render" if change_id is not None
+            else f"/bookmarks/{bookmark_id}/diff"
+        )  # fmt: skip
+        resp = self._raw("GET", path, params={"view": "screenshot", "format": "png"})
+        h = resp.headers
+        return ScreenshotDiff(
+            png=resp.content,
+            regions=int(h.get("x-pagewatch-regions", "0")),
+            changed_pixels=int(h.get("x-pagewatch-changed-pixels", "0")),
+            identical=h.get("x-pagewatch-identical") == "true",
         )
 
     def false_positive(self, change_id: int) -> FalsePositiveOut:

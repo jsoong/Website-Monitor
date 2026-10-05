@@ -1,0 +1,11 @@
+{
+ "description": "Every publication date is bumped but no entry changed: not a change.",
+ "ext": "xml",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "unchanged"
+  }
+ ],
+ "content_type": "application/rss+xml"
+}

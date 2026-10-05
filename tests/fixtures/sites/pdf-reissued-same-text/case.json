@@ -1,0 +1,11 @@
+{
+ "description": "The PDF is re-issued with an extra blank page: different bytes, same text, no change.",
+ "ext": "pdf",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "unchanged"
+  }
+ ],
+ "content_type": "application/pdf"
+}

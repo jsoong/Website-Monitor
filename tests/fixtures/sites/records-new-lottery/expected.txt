@@ -1,0 +1,4 @@
+# step 2
+  lottery_id: 101 | name: Sunset Terrace | borough: BK | status: Active
+  lottery_id: 102 | name: Harbor View | borough: MN | status: Active
++ lottery_id: 104 | name: Riverside Commons | borough: QN | status: Active

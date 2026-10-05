@@ -26,6 +26,22 @@ def parse_duration(text: str) -> int:
     return int(m.group(1)) * _UNITS[m.group(2).lower()]
 
 
+SOURCE_TYPES = [
+    "auto", "html", "feed", "pdf", "docx", "xlsx", "ftp", "file", "folder", "image", "binary",
+    "records",
+]  # fmt: skip
+
+
+def parse_json_object(text: str) -> dict[str, Any]:
+    try:
+        value = json.loads(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not valid JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise argparse.ArgumentTypeError("expected a JSON object, e.g. '{\"timeout_s\": 60}'")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="pagewatch-cli", description="Control a running PageWatch engine"
@@ -41,6 +57,13 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--folder", help="folder name or id")
     add.add_argument("--interval", type=parse_duration, help="e.g. 15m, 2h, 1d (minimum 1m)")
     add.add_argument("--method", choices=["auto", "static", "browser", "screenshot"])
+    add.add_argument("--type", dest="source_type", choices=SOURCE_TYPES,
+                     help="what the source is (default: detected from the content)")  # fmt: skip
+    add.add_argument(
+        "--fetch", type=parse_json_object, metavar="JSON",
+        help="fetch options as a JSON object, e.g. a records source: "
+        '\'{"records": {"path": "$.items", "id_field": "id"}}\'',
+    )  # fmt: skip
     add.add_argument("--keywords", help="keyword rules, one per line (\\n separated)")
     add.add_argument("--private", action="store_true", help="alerts never include page content")
 
@@ -159,6 +182,10 @@ def run(args: argparse.Namespace, client: EngineClient) -> Any:
             body["schedule"] = {"interval_s": args.interval}
         if args.method:
             body["check_method"] = args.method
+        if args.source_type:
+            body["source_type"] = args.source_type
+        if args.fetch:
+            body["fetch"] = args.fetch
         if args.keywords:
             body["gate"] = {"keywords": args.keywords.replace("\\n", "\n")}
         if args.private:

@@ -413,6 +413,8 @@ class CheckCommit:
     refresh_etag_of: int | None = None  # latest version id whose etag/last-modified to refresh
     etag: str | None = None
     last_modified: str | None = None
+    method: str | None = None  # check_run.method once known (document, feed, records, ...)
+    check_method: str | None = None  # persist a new bookmark.check_method (auto -> browser)
 
 
 @dataclass(slots=True)
@@ -435,6 +437,8 @@ def commit_check(conn: sqlite3.Connection, c: CheckCommit) -> CommitResult:
     }
     if c.consecutive_errors is not None:
         upd["consecutive_errors"] = c.consecutive_errors
+    if c.check_method is not None:
+        upd["check_method"] = c.check_method
     status = c.status
 
     if c.new_version is not None:
@@ -512,10 +516,11 @@ def commit_check(conn: sqlite3.Connection, c: CheckCommit) -> CommitResult:
         upd["consecutive_errors"] = 0
     bookmark_update(conn, c.bookmark_id, upd, c.finished_at)
     conn.execute(
-        "UPDATE check_run SET finished_at=?, outcome=?, reason=?, duration_ms=?, bytes=? "
-        "WHERE id=?",
-        (c.finished_at, c.outcome.value, c.reason, c.duration_ms, c.byte_count, c.run_id),
-    )
+        "UPDATE check_run SET finished_at=?, outcome=?, reason=?, duration_ms=?, bytes=?, "
+        "method=COALESCE(?, method) WHERE id=?",
+        (c.finished_at, c.outcome.value, c.reason, c.duration_ms, c.byte_count, c.method,
+         c.run_id),
+    )  # fmt: skip
     return res
 
 

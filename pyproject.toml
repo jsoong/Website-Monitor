@@ -26,6 +26,12 @@ dependencies = [
     "tzdata>=2024.1; sys_platform == 'win32'",
     "windows-toasts>=1.1; sys_platform == 'win32'",
     "pystray>=0.19; sys_platform == 'win32'",
+    "playwright>=1.63.0",
+    "pdfminer-six>=20260107",
+    "python-docx>=1.2.0",
+    "openpyxl>=3.1.5",
+    "feedparser>=6.0.14",
+    "aioftp>=0.28.3",
 ]
 
 [project.scripts]

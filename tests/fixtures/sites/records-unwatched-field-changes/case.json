@@ -1,0 +1,24 @@
+{
+ "description": "Only an unwatched field (views) changes: not a change.",
+ "ext": "json",
+ "bookmark": {
+  "source_type": "records",
+  "fetch": {
+   "records": {
+    "path": "$.lotteries",
+    "id_field": "lottery_id",
+    "fields": [
+     "name",
+     "borough",
+     "status"
+    ]
+   }
+  }
+ },
+ "expect": [
+  {
+   "outcome": "unchanged"
+  }
+ ],
+ "content_type": "application/json"
+}

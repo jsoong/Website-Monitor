@@ -261,6 +261,84 @@ class AuthConfig(PWModel):
     secret_key: str  # keyring entry name; the password itself is never stored here
 
 
+class Rect(PWModel):
+    """A pixel rectangle on a screenshot (origin top-left)."""
+
+    x: int = Field(ge=0)
+    y: int = Field(ge=0)
+    w: int = Field(gt=0)
+    h: int = Field(gt=0)
+
+
+class BrowserOptions(PWModel):
+    """How the browser and screenshot methods drive the page (spec: Fetch layer, browser row)."""
+
+    delay_after_load_s: float = Field(0.0, ge=0.0, le=60.0)  # extra wait after ``load``
+    scroll_count: int = Field(0, ge=0, le=50)  # 800 px, 500 ms apart
+    mouse_moves: int = Field(0, ge=0, le=20)  # synthetic pointer movement
+    keys: list[str] = Field(default_factory=list, max_length=10)  # pressed after the load
+    full_page: bool = True  # screenshot method: whole page, or only the viewport
+    clip: Rect | None = None  # screenshot method: only this rectangle
+
+
+class FeedOptions(PWModel):
+    summary: bool = True  # include each entry's summary text, not just its title
+    max_entries: int = Field(200, ge=1, le=2000)
+    download_enclosures: bool = False
+    enclosures_dir: str | None = None  # required when downloading
+    enclosure_max_bytes: int = Field(20 * 1024 * 1024, ge=1024)
+
+    @model_validator(mode="after")
+    def _dir(self) -> FeedOptions:
+        if self.download_enclosures and not self.enclosures_dir:
+            raise ValueError("download_enclosures needs 'enclosures_dir'")
+        return self
+
+
+class ListingOptions(PWModel):
+    """Folder and FTP directory listings."""
+
+    recursive: bool = False
+    max_entries: int = Field(5000, ge=1, le=100000)
+
+
+RecordEvent = Literal["new", "changed", "removed"]
+
+
+def _all_record_events() -> list[RecordEvent]:
+    return ["new", "changed", "removed"]
+
+
+class RecordsConfig(PWModel):
+    """A JSON or CSV feed whose rows are watched record by record (spec: Records sources)."""
+
+    format: Literal["auto", "json", "csv"] = "auto"
+    path: str = "$"  # JSONPath to the row array (JSON only)
+    id_field: str = Field(min_length=1)
+    filter: str | None = None  # row filter, e.g. ``borough in [MN, BK] and status = Active``
+    fields: list[str] = Field(default_factory=list)  # fields to watch; empty = every field
+    events: list[RecordEvent] = Field(
+        default_factory=_all_record_events, min_length=1
+    )  # which events alert
+    delimiter: str = Field(",", min_length=1, max_length=1)  # CSV only
+
+    @model_validator(mode="after")
+    def _syntax(self) -> RecordsConfig:
+        from pagewatch.engine.pipeline.records import (
+            RecordsSyntaxError,
+            parse_path,
+            parse_row_filter,
+        )
+
+        try:
+            parse_path(self.path)
+            if self.filter and self.filter.strip():
+                parse_row_filter(self.filter)
+        except RecordsSyntaxError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
+
+
 class FetchConfig(PWModel):
     method: Literal["GET", "POST"] = "GET"
     headers: dict[str, str] = Field(default_factory=dict)
@@ -272,6 +350,10 @@ class FetchConfig(PWModel):
     max_bytes: int = Field(20 * 1024 * 1024, ge=1024)
     auth: AuthConfig | None = None
     cookies_file: str | None = None
+    browser: BrowserOptions = Field(default_factory=BrowserOptions)
+    feed: FeedOptions = Field(default_factory=FeedOptions)
+    listing: ListingOptions = Field(default_factory=ListingOptions)
+    records: RecordsConfig | None = None
 
 
 # --------------------------------------------------------------------------------------
@@ -350,12 +432,21 @@ class SpecialFilters(PWModel):
     watch_images: bool = False
 
 
+class ScreenshotFilters(PWModel):
+    """Screenshot comparison (spec: Screenshot comparison): what counts as a visual change."""
+
+    ignore: list[Rect] = Field(default_factory=list)  # blanked out before comparing
+    min_ratio: float = Field(0.002, ge=0.0, le=1.0)  # changed-pixel share that is a change
+    height_change_pct: float = Field(5.0, ge=0.0, le=100.0)  # page height change that is a change
+
+
 class FilterConfig(PWModel):
     cosmetic: list[FilterRule] = Field(default_factory=list)
     builtin_cosmetic: bool = True  # data/cookie_banner_selectors.txt
     watch: list[FilterRule] = Field(default_factory=list)
     ignore: list[FilterRule] = Field(default_factory=list)
     special: SpecialFilters = Field(default_factory=SpecialFilters)
+    screenshot: ScreenshotFilters = Field(default_factory=ScreenshotFilters)
 
     @model_validator(mode="after")
     def _kinds(self) -> FilterConfig:
@@ -436,6 +527,9 @@ class Settings(PWModel):
     per_host_min_gap_s: float = Field(2.0, ge=0.0)
     host_overrides: dict[str, HostOverride] = Field(default_factory=dict)
     worker_processes: int = Field(3, ge=1, le=32)
+    browser_channel: str | None = "msedge"  # Playwright channel tried first; None = bundled only
+    browser_executable: str | None = None  # a browser binary to use instead of the channel
+    browser_args: list[str] = Field(default_factory=list)  # extra launch arguments
     default_schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     default_user_agent: str = DEFAULT_USER_AGENT
     global_proxy: str | None = None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import Any
 
@@ -251,3 +252,104 @@ def test_false_positive_dialog_builds_the_patch_from_the_ticked_proposals(qapp: 
     )
     assert empty.patch() == {"filter": {"ignore": []}}
     QApplication.processEvents()
+
+
+# -- M4: browser, screenshot and records settings in the editor --------------------------
+
+RECORDS = {"path": "$.items", "id_field": "id", "filter": "status = Active", "fields": ["name"]}
+
+
+def test_editor_round_trips_the_source_settings_without_inventing_changes(
+    eng: EngineThread, api_client: ApiClient, qapp: Any
+) -> None:
+    eng.site.set("/r.json", '{"items": [{"id": 1, "name": "a", "status": "Active"}]}',
+                 content_type="application/json")  # fmt: skip
+    out = api_client.create_bookmark(
+        {
+            "url": eng.site.url("/r.json"), "name": "Feed", "source_type": "records",
+            "schedule": {"interval_s": 3600, "jitter_pct": 0},
+            "fetch": {"records": RECORDS, "browser": {"scroll_count": 3, "full_page": False}},
+            "filter": {"screenshot": {"min_ratio": 0.01,
+                                      "ignore": [{"x": 1, "y": 2, "w": 30, "h": 40}]}},
+        }
+    )  # fmt: skip
+    eng.settle()
+    ed = BookmarkEditor(api_client, [api_client.bookmark(out.id)], api_client.folders())
+    assert ed.build_patch() == {}  # saving an untouched records/screenshot bookmark sends nothing
+    assert ed.b_scrolls.value() == 3 and not ed.b_full.isChecked()
+    assert ed.shot_min.value() == 1.0 and ed.shot_ignore.toPlainText() == "1 2 30 40"
+    assert '"id_field": "id"' in ed.records_json.toPlainText()
+
+
+def test_editor_sends_only_the_changed_browser_screenshot_and_records_settings(
+    eng: EngineThread, api_client: ApiClient, qapp: Any, pump_until: Callable[..., None]
+) -> None:
+    bid = make(eng, api_client)
+    ed = BookmarkEditor(api_client, [api_client.bookmark(bid)], api_client.folders())
+    assert ed.build_patch() == {}
+    assert ed.b_delay.value() == 0 and ed.b_scrolls.value() == 0 and ed.b_full.isChecked()
+    assert ed.shot_min.value() == 0.2 and ed.shot_height.value() == 5.0  # the specified defaults
+
+    ed.method.setCurrentIndex(ed.method.findData("screenshot"))
+    ed.b_delay.setValue(1.5)
+    ed.b_scrolls.setValue(4)
+    ed.shot_min.setValue(0.5)
+    ed.shot_ignore.setPlainText("10 20 300 50\n0, 0, 100, 40")
+    patch = ed.build_patch()
+    assert patch["check_method"] == "screenshot"
+    assert patch["fetch"] == {"browser": {"delay_after_load_s": 1.5, "scroll_count": 4}}
+    assert patch["filter"] == {
+        "screenshot": {
+            "min_ratio": 0.005,
+            "ignore": [{"x": 10, "y": 20, "w": 300, "h": 50}, {"x": 0, "y": 0, "w": 100, "h": 40}],
+        }
+    }
+    ed.save()
+    pump_until(lambda: api_client.bookmark(bid).fetch.browser.scroll_count == 4, what="saved")
+    after = api_client.bookmark(bid)
+    assert (
+        after.check_method.value == "screenshot" and after.fetch.browser.delay_after_load_s == 1.5
+    )
+    assert after.filter.screenshot.min_ratio == 0.005 and len(after.filter.screenshot.ignore) == 2
+    assert after.overrides["fetch"]["browser"] == {"delay_after_load_s": 1.5, "scroll_count": 4}
+
+
+def test_editor_can_make_a_bookmark_a_records_source_and_validates_the_json(
+    eng: EngineThread, api_client: ApiClient, qapp: Any, pump_until: Callable[..., None]
+) -> None:
+    bid = make(eng, api_client)
+    ed = BookmarkEditor(api_client, [api_client.bookmark(bid)], api_client.folders())
+    ed.source.setCurrentIndex(ed.source.findData("records"))
+    ed.records_json.setPlainText('{"id_field": ')  # not JSON
+    ed.save()
+    assert ed.error.text().startswith("Records configuration:")
+    ed.records_json.setPlainText('{"path": "data", "id_field": "id"}')  # a bad JSONPath
+    ed.save()
+    assert "must start with" in ed.error.text()
+    ed.records_json.setPlainText('{"id_field": "id", "filter": "status ="}')
+    ed.save()
+    assert "row filter" in ed.error.text()
+    ed.records_json.setPlainText(json.dumps(RECORDS))
+    ed.save()
+    pump_until(lambda: api_client.bookmark(bid).source_type.value == "records", what="saved")
+    rec = api_client.bookmark(bid).fetch.records
+    assert rec is not None and rec.id_field == "id" and rec.filter == "status = Active"
+    # clearing the box removes the override again
+    ed2 = BookmarkEditor(api_client, [api_client.bookmark(bid)], api_client.folders())
+    ed2.source.setCurrentIndex(ed2.source.findData("auto"))
+    ed2.records_json.setPlainText("")
+    assert ed2.build_patch()["fetch"] == {"records": None}
+
+
+def test_editor_rejects_bad_screenshot_rectangles_and_test_filter_says_so(
+    eng: EngineThread, api_client: ApiClient, qapp: Any
+) -> None:
+    bid = make(eng, api_client)
+    ed = BookmarkEditor(api_client, [api_client.bookmark(bid)], api_client.folders())
+    for bad in ("1 2 3", "a b c d", "1 2 0 5", "-1 0 5 5"):
+        ed.shot_ignore.setPlainText(bad)
+        ed.save()
+        assert ed.error.text().startswith("Screenshot rectangle on line 1"), bad
+        ed.error.setText("")
+    ed.run_test_filter()
+    assert ed.test_summary.text().startswith("Screenshot rectangle on line 1")

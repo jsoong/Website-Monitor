@@ -1,0 +1,24 @@
+{
+ "description": "A watched field changes: Closed becomes Active.",
+ "ext": "json",
+ "bookmark": {
+  "source_type": "records",
+  "fetch": {
+   "records": {
+    "path": "$.lotteries",
+    "id_field": "lottery_id",
+    "fields": [
+     "name",
+     "borough",
+     "status"
+    ]
+   }
+  }
+ },
+ "expect": [
+  {
+   "outcome": "alert"
+  }
+ ],
+ "content_type": "application/json"
+}

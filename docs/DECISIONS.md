@@ -335,3 +335,220 @@ half rewrite: 10,000 blocks, 50% replaced             5850.5ms /  6485.2ms*(1000
   API) in a background thread so the Qt main thread uses real HTTP and WebSocket. Qt runs with
   `QT_QPA_PLATFORM=offscreen`; QtWebEngine runs headless with `--no-sandbox --disable-gpu` (CI needs
   `libegl1 libnss3 libxkbcommon0 ...`; UI tests skip when PySide6 is not installed).
+
+## M4 · Dynamic pages and other sources
+
+### Scope and dependencies
+
+* **Dependencies added: `playwright`, `pdfminer.six`, `python-docx`, `openpyxl`, `feedparser`,
+  `aioftp`**: every one is named in the spec's technology table. Nothing else was added: no numpy
+  (the pixel diff is Pillow only), no JSONPath library (a subset is implemented, below), no keyring
+  (M6). `tests/` builds its PDF, DOCX, XLSX and PNG fixtures itself (`tests/support/docs.py`).
+* **No migration.** `bookmark.fetch_json` carries the new options, `version.screenshot_hash` and
+  `check_run.method` already existed, and `change.diff_hash` carries the screenshot diff.
+* **Not in M4** (their own milestones): logins, Check-Macros, persistent browser profiles, cookie
+  import, per-bookmark proxies and the keyring (M6); Follow-Links and merge pages (M7); resume,
+  connectivity, retention and the per-job timeout (M5). The browser manager already has the shape M6
+  needs (a context per profile), but only the shared ephemeral contexts exist.
+
+### Fetch layer
+
+* **Dispatch** (`fetch/select.py`): the URL scheme picks the transport (`file:`, `ftp:`/`ftps:`,
+  `http(s):`); for web pages `check_method` picks static, browser or screenshot. What the bytes *are*
+  (PDF, feed, records) is decided from the content, so `check_run.method` is refined after the fact:
+  a static check of a PDF is recorded as `document`, of a feed as `feed`, of records as `records`;
+  browser, screenshot, FTP and file checks keep their own name ("how the content was obtained").
+  `FetcherSet` is what tests replace with scripted fetchers.
+* **Errors without new error kinds.** The spec's `FetchError.kind` list is unchanged. A missing
+  local file or FTP path is `http` with status 404, a refused login is 401, a permission error 403
+  (`check_run.reason` reads `http_404` and so on); other I/O failures are `connection` (transient).
+  Too many directory entries is `too_large` with a message naming `listing.max_entries`, never a
+  silently truncated listing.
+* **Local files** keep the spec's mtime+size shortcut in the version's `etag` column (`<size>-<mtime
+  ns>`), which is how a conditional GET is carried; touching a file without changing it is read, then
+  stopped by the raw-hash check. Folders have no cheap signature, so their listing is rebuilt and
+  compared by hash.
+* **FTP**: explicit FTPS (`AUTH TLS`) for `ftps://` on any port, implicit TLS on port 990. The
+  password never lives in SQLite: `fetch.auth.secret_key` names it and an engine-level `SecretStore`
+  (an interface only; the keyring-backed store arrives in M6) supplies it, so a missing secret fails
+  with "no stored secret named ..." instead of trying an empty password. Not exercised against a real
+  FTPS server here (the in-process server has no TLS): listed under manual checks.
+* **Feeds**: one `<li>` per entry (title, then summary), de-duplicated by entry id or link. Timestamps
+  are left out of the text on purpose (many feeds bump `updated` on every fetch). "Optional enclosure
+  download" is `fetch.feed.download_enclosures` with `enclosures_dir`: each enclosure not already
+  there is saved (capped per file and 25 per check, never fails the check).
+* **Documents** become deterministic HTML (the viewer converts the stored raw bytes again to inject
+  highlights at the extractor's DOM paths): PDF text per page with one paragraph per text box and
+  no "Page N" headings (inserting a page would otherwise rewrite every later heading); DOCX
+  paragraphs and tables in order (headers, footers, footnotes and text boxes are not read); XLSX one
+  table per *visible* sheet, capped at 5,000 rows with a warning. Legacy `.doc`/`.xls` are rejected
+  with a message saying to save as `.docx`/`.xlsx`. An unreadable document or feed fails the check
+  (`parse`); it never becomes an empty page that reads as "everything was removed".
+* **Image sources** are treated like binary content plus a one-line description (format, size,
+  hash). Pixel comparison of arbitrary image URLs is not in the spec.
+
+### Records sources
+
+* **Config lives in `fetch.records`** (`RecordsConfig`): format (`auto|json|csv`), `path`, `id_field`,
+  `filter`, `fields`, `events`, `delimiter`. A `records` bookmark without it is rejected with a 422
+  at create/patch (folder defaults may supply it), and again at check time.
+* **JSONPath subset**: `$`, `.key`, `['key']`, `[n]` (negative too), `[*]`, `.*`, `..key`. An object
+  of objects (`{"123": {...}}`) is read as rows whose key is the ID when a row has none.
+* **Row filter language** (spec gives two examples): `field = value`, `!=`, `<`, `<=`, `>`, `>=`,
+  `in [a, b]`, `not in [...]`, `contains`, `startswith`, `endswith`, `not`, `and`, `or` (`and` binds
+  tighter), dotted field paths, quoted values. Comparison is case-insensitive and numeric when both
+  sides parse as numbers (`1,500` counts). Syntax errors are rejected when the config is saved.
+* **Blocks are sorted by ID** (numerically when numeric), so a feed that reorders its rows is not a
+  change; the block text is `<id_field>: <id> | <field>: <value> | ...` with watched fields in the
+  configured order (default: every other field, sorted). A repeated ID keeps the first row; rows
+  without an ID are skipped; both warn.
+* **A wrong shape fails the check** (`parse`, e.g. "JSONPath '$.data' matched nothing"): an API that
+  changed its layout must not look like every record was removed. An empty array that the path does
+  find *is* real and is reported as removals.
+* **Events** (`new`/`changed`/`removed`) are computed from the block lists by record ID after the
+  normal gate. A bookmark that alerts only on some events gets `suppressed` with reason
+  `records_events` when the verdict was an alert but none of its events occurred; the version is still
+  stored, so the same change is not found again. The alert summary names the records
+  ("New: lottery_id: 104 | name: Riverside Commons | ...", at most three per kind).
+* **Viewer**: the highlight view falls back to the text diff (records have no DOM); the New and Old
+  tabs list the records instead of the raw JSON.
+
+### Browser
+
+* **`BrowserManager`** is built around *generations*: one launched browser plus its contexts. Recycling
+  (500 pages, or 3 crashes in a row) retires the current generation and starts a new one on the next
+  page, while the retired one finishes its running pages and is then closed. The idle timer runs on
+  the engine's injectable clock (30 s granularity), so tests drive it with `FakeClock`.
+* **Launch order**: `browser_executable` if set, else the `msedge` channel in new headless mode
+  (`--headless=new`), else, or after either fails, Playwright's bundled Chromium, which is downloaded
+  with `playwright install chromium` the first time it is missing. If nothing launches the state is
+  `unavailable` for five minutes (no install attempt per check) and every browser check fails with a
+  `browser` error naming why. New settings: `browser_channel`, `browser_executable`, `browser_args`
+  (the sandbox needs `--no-sandbox` as root).
+* **The launch is outside the 45 s page budget** (`BrowserManager.ensure()` runs first): a first
+  launch that downloads Chromium must not time out as if the page were slow. A hard timeout of
+  45 s + 5 s grace still bounds a page that hangs after `load`.
+* **At most `min(3, browser_pool)` pages** at once even if the pool setting is raised; the scheduler's
+  browser pool is the second gate (it also covers the pool accounting of auto-detected bookmarks).
+* **Resource blocking** is per page (images, media and fonts), off for the screenshot method.
+  Same-origin iframes (and `about:` frames) are replaced by a `div[data-pw-iframe]` holding their
+  body, deepest first; cross-origin frames stay out.
+* **Per-bookmark proxy and "verify TLS" opt-out**: TLS opt-out gets its own shared context; a
+  per-bookmark proxy is not applied to browser checks until M6 (the global proxy is).
+
+### Method auto-detection
+
+* **Runs on the first check of an `auto` web bookmark only**, and persists `browser` when it switches
+  (an `auto` bookmark that is fine statically stays `auto`). Re-detecting on every check would send
+  a legitimately short page ("No openings") through the browser each time, and a redesign that empties
+  a static page is a change to report, not a reason to switch methods silently.
+* **The < 200 characters trigger needs a script that could be the source**: an empty app mount point
+  (`app_shell`), a "requires JavaScript" notice, an external script, or at least 2 KB of inline
+  script (`little_text:<n>`). A short page whose only script is a few bytes of inline code stays
+  static. This tightens M3's rule (which already required a script) because test fixtures with an
+  inline build id showed a plain status page being sent to the browser; the browser costs one of the
+  three scarce pool slots. Detection looks at the *unfiltered* text, so a watch filter cannot make a
+  normal page look empty.
+* **How it is recorded**: the first `check_run` has `reason = auto_browser:<why>` and `method =
+  browser`, the log has a `method_switched` line, `bookmark.check_method` becomes `browser` in the same
+  transaction as the version, and the scheduler moves the bookmark to the browser pool.
+* **If no browser works** the first check fails loudly (`browser` error, one problem toast after the
+  error threshold) and detection runs again next time. Storing the empty shell instead would
+  monitor nothing and say it was fine.
+* **`POST /preview` under `auto`** does the same re-fetch, so the assistant shows the rendered page and
+  `method: browser`; if the browser cannot be used it keeps the static page and adds a warning.
+
+### Screenshot method and comparison
+
+* **The picture decides.** For `check_method=screenshot` a change is a visual change over the
+  threshold; the text rules (keywords, word thresholds, ignore-removed) are not consulted, the
+  bad-fetch rules (error status, minimum characters, blacklist, whitelist) still are, and the page text
+  is stored anyway so the Text diff, New and Old tabs keep working. Identical pixels are `unchanged`
+  whatever the markup did; a difference below the threshold is `unchanged` too and **stores nothing**
+  (drift accumulates against the last stored picture, so a slow real change still gets through).
+  A bookmark switched to screenshots from another method stores a silent baseline
+  (`screenshot_baseline`), since there is nothing to compare with.
+* **Pixel diff**: constants from the spec (threshold 24/255, `min_ratio` 0.2 %, height 5 %).
+  Different sizes are compared on a common canvas padded with white. Grouping runs on an 8 px grid
+  (the mask reduced by 8, dilated by one cell, 8-connected components), which keeps a tall page
+  fast; a region's box covers the changed cells, not the dilation halo. At most 50 regions are
+  reported (largest first; the total is kept), and a change touching more than 60,000 grid cells is
+  one region (grouping a rewrite of a 12,000 px page cost seconds and said nothing).
+* **Configuration**: capture options live in `fetch.browser` (`full_page`, `clip`, delays); the
+  comparison parameters are filters and live in `filter.screenshot` (`ignore` rectangles, `min_ratio`,
+  `height_change_pct`), which is where the spec puts "screenshot filters".
+* **Storage**: the PNG is a blob (`version.screenshot_hash`); the gate diff stored in `diff_hash` is
+  JSON with `type: "screenshot"` (old/new hashes, ratio, regions, overlay blob). The text views
+  ignore such a diff and compute the text diff from the stored blocks.
+* **API**: `view=screenshot` on `GET /changes/{id}/render` (that change's own diff) and on
+  `GET /bookmarks/{id}/diff` (last read -> latest, computed on demand; it is cheap, so it is not
+  cached in `view_diff_cache`). `format=png` returns the overlay with `X-PageWatch-Regions`,
+  `-Changed-Pixels` and `-Identical` headers; the default HTML wraps it in the sanitised document
+  as a data URI; `format=json` carries `stats`. 404 when no screenshot was stored, 422 for
+  `format=png` with another view.
+
+### Alert gating, pipeline and API
+
+* `process_check` resolves the source kind first (`pipeline/sources.py::resolve_kind`: explicit
+  `source_type`, then content type, then URL extension, then magic bytes) and returns it, so the
+  runner can name the method and the viewer can convert the same bytes the same way.
+  `PipelineJob`/`RenderJob`/`RebuildJob`/`TestFilterJob`/`ProposeJob`/`PreviewJob` carry a small
+  `source_cfg` (records layout and feed options; nothing secret).
+* The false-positive proposer re-parses the *converted* HTML of documents and feeds, so
+  "ignore this element" works on a PDF paragraph as it does on a web page.
+* **CLI** gained `add --type <source type>` and `add --fetch '<json>'` (otherwise a records bookmark
+  could not be created headlessly). `GET /health` now reports `browser_state`.
+* **OpenAPI** regenerated: new option models, `format=png`, `view=screenshot`.
+
+### UI
+
+* **Screenshot diff tab** replaces the placeholder: the overlay fitted to the pane width (never
+  scaled up) under a caption ("2 changed regions (boxed in red), 41,200 pixels differ" / "Nothing
+  unread: ..."), with the history list selecting an alert's own diff exactly like the other tabs, and
+  an explanation when the bookmark has no screenshots.
+* **Stale responses**: every viewer render request now carries a sequence number and only the newest
+  may draw. Before, a late answer to an earlier request for the same tab (for example the refresh an
+  engine event triggers) could overwrite the one just asked for; it was found by the new tab's test
+  timing out once in a while, and it affected every tab.
+* **Editor**: the Advanced tab gained browser options (wait after load, scroll times, mouse moves,
+  full-page screenshots) and a records-source JSON box; the Filters tab gained the screenshot
+  comparison (changed-pixel threshold, height threshold, ignore rectangles as `x y w h` lines). They
+  round-trip without inventing changes. Feed and listing options have no editor fields yet (API and CLI).
+
+### Tests
+
+* **446 -> 791 default tests** (1 skipped: the permission test needs a non-root user), plus **12
+  real-browser tests** (`-m browser`). New: unit tests for records, documents,
+  feeds, sources/dispatch/models, the pixel diff and its pipeline flow, the browser manager (fake
+  browser, fake clock), the browser fetcher (scripted pages), local files and FTP (in-process
+  server); 20 new golden cases (PDF, DOCX, XLSX, RSS, records, rendered JS page, folder listing); two
+  integration modules (content sources; browser flows with scripted fetchers); UI tests for the
+  tab and the editor; a real worker-process round trip of the new jobs; and 12 tests against a real
+  Chromium.
+* **Real-browser tests are opt-in** (`pytest -m browser tests/browser`): they use
+  `/opt/pw-browsers/chromium` or `PAGEWATCH_TEST_CHROMIUM`, with `--no-sandbox`. The sandbox has no
+  Microsoft Edge, which makes "Edge will not launch, fall back to the bundled Chromium" a real failure
+  rather than a simulated one (the bundled Chromium is stood in for by that binary).
+* **Existing tests changed**: `test_resolve_kind` (a PDF is a document now, not binary) and the
+  "bad scheme" integration test (FTP is a real source, so it became "unreachable FTP and missing
+  file"). The M1/M2 expectation that an inline `var build=n` script keeps a short page static is why
+  the auto-detection trigger above was tightened.
+* **Qt in the sandbox** needs `libegl1 libnss3 libxkbcommon0 ...` (already noted for CI in M3).
+
+### Manual checks that could not run here
+
+* Launching Microsoft Edge (`msedge`) on Windows, including new headless mode and a Playwright
+  driver subprocess under the engine's event loop.
+* Housing Connect's live listings through the browser fetcher (needs the live site).
+* `playwright install chromium` on first fallback (the sandbox blocks downloads; the installer is
+  injected in tests).
+* FTPS against a real server (explicit AUTH TLS and implicit TLS on 990).
+
+### Known limits
+
+* A PDF, or a user-supplied regex, can still run long inside a worker: the per-job timeout that kills
+  and rebuilds the pool is M5.
+* A page that becomes a JavaScript shell *after* its first check is not re-routed to the browser
+  (change the method on the bookmark); detection is deliberately first-check only.
+* Chromium limits very tall full-page captures (around 16,000 px); what a taller page yields is
+  Chromium's behaviour, not something PageWatch controls or has tested.

@@ -1,0 +1,13 @@
+{
+ "description": "A table cell in a Word document changes; table mode marks the row.",
+ "ext": "docx",
+ "bookmark": {
+  "mode": "table"
+ },
+ "expect": [
+  {
+   "outcome": "alert"
+  }
+ ],
+ "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+}

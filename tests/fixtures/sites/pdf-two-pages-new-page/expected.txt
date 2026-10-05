@@ -1,0 +1,6 @@
+# step 2
+  Library opening hours
+  Monday to Friday 9 to 5
+  Closed on public holidays
++ Appendix
++ Holiday schedule published

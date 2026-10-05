@@ -63,7 +63,8 @@ class StaticFetcher:
     def __init__(self) -> None:
         self._clients: dict[tuple[str | None, bool], httpx.AsyncClient] = {}
 
-    def _client(self, proxy: str | None, verify: bool) -> httpx.AsyncClient:
+    def client_for(self, proxy: str | None, verify: bool) -> httpx.AsyncClient:
+        """The pooled client for these transport settings (also used for enclosure downloads)."""
         key = (proxy, verify)
         client = self._clients.get(key)
         if client is None:
@@ -99,7 +100,7 @@ class StaticFetcher:
             if request.last_modified:
                 headers.setdefault("If-Modified-Since", request.last_modified)
         proxy = cfg.proxy or request.settings.global_proxy
-        client = self._client(proxy, cfg.verify_tls)
+        client = self.client_for(proxy, cfg.verify_tls)
 
         def result(
             resp: httpx.Response | None,

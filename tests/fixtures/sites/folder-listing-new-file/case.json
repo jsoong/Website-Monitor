@@ -1,0 +1,6 @@
+{
+ "description": "A folder listing table (file or FTP source): a new file appears.",
+ "ext": "html",
+ "bookmark": {"mode": "table"},
+ "expect": [{"outcome": "alert"}]
+}

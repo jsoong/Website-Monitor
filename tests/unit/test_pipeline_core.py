@@ -193,9 +193,10 @@ def test_json_text_and_binary_sources(h: Harness) -> None:
         ("auto", "text/plain", b"x", "text"),
         ("auto", "", b"<!DOCTYPE html><html>", "html"),
         ("auto", "", b'{"a":1}', "json"),
-        ("auto", "application/pdf", b"%PDF\x00\x01", "binary"),
+        ("auto", "application/pdf", b"%PDF\x00\x01", "pdf"),  # documents are converted (M4)
         ("html", "text/plain", b"x", "html"),
         ("binary", "text/html", b"x", "binary"),
+        ("auto", "application/octet-stream", b"\x00\x01\x02", "binary"),
     ],
 )
 def test_resolve_kind(source: str, ctype: str, body: bytes, kind: str) -> None:

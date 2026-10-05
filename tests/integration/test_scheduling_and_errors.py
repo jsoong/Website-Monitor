@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -97,16 +98,18 @@ async def test_permanent_error_counts_immediately_without_a_retry(
     assert [r["reason"] for r in rs] == ["http_404"] and all(r["trigger"] != "retry" for r in rs)
 
 
-async def test_connection_refused_and_too_large_and_bad_scheme(
-    client: httpx.AsyncClient, engine: Engine, clock: FakeClock, site: FixtureSite
+async def test_connection_refused_and_too_large_and_unreachable_ftp_and_missing_file(
+    client: httpx.AsyncClient, engine: Engine, clock: FakeClock, site: FixtureSite, tmp_path: Path
 ) -> None:
     site.set("/big", "<p>" + "x" * 5000 + "</p>")
     dead = await add(client, "http://127.0.0.1:9/never", fetch={"timeout_s": 2})
     big = await add(client, site.url("/big"), fetch={"max_bytes": 2048})
-    ftp = await add(client, "ftp://example.com/file")
+    ftp = await add(client, "ftp://127.0.0.1:9/file", fetch={"timeout_s": 2})
+    gone = await add(client, (tmp_path / "missing.txt").as_uri())
     await settle(engine, clock)
-    reasons = {bid: (await runs(client, bid))[0]["reason"] for bid in (dead, big, ftp)}
-    assert reasons[dead] == "connection" and reasons[big] == "too_large" and reasons[ftp] == "parse"
+    reasons = {bid: (await runs(client, bid))[0]["reason"] for bid in (dead, big, ftp, gone)}
+    assert reasons[dead] == "connection" and reasons[big] == "too_large"
+    assert reasons[ftp] == "connection" and reasons[gone] == "http_404"
 
 
 async def test_error_page_blacklist_does_not_replace_the_baseline_or_count_as_an_error(

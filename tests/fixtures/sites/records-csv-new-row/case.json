@@ -1,0 +1,18 @@
+{
+ "description": "A CSV dataset gains a row.",
+ "ext": "csv",
+ "bookmark": {
+  "source_type": "records",
+  "fetch": {
+   "records": {
+    "id_field": "id"
+   }
+  }
+ },
+ "expect": [
+  {
+   "outcome": "alert"
+  }
+ ],
+ "content_type": "text/csv"
+}

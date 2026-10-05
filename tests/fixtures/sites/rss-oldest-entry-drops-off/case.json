@@ -1,0 +1,16 @@
+{
+ "description": "A feed that keeps N entries loses its oldest one; with ignore-removed that is not an alert.",
+ "ext": "xml",
+ "bookmark": {
+  "gate": {
+   "ignore_removed": true
+  }
+ },
+ "expect": [
+  {
+   "outcome": "suppressed",
+   "reason": "removed_only"
+  }
+ ],
+ "content_type": "application/rss+xml"
+}

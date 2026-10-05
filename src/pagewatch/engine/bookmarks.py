@@ -45,11 +45,18 @@ def _validation_message(exc: ValidationError) -> str:
     return f"{loc}: {first['msg']}" if loc else str(first["msg"])
 
 
-def _check(engine: Engine, sections: dict[str, Any], folder_id: int | None) -> None:
+def _check(
+    engine: Engine,
+    sections: dict[str, Any],
+    folder_id: int | None,
+    source_type: str | None = None,
+) -> None:
     try:
-        validate_sections(sections, folder_id, engine.folders, engine.settings)
+        validate_sections(sections, folder_id, engine.folders, engine.settings, source_type)
     except ValidationError as exc:
         raise InvalidError(_validation_message(exc)) from exc
+    except ValueError as exc:
+        raise InvalidError(str(exc)) from exc
 
 
 def default_name(url: str) -> str:
@@ -68,7 +75,12 @@ async def create(engine: Engine, body: BookmarkIn) -> sqlite3.Row:
     inherited = engine.folders.chain_defaults(body.folder_id)
     if "actions" not in sections and "actions" not in inherited:
         sections["actions"] = {"actions": [{"type": "toast"}]}  # toast is on by default
-    _check(engine, sections, body.folder_id)
+    source_type = (
+        inherited["source_type"]
+        if "source_type" not in body.model_fields_set and "source_type" in inherited
+        else body.source_type.value
+    )
+    _check(engine, sections, body.folder_id, source_type)
 
     fields: dict[str, Any] = {
         "folder_id": body.folder_id,
@@ -155,11 +167,16 @@ async def patch(engine: Engine, bookmark_id: int, body: BookmarkPatch) -> sqlite
             stored[name] = new
             fields[f"{name}_json"] = dumps(new)
             changed.add(name)
+    source_type = fields.get("source_type", row["source_type"])
+    if "source_type" in changed and "fetch" not in stored:
+        stored["fetch"] = loads(row["fetch_json"], {}) or {}  # a records source needs its config
     if stored:
-        _check(engine, stored, folder_id)
+        _check(engine, stored, folder_id, source_type)
     elif "folder_id" in fields:
         # moving between folders changes the inherited defaults: the result must still be valid
-        _check(engine, {n: loads(row[f"{n}_json"], {}) or {} for n in SECTIONS}, folder_id)
+        _check(
+            engine, {n: loads(row[f"{n}_json"], {}) or {} for n in SECTIONS}, folder_id, source_type
+        )
 
     now = engine.clock.now()
     reset = bool(changed & _RESETS_VERSIONS)

@@ -1,0 +1,24 @@
+{
+ "description": "By default a record that disappears is an alert.",
+ "ext": "json",
+ "bookmark": {
+  "source_type": "records",
+  "fetch": {
+   "records": {
+    "path": "$.lotteries",
+    "id_field": "lottery_id",
+    "fields": [
+     "name",
+     "borough",
+     "status"
+    ]
+   }
+  }
+ },
+ "expect": [
+  {
+   "outcome": "alert"
+  }
+ ],
+ "content_type": "application/json"
+}

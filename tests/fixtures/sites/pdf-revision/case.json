@@ -1,0 +1,11 @@
+{
+ "description": "A revised PDF: one paragraph of three changes, and only it is highlighted.",
+ "ext": "pdf",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "alert"
+  }
+ ],
+ "content_type": "application/pdf"
+}

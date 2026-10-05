@@ -10,8 +10,8 @@ from __future__ import annotations
 from importlib import resources
 from typing import Any
 
-from PySide6.QtCore import QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QPixmap, QResizeEvent
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QScrollArea,
     QStackedWidget,
     QTabBar,
     QTableWidget,
@@ -28,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from pagewatch.models import ChangeOut, CheckRunOut, RenderOut
-from pagewatch.ui.client import ApiClient
+from pagewatch.ui.client import ApiClient, ApiError, ScreenshotDiff
 from pagewatch.ui.models import fmt_time
 from pagewatch.ui.workers import run_async
 
@@ -86,7 +87,8 @@ class ViewerPanel(QWidget):
         super().__init__(parent)
         self._client = client
         self._bid: int | None = None
-        self._token = 0
+        self._token = 0  # bumped per bookmark: guards the history list and the check log
+        self._seq = 0  # bumped per render request: only the newest request may draw
         self._changes: list[ChangeOut] = []
 
         self.title = QLabel("Select a bookmark")
@@ -107,7 +109,22 @@ class ViewerPanel(QWidget):
 
         self.web = HtmlView()
         self.web.setFocusPolicy(self.web.focusPolicy().ClickFocus)
-        self.shot = QLabel("No screenshot for this bookmark.")
+        # Screenshot diff: the overlay picture (red boxes round what changed) under a caption
+        self.shot_caption = QLabel("")
+        self.shot_caption.setObjectName("shotCaption")
+        self.shot_caption.setWordWrap(True)
+        self.shot_image = QLabel()
+        self.shot_image.setObjectName("shotImage")
+        self.shot_image.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.shot_scroll = QScrollArea()
+        self.shot_scroll.setWidgetResizable(True)
+        self.shot_scroll.setWidget(self.shot_image)
+        self.shot = QWidget()
+        shot_layout = QVBoxLayout(self.shot)
+        shot_layout.setContentsMargins(0, 0, 0, 0)
+        shot_layout.addWidget(self.shot_caption)
+        shot_layout.addWidget(self.shot_scroll, 1)
+        self._shot_pixmap: QPixmap | None = None
         self.log = QTableWidget(0, 5)
         self.log.setHorizontalHeaderLabels(["Started", "Trigger", "Outcome", "Reason", "ms"])
         self.log.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -147,6 +164,7 @@ class ViewerPanel(QWidget):
     def show_bookmark(self, bookmark_id: int | None, name: str = "") -> None:
         self._bid = bookmark_id
         self._token += 1
+        self._seq += 1
         self.history.blockSignals(True)
         self.history.clear()
         self.history.addItem("Unread changes (since last read)", None)
@@ -170,15 +188,17 @@ class ViewerPanel(QWidget):
         if self._bid is None:
             return
         tab = self.current_tab()
+        self._seq += 1  # a response to any earlier request is stale from here on
         if tab == T_SHOT:
             self.stack.setCurrentWidget(self.shot)
+            self._load_screenshot()
             return
         if tab == T_LOG:
             self.stack.setCurrentWidget(self.log)
             self._load_log()
             return
         self.stack.setCurrentWidget(self.web)
-        token, bid = self._token, self._bid
+        seq, bid = self._seq, self._bid
         change_id = self.history.currentData()
         view = {T_HIGHLIGHT: "highlight", T_TEXT: "text", T_NEW: "new", T_OLD: "old"}[tab]
         images, context = self.images.isChecked(), 3 if self.changes_only.isChecked() else None
@@ -188,9 +208,7 @@ class ViewerPanel(QWidget):
                 return self._client.unread_diff(bid, view, images=images, context=context)
             return self._client.change_render(change_id, view, images=images, context=context)
 
-        run_async(
-            fetch, lambda out: self._show(token, tab, out), lambda exc: self._error(token, exc)
-        )
+        run_async(fetch, lambda out: self._show(seq, tab, out), lambda exc: self._error(seq, exc))
 
     # -- internals ----------------------------------------------------------------------
 
@@ -207,8 +225,8 @@ class ViewerPanel(QWidget):
             )
         self.history.blockSignals(False)
 
-    def _show(self, token: int, tab: int, out: RenderOut) -> None:
-        if token != self._token or tab != self.current_tab():
+    def _show(self, seq: int, tab: int, out: RenderOut) -> None:
+        if seq != self._seq or tab != self.current_tab():
             return
         self._produced = out.view
         self.status_text.emit(
@@ -218,13 +236,76 @@ class ViewerPanel(QWidget):
         )
         self.web.set_document(style_document(out.html, self.deletions.currentData()))
 
-    def _error(self, token: int, exc: Exception) -> None:
-        if token != self._token:
+    def _error(self, seq: int, exc: Exception) -> None:
+        if seq != self._seq:
             return
         text = str(exc).split(": ", 1)[-1]
         self.web.set_document(
             f"<html><body><p style='font:15px sans-serif'>{text}</p></body></html>"
         )
+
+    # -- screenshot diff ----------------------------------------------------------------
+
+    def _load_screenshot(self) -> None:
+        seq, bid = self._seq, self._bid
+        assert bid is not None
+        change_id = self.history.currentData()
+        run_async(
+            lambda: self._client.screenshot_diff(bid, change_id),
+            lambda out: self._show_screenshot(seq, out),
+            lambda exc: self._screenshot_error(seq, exc),
+        )
+
+    def _show_screenshot(self, seq: int, diff: ScreenshotDiff) -> None:
+        if seq != self._seq or self.current_tab() != T_SHOT:
+            return
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(diff.png, "PNG"):
+            self._screenshot_error(seq, ValueError("the screenshot could not be displayed"))
+            return
+        self._shot_pixmap = pixmap
+        if diff.identical:
+            caption = "Nothing unread: this is the last screenshot you read."
+        elif diff.regions:
+            n = diff.regions
+            caption = (
+                f"{n} changed region{'s' if n != 1 else ''} (boxed in red), "
+                f"{diff.changed_pixels:,} pixels differ."
+            )
+        else:
+            caption = "No visual difference from the last screenshot you read."
+        self.shot_caption.setText(caption)
+        self._fit_screenshot()
+        self._produced = "screenshot"
+        self.rendered.emit(T_SHOT, "screenshot")
+
+    def _screenshot_error(self, seq: int, exc: Exception) -> None:
+        if seq != self._seq or self.current_tab() != T_SHOT:
+            return
+        self._shot_pixmap = None
+        self.shot_image.clear()
+        if isinstance(exc, ApiError) and exc.status in (404, 409):
+            text = (
+                "No screenshot has been stored for this bookmark yet. Set its method to "
+                "Screenshot (General tab) to compare pages visually."
+            )
+        else:
+            text = str(exc).split(": ", 1)[-1]
+        self.shot_caption.setText(text)
+
+    def _fit_screenshot(self) -> None:
+        """Scale the picture to the pane's width (never up): page screenshots are 1366 px wide."""
+        pm = self._shot_pixmap
+        if pm is None:
+            return
+        width = max(self.shot_scroll.viewport().width() - 4, 200)
+        if pm.width() > width:
+            pm = pm.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
+        self.shot_image.setPixmap(pm)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._fit_screenshot()
 
     def _on_loaded(self) -> None:
         if self.web.last_html:

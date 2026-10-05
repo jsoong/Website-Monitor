@@ -25,6 +25,7 @@ from typing import Any
 import yaml
 from lxml.cssselect import CSSSelector
 
+from pagewatch.engine.pipeline import sources
 from pagewatch.engine.pipeline.core import build_blocks
 from pagewatch.engine.pipeline.diff import DiffResult, diff_blocks
 from pagewatch.engine.pipeline.extract import Block, decode_body, element_path, parse_html
@@ -206,12 +207,13 @@ def propose(
     source_type: str,
     filter_cfg: dict[str, Any],
     highlight_mode: str,
+    source_cfg: dict[str, Any] | None = None,
 ) -> ProposalResult:
     fcfg = FilterConfig.model_validate(filter_cfg)
     mode = HighlightMode(highlight_mode)
 
     def build(raw: str, ctype: str, cfg: FilterConfig) -> list[Block]:
-        return build_blocks(store.get(raw), ctype, url, source_type, cfg, raw)
+        return build_blocks(store.get(raw), ctype, url, source_type, cfg, raw, None, source_cfg)
 
     def changed(cfg: FilterConfig) -> int:
         d = diff_blocks(
@@ -229,8 +231,13 @@ def propose(
         ignore_case=fcfg.special.ignore_case,
         detect_moves=mode is not HighlightMode.EXACT,
     )
-    new_root = parse_html(decode_body(store.get(new_raw), new_ctype))
-    old_root = parse_html(decode_body(store.get(old_raw), old_ctype))
+
+    def dom(raw: str, ctype: str) -> Any:
+        body, kind_type = sources.view_bytes(store.get(raw), ctype, url, source_type, source_cfg)
+        return parse_html(decode_body(body, kind_type))
+
+    new_root = dom(new_raw, new_ctype)
+    old_root = dom(old_raw, old_ctype)
 
     seen: set[str] = set()
     proposals: list[Proposal] = []
@@ -307,6 +314,7 @@ class ProposeJob:
     source_type: str
     filter_cfg: dict[str, Any]
     highlight_mode: str
+    source_cfg: dict[str, Any] = field(default_factory=dict)
 
 
 def propose_job(job: ProposeJob) -> ProposalResult:
@@ -320,4 +328,5 @@ def propose_job(job: ProposeJob) -> ProposalResult:
         source_type=job.source_type,
         filter_cfg=job.filter_cfg,
         highlight_mode=job.highlight_mode,
+        source_cfg=job.source_cfg,
     )

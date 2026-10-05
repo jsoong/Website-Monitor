@@ -1,0 +1,25 @@
+{
+ "description": "A lottery with an unseen ID appears.",
+ "ext": "json",
+ "bookmark": {
+  "source_type": "records",
+  "fetch": {
+   "records": {
+    "path": "$.lotteries",
+    "id_field": "lottery_id",
+    "fields": [
+     "name",
+     "borough",
+     "status"
+    ]
+   }
+  }
+ },
+ "expect": [
+  {
+   "outcome": "alert",
+   "added_words": 9
+  }
+ ],
+ "content_type": "application/json"
+}

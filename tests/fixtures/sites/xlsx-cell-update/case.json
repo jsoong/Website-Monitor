@@ -1,0 +1,13 @@
+{
+ "description": "One price in a spreadsheet changes.",
+ "ext": "xlsx",
+ "bookmark": {
+  "mode": "table"
+ },
+ "expect": [
+  {
+   "outcome": "alert"
+  }
+ ],
+ "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+}

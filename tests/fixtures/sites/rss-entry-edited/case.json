@@ -1,0 +1,11 @@
+{
+ "description": "The summary of an existing entry is corrected.",
+ "ext": "xml",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "alert"
+  }
+ ],
+ "content_type": "application/rss+xml"
+}

@@ -1,0 +1,25 @@
+{
+ "description": "The row filter keeps only Active lotteries, so a change to a Closed one is invisible.",
+ "ext": "json",
+ "bookmark": {
+  "source_type": "records",
+  "fetch": {
+   "records": {
+    "path": "$.lotteries",
+    "id_field": "lottery_id",
+    "fields": [
+     "name",
+     "borough",
+     "status"
+    ],
+    "filter": "status = Active"
+   }
+  }
+ },
+ "expect": [
+  {
+   "outcome": "unchanged"
+  }
+ ],
+ "content_type": "application/json"
+}

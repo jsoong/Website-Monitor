@@ -1,0 +1,18 @@
+{
+ "lotteries": [
+  {
+   "lottery_id": 101,
+   "name": "Sunset Terrace",
+   "borough": "BK",
+   "status": "Active",
+   "views": 707
+  },
+  {
+   "lottery_id": 103,
+   "name": "Grand Concourse Homes",
+   "borough": "BX",
+   "status": "Active",
+   "views": 721
+  }
+ ]
+}

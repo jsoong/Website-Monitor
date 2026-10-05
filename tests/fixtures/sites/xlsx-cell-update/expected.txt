@@ -1,0 +1,6 @@
+# step 2
+  Prices
+  Item | Price
+  Tea | 3.5
+~ Cake | [-4-]{+4.5+}
+  Pie | 5.25

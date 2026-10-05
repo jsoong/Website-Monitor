@@ -1,0 +1,25 @@
+{
+ "lotteries": [
+  {
+   "lottery_id": 101,
+   "name": "Sunset Terrace",
+   "borough": "BK",
+   "status": "Active",
+   "views": 707
+  },
+  {
+   "lottery_id": 102,
+   "name": "Harbor View",
+   "borough": "MN",
+   "status": "Active",
+   "views": 714
+  },
+  {
+   "lottery_id": 104,
+   "name": "Riverside Commons",
+   "borough": "QN",
+   "status": "Active",
+   "views": 728
+  }
+ ]
+}

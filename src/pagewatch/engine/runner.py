@@ -18,11 +18,13 @@ from pydantic import ValidationError
 
 from pagewatch.engine import schedule as sched
 from pagewatch.engine.clock import iso
-from pagewatch.engine.config import Resolved, resolve
+from pagewatch.engine.config import Resolved, resolve, source_options
 from pagewatch.engine.fetch.base import FetchError, FetchRequest, FetchResult
+from pagewatch.engine.fetch.select import BROWSER, Route, method_kind, route_for
 from pagewatch.engine.hostgate import host_of
 from pagewatch.engine.logs import get_logger
 from pagewatch.engine.pipeline.core import PipelineJob, PipelineResult, VersionRef, process_check
+from pagewatch.engine.pipeline.sources import resolve_kind
 from pagewatch.engine.scheduler import RunResult
 from pagewatch.engine.store import repo
 from pagewatch.models import BookmarkStatus, CheckKind, FetchErrorKind, Outcome, Trigger
@@ -43,7 +45,9 @@ class _Context:
 def _ref(row: sqlite3.Row | None) -> VersionRef | None:
     if row is None:
         return None
-    return VersionRef(row["id"], row["raw_hash"], row["blocks_hash"], row["filtered_hash"])
+    return VersionRef(
+        row["id"], row["raw_hash"], row["blocks_hash"], row["filtered_hash"], row["screenshot_hash"]
+    )
 
 
 def _load_context(conn: sqlite3.Connection, bookmark_id: int) -> _Context | None:
@@ -74,11 +78,13 @@ class CheckRunner:
             return None
         settings = e.settings
         now = e.clock.now()
+        first_guess = route_for(row["url"], row["source_type"], row["check_method"])
         run_id = await e.db.write(
             lambda c: repo.check_run_start(
-                c, bookmark_id, iso(now), trigger.value, CheckKind.STATIC.value
+                c, bookmark_id, iso(now), trigger.value,
+                (first_guess.kind if first_guess else CheckKind.STATIC).value,
             )
-        )
+        )  # fmt: skip
         e.events.publish("check_started", {"bookmark_id": bookmark_id, "trigger": trigger.value})
         try:
             resolved = resolve(row, e.folders, settings)
@@ -86,53 +92,105 @@ class CheckRunner:
             return await self._fail(ctx, None, run_id, trigger, 0, FetchError(
                 FetchErrorKind.PARSE, f"invalid configuration: {exc.errors()[0]['msg']}"
             ))  # fmt: skip
-
-        fetch = await self._fetch(ctx, resolved, force)
-        if fetch.error is not None:
-            return await self._fail(ctx, resolved, run_id, trigger, fetch.elapsed_ms, fetch.error)
-
-        if fetch.not_modified and ctx.latest is not None:
-            return await self._commit_unchanged(ctx, resolved, run_id, fetch, "unchanged", 0)
-
-        job = PipelineJob(
-            blob_root=str(e.data_dir.blobs_dir),
-            body=fetch.body,
-            content_type=fetch.content_type,
-            final_url=fetch.final_url,
-            source_type=row["source_type"],
-            filter_cfg=resolved.filter.model_dump(mode="json"),
-            gate_cfg=resolved.gate.model_dump(mode="json"),
-            highlight_mode=row["highlight_mode"],
-            latest=_ref(ctx.latest),
-            anchor=_ref(ctx.anchor),
-        )
-        try:
-            res = await e.pool.run(process_check, job)
-        except Exception as exc:
-            log.exception("pipeline_failed", bookmark_id=bookmark_id)
-            return await self._fail(ctx, resolved, run_id, trigger, fetch.elapsed_ms, FetchError(
-                FetchErrorKind.PARSE, f"processing failed: {type(exc).__name__}: {exc}"[:300]
+        if row["source_type"] == "records" and resolved.fetch.records is None:
+            return await self._fail(ctx, resolved, run_id, trigger, 0, FetchError(
+                FetchErrorKind.PARSE, "a records source needs a 'records' configuration"
             ))  # fmt: skip
-        return await self._commit_result(ctx, resolved, run_id, fetch, res)
+        route = route_for(row["url"], row["source_type"], row["check_method"], resolved.fetch)
+        if route is None:
+            return await self._fail(ctx, resolved, run_id, trigger, 0, FetchError(
+                FetchErrorKind.PARSE, f"unsupported url scheme: {row['url'][:40]}"
+            ))  # fmt: skip
+
+        fetch = await self._fetch(ctx, resolved, force, route)
+        if fetch.error is not None:
+            return await self._fail(
+                ctx, resolved, run_id, trigger, fetch.elapsed_ms, fetch.error, route
+            )
+        if fetch.not_modified and ctx.latest is not None:
+            kind = resolve_kind(
+                row["source_type"], ctx.latest["content_type"] or "", row["url"], b""
+            )
+            return await self._commit_unchanged(
+                ctx, resolved, run_id, fetch, 0, method_kind(route, kind)
+            )
+
+        # Method auto-detection (spec): the first check of an `auto` web bookmark runs static;
+        # if that shows (almost) nothing, it is re-run in the browser and the choice is kept.
+        detect = (
+            row["check_method"] == "auto"
+            and ctx.latest is None
+            and route.name == "static"
+            and row["source_type"] in ("auto", "html")
+        )
+        switched: str | None = None
+        while True:
+            job = PipelineJob(
+                blob_root=str(e.data_dir.blobs_dir),
+                body=fetch.body,
+                content_type=fetch.content_type,
+                final_url=fetch.final_url,
+                source_type=row["source_type"],
+                filter_cfg=resolved.filter.model_dump(mode="json"),
+                gate_cfg=resolved.gate.model_dump(mode="json"),
+                highlight_mode=row["highlight_mode"],
+                latest=_ref(ctx.latest),
+                anchor=_ref(ctx.anchor),
+                source_cfg=source_options(resolved.fetch),
+                screenshot_png=fetch.screenshot_png,
+                detect_js=detect,
+            )
+            try:
+                res = await e.pool.run(process_check, job)
+            except Exception as exc:
+                return await self._fail(
+                    ctx, resolved, run_id, trigger, fetch.elapsed_ms, self._processing_error(
+                        bookmark_id, exc
+                    ), route,
+                )  # fmt: skip
+            if not res.needs_browser:
+                break
+            switched, detect, route = res.reason or "app_shell", False, BROWSER
+            log.info("method_switched", bookmark_id=bookmark_id, to="browser", reason=switched)
+            static_ms = fetch.elapsed_ms
+            fetch = await self._fetch(ctx, resolved, True, route)
+            fetch.elapsed_ms += static_ms
+            if fetch.error is not None:  # it needs a browser and none works: say so, loudly
+                return await self._fail(
+                    ctx, resolved, run_id, trigger, fetch.elapsed_ms, fetch.error, route
+                )
+        return await self._commit_result(ctx, resolved, run_id, fetch, res, route, switched)
+
+    @staticmethod
+    def _processing_error(bookmark_id: int, exc: Exception) -> FetchError:
+        # An unreadable document or a feed whose layout changed is an expected failure of the
+        # check (named plainly); anything else is a bug and gets its stack trace in the log.
+        if isinstance(exc, ValueError) and type(exc).__name__ in (
+            "DocumentError", "RecordsError", "RecordsSyntaxError",
+        ):  # fmt: skip
+            log.warning("source_unreadable", bookmark_id=bookmark_id, error=str(exc)[:200])
+            return FetchError(FetchErrorKind.PARSE, str(exc)[:300])
+        log.exception("pipeline_failed", bookmark_id=bookmark_id)
+        return FetchError(
+            FetchErrorKind.PARSE, f"processing failed: {type(exc).__name__}: {exc}"[:300]
+        )
 
     # -- fetch --------------------------------------------------------------------------
 
-    async def _fetch(self, ctx: _Context, resolved: Resolved, force: bool) -> FetchResult:
+    async def _fetch(
+        self, ctx: _Context, resolved: Resolved, force: bool, route: Route
+    ) -> FetchResult:
         url: str = ctx.row["url"]
-        if not url.lower().startswith(("http://", "https://")):
-            return FetchResult(
-                url, None, {}, "", b"",
-                error=FetchError(FetchErrorKind.PARSE, f"unsupported url scheme: {url[:40]}"),
-            )  # fmt: skip
+        use_cache = route.name in ("static", "feed", "file", "ftp")
         req = FetchRequest(
             url=url,
             resolved=resolved,
             settings=self.e.settings,
-            etag=ctx.latest["etag"] if ctx.latest else None,
-            last_modified=ctx.latest["last_modified"] if ctx.latest else None,
+            etag=ctx.latest["etag"] if ctx.latest and use_cache else None,
+            last_modified=ctx.latest["last_modified"] if ctx.latest and use_cache else None,
             force=force,
         )
-        return await self.e.static_fetcher.fetch(req)
+        return await self.e.fetchers.get(route).fetch(req)
 
     # -- scheduling ---------------------------------------------------------------------
 
@@ -159,8 +217,8 @@ class CheckRunner:
         resolved: Resolved,
         run_id: int,
         fetch: FetchResult,
-        reason_kind: str,
         elapsed_ms: int,
+        method: CheckKind,
     ) -> RunResult:
         due, interval = self._next(ctx, resolved, changed=False)
         refresh = ctx.latest is not None and (
@@ -180,6 +238,7 @@ class CheckRunner:
             refresh_etag_of=ctx.latest["id"] if refresh and ctx.latest else None,
             etag=fetch.etag,
             last_modified=fetch.last_modified,
+            method=method.value,
         )
         await self._write(ctx, commit)
         return RunResult(due)
@@ -191,13 +250,16 @@ class CheckRunner:
         run_id: int,
         fetch: FetchResult,
         res: PipelineResult,
+        route: Route,
+        switched: str | None = None,
     ) -> RunResult:
         e = self.e
         row = ctx.row
+        method = method_kind(route, res.source_kind)
         if res.kind in ("unchanged_raw", "unchanged"):
-            return await self._commit_unchanged(
-                ctx, resolved, run_id, fetch, res.kind, res.elapsed_ms
-            )
+            out = await self._commit_unchanged(ctx, resolved, run_id, fetch, res.elapsed_ms, method)
+            out.browser = True if switched else None
+            return out
 
         now = e.clock.now()
         base: dict[str, Any] = {
@@ -206,6 +268,8 @@ class CheckRunner:
             "finished_at": iso(now),
             "duration_ms": fetch.elapsed_ms + res.elapsed_ms,
             "byte_count": len(fetch.body),
+            "method": method.value,
+            "check_method": "browser" if switched else None,
         }
         if res.kind == "rejected":
             due, interval = self._next(ctx, resolved, changed=None)
@@ -217,7 +281,7 @@ class CheckRunner:
                 current_interval_s=interval,
             )
             await self._write(ctx, commit)
-            return RunResult(due)
+            return RunResult(due, browser=True if switched else None)
 
         assert res.blocks_hash and res.filtered_hash
         new_version = repo.NewVersion(
@@ -231,13 +295,14 @@ class CheckRunner:
             last_modified=fetch.last_modified,
             byte_size=len(fetch.body),
             word_count=res.word_count,
+            screenshot_hash=res.screenshot_hash,
         )
         change: repo.NewChange | None = None
         outcome = Outcome.SUPPRESSED
         reason = res.reason
         is_first = res.kind == "first"
         if is_first:
-            outcome, reason = Outcome.FIRST, None
+            outcome, reason = Outcome.FIRST, (f"auto_browser:{switched}" if switched else None)
             if e.settings.notify_on_first_check:
                 change = repo.NewChange(
                     old_version_id=None,
@@ -275,7 +340,7 @@ class CheckRunner:
             action_types=[a.type.value for a in resolved.actions.actions] if change else [],
         )
         await self._write(ctx, commit)
-        return RunResult(due)
+        return RunResult(due, browser=True if switched else None)
 
     async def _fail(
         self,
@@ -285,6 +350,7 @@ class CheckRunner:
         trigger: Trigger,
         elapsed_ms: int,
         err: FetchError,
+        route: Route | None = None,
     ) -> RunResult:
         e = self.e
         row = ctx.row
@@ -321,6 +387,7 @@ class CheckRunner:
             current_interval_s=interval,
             consecutive_errors=errors if counted else int(row["consecutive_errors"]),
             status=status,
+            method=route.kind.value if route is not None else None,
         )
         await self._write(ctx, commit, error=err)
         if became_error:
@@ -338,7 +405,7 @@ class CheckRunner:
         log.info(
             "check",
             bookmark_id=row["id"],
-            method=CheckKind.STATIC.value,
+            method=commit.method or CheckKind.STATIC.value,
             outcome=commit.outcome.value,
             reason=commit.reason,
             duration_ms=commit.duration_ms,

@@ -1,0 +1,25 @@
+{
+ "description": "A new lottery in a borough outside the filter is not seen.",
+ "ext": "json",
+ "bookmark": {
+  "source_type": "records",
+  "fetch": {
+   "records": {
+    "path": "$.lotteries",
+    "id_field": "lottery_id",
+    "fields": [
+     "name",
+     "borough",
+     "status"
+    ],
+    "filter": "borough in [MN, BK]"
+   }
+  }
+ },
+ "expect": [
+  {
+   "outcome": "unchanged"
+  }
+ ],
+ "content_type": "application/json"
+}

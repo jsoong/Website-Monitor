@@ -23,7 +23,13 @@ from pagewatch.engine.actions.queue import ActionQueue
 from pagewatch.engine.actions.toast import ToastBackend, ToastService, default_backend
 from pagewatch.engine.api.events import EventBus
 from pagewatch.engine.clock import Clock, SystemClock, iso, parse_iso
-from pagewatch.engine.config import FolderCache, resolve
+from pagewatch.engine.config import FolderCache, resolve, source_options
+from pagewatch.engine.fetch.browser import BrowserFetcher, BrowserManager, Launcher
+from pagewatch.engine.fetch.feed import FeedFetcher
+from pagewatch.engine.fetch.ftp import FtpFetcher
+from pagewatch.engine.fetch.localfile import FileFetcher
+from pagewatch.engine.fetch.screenshot import ScreenshotFetcher
+from pagewatch.engine.fetch.select import FetcherSet
 from pagewatch.engine.fetch.static import StaticFetcher
 from pagewatch.engine.hostgate import HostGate
 from pagewatch.engine.logs import get_logger, set_debug
@@ -31,6 +37,7 @@ from pagewatch.engine.paths import DataDir
 from pagewatch.engine.pipeline.core import RebuildJob, rebuild_version
 from pagewatch.engine.runner import CheckRunner
 from pagewatch.engine.scheduler import Scheduler
+from pagewatch.engine.secrets import NullSecrets, SecretStore
 from pagewatch.engine.settings import SettingsStore
 from pagewatch.engine.store import repo
 from pagewatch.engine.store.blobs import BlobStore
@@ -59,6 +66,8 @@ class Engine:
         rng: random.Random | None = None,
         tray_backend: TrayBackend | None = None,
         enable_tray: bool = False,
+        browser_launcher: Launcher | None = None,
+        secret_store: SecretStore | None = None,
     ) -> None:
         self.data_dir = data_dir
         self.clock: Clock = clock or SystemClock()
@@ -74,7 +83,19 @@ class Engine:
         self.online = True
         self.on_battery = False
         self.host_gate = HostGate(self.clock, lambda: self.settings)
+        self.secrets: SecretStore = secret_store or NullSecrets()
         self.static_fetcher = StaticFetcher()
+        self.browser = BrowserManager(lambda: self.settings, self.clock, browser_launcher)
+        self.fetchers = FetcherSet(
+            {
+                "static": self.static_fetcher,
+                "feed": FeedFetcher(self.static_fetcher),
+                "browser": BrowserFetcher(self.browser),
+                "screenshot": ScreenshotFetcher(self.browser),
+                "ftp": FtpFetcher(self.secrets),
+                "file": FileFetcher(),
+            }
+        )
         self.runner = CheckRunner(self, rng)
         self.scheduler = Scheduler(
             self.clock,
@@ -182,7 +203,9 @@ class Engine:
         for task in list(self._background):
             task.cancel()
         await asyncio.gather(*self._background, return_exceptions=True)
+        await self.fetchers.aclose()
         await self.static_fetcher.aclose()
+        await self.browser.close()
         self.pool.shutdown()
         await asyncio.to_thread(self.db.close)
         self._stopped.set()
@@ -263,6 +286,7 @@ class Engine:
                 final_url=row["url"],
                 source_type=row["source_type"],
                 filter_cfg=resolved.filter.model_dump(mode="json"),
+                source_cfg=source_options(resolved.fetch),
             )
             try:
                 out = await self.pool.run(rebuild_version, job)
@@ -356,6 +380,7 @@ class Engine:
             in_flight=self.scheduler.in_flight,
             outcomes_24h=outcomes,
             rss_mb=round(psutil.Process().memory_info().rss / 1_048_576, 1),
+            browser_state=self.browser.state,
             autowatch=AutowatchState(
                 state="paused" if self.scheduler.paused else "running",
                 until=iso(until) if until else None,

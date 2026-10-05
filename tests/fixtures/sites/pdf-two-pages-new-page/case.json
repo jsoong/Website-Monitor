@@ -1,0 +1,11 @@
+{
+ "description": "A new page is appended to the PDF.",
+ "ext": "pdf",
+ "bookmark": {},
+ "expect": [
+  {
+   "outcome": "alert"
+  }
+ ],
+ "content_type": "application/pdf"
+}

@@ -561,9 +561,10 @@ half rewrite: 10,000 blocks, 50% replaced             5850.5ms /  6485.2ms*(1000
   everything. Facts the engine must remember (when the last backup ran) go in the existing
   `setting` table under a `_state.` prefix that `SettingsStore` never loads as a setting and
   `PUT /settings` cannot write.
-* **Branch repair.** The branch tip was `e259c5e` (the SPEC upload); the M4 commit `90ca022` was a
-  dangling commit on top of it, never attached to the branch. Fast-forwarded (lossless: the tip is
-  its parent) before starting.
+* **Branch repair.** In this session's checkout the local branch pointed at `e259c5e` (the SPEC
+  upload) and the M4 commit `90ca022` was only a dangling commit on top of it (the remote branch
+  already had it; the local remote-tracking ref was stale). The local branch was fast-forwarded to it
+  (lossless: the tip is its parent) before starting.
 * **Opt-in machinery.** The power monitor, connectivity probe, maintenance loop and resource guard
   exist only when the engine is built with `enable_unattended` (the real entry point does), like the
   tray. A unit test therefore never probes a real network or starts a background loop it did not ask

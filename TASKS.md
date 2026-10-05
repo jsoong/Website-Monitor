@@ -26,8 +26,10 @@ The M4 checklist this file replaces is in git at `90ca022`.
 ## Audit: SPEC vs repository at 90ca022
 
 Baseline: 791 passed, 1 skipped (default suite) after installing the Qt system libraries.
-Note: the branch tip was `e259c5e` (only the SPEC upload); the M4 commit `90ca022` was a dangling
-child of it, so the branch was fast-forwarded to it first (lossless: `e259c5e` is its parent).
+Note: in this session's checkout the local branch pointed at `e259c5e` (only the SPEC upload) while
+the M4 commit `90ca022` existed only as a dangling child of it (the remote branch already had it; the
+local remote-tracking ref was stale). The local branch was fast-forwarded to `90ca022` first
+(lossless: `e259c5e` is its parent).
 
 | SPEC requirement | State in the repo | Task |
 | --- | --- | --- |

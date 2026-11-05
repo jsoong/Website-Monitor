@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from PIL import Image, ImageDraw
 
+from pagewatch.engine.frozen import component_command
 from pagewatch.engine.logs import get_logger
 from pagewatch.engine.store import repo
 
@@ -283,6 +284,6 @@ class TrayController:
         self.e.request_stop()
 
     def _spawn_ui(self) -> None:  # pragma: no cover - launches a real process
-        args = [sys.executable, "-m", "pagewatch.ui.main", "--data-dir", str(self.e.data_dir.root)]
+        args = component_command("ui", "--data-dir", str(self.e.data_dir.root))
         flags = 0x00000008 if sys.platform == "win32" else 0  # DETACHED_PROCESS
         subprocess.Popen(args, creationflags=flags, close_fds=True)  # noqa: S603

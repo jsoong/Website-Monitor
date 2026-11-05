@@ -162,3 +162,48 @@ def test_localize_and_to_local_roundtrip(name: str | None) -> None:
     local = zone.to_local(now)
     assert local.tzinfo is None
     assert zone.localize(local) == now
+
+
+# -- stretch: an over-limit host's intervals (SPEC, Scheduler -> Capacity) ----------------------
+
+
+def test_stretch_lengthens_the_gap_by_the_factor_and_one_changes_nothing() -> None:
+    now = utc(2026, 5, 4, 12)
+    assert due(cfg(interval_s=600), now, stretch=2.5) == now + timedelta(seconds=1500)
+    assert due(cfg(interval_s=600), now, stretch=1.0) == now + timedelta(seconds=600)
+    assert due(cfg(interval_s=600), now) == now + timedelta(seconds=600)
+
+
+def test_a_factor_below_one_never_shortens_a_gap() -> None:
+    now = utc(2026, 5, 4, 12)
+    assert due(cfg(interval_s=600), now, stretch=0.5) == now + timedelta(seconds=600)
+
+
+def test_stretch_rounds_up_to_whole_seconds() -> None:
+    now = utc(2026, 5, 4, 12)
+    assert due(cfg(interval_s=100), now, stretch=1.005) == now + timedelta(seconds=101)
+
+
+def test_an_adaptive_schedule_is_stretched_but_its_stored_interval_is_not() -> None:
+    now = utc(2026, 5, 4, 12)
+    c = cfg(mode="adaptive", adaptive={"min_s": 900, "max_s": 86400, "factor": 1.5})
+    d, stored = sch.next_due(
+        c, now, current_interval_s=900, changed=False, zone=NY, rng=RNG, stretch=2.0
+    )
+    assert stored == 1350  # what adaptive state would be anyway: demand is measured from this
+    assert d == now + timedelta(seconds=2700)  # but the wait is twice as long
+
+
+def test_stretch_and_the_battery_slow_down_compose() -> None:
+    now = utc(2026, 5, 4, 12)
+    c = cfg(interval_s=600, on_battery="slow")
+    assert due(c, now, on_battery=True, stretch=2.0) == now + timedelta(
+        seconds=600 * sch.SLOW_FACTOR * 2
+    )
+
+
+def test_fixed_times_and_manual_schedules_are_not_stretched() -> None:
+    now = utc(2026, 5, 4, 12)  # 08:00 in New York
+    c = cfg(mode="times", times=["09:00"])
+    assert due(c, now, stretch=5.0) == due(c, now)
+    assert sch.next_due(cfg(mode="manual"), now, zone=NY, stretch=5.0)[0] is None

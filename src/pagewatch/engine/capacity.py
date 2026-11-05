@@ -2,7 +2,7 @@
 
 "Settings shows current demand per pool and per host" and "browser demand against capacity,
 measured from the rolling average check time, and warns above 80%". Read-only; nothing here
-changes how checks are dispatched.
+changes how checks are dispatched (see ``engine/stretch.py`` for what does).
 
 * **Demand** of a bookmark is the checks per second its schedule asks for: ``1 / interval`` (the
   adaptive interval it currently has, when adaptive), ``n x days / week`` for fixed times, nothing
@@ -12,6 +12,9 @@ changes how checks are dispatched.
   a guess.
 * **Host ceiling** is ``60 / minimum spacing`` checks a minute (2 s spacing: 30 a minute), from the
   host's own limits, overrides included.
+
+This module only measures. The scheduler's response to an over-limit host is ``engine/stretch.py``,
+which reuses ``tally`` and ``host_ceiling_per_min``.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ if TYPE_CHECKING:
     from pagewatch.engine.core import Engine
 
 WARN_UTILISATION = 0.8
+ROUNDING = 1e-6  # demand is a sum of many 1/interval terms: "exactly at the limit" is not "over"
 MIN_SAMPLES = 5
 WINDOW = timedelta(hours=24)
 HOSTS_SHOWN = 50
@@ -58,7 +62,7 @@ def checks_per_second(sched: dict[str, Any], current_interval_s: int | None) -> 
     return 1.0 / max(float(interval), 1.0)
 
 
-def _tally(
+def tally(
     engine: Engine, rows: list[sqlite3.Row]
 ) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
     """pool -> [bookmarks, checks/s]; host -> [bookmarks, checks/s]. Runs off the event loop:
@@ -79,6 +83,18 @@ def _tally(
     return pools, hosts
 
 
+def exceeds(demand_per_min: float, ceiling_per_min: float) -> bool:
+    """Whether a host is asked for more than it can serve (beyond rounding noise)."""
+    return demand_per_min > ceiling_per_min * (1.0 + ROUNDING)
+
+
+def host_ceiling_per_min(engine: Engine, host: str) -> float | None:
+    """What a host can serve: ``60 / minimum spacing`` checks a minute (None: no spacing, so no
+    ceiling). Overrides count."""
+    _, gap = engine.host_gate.limits(host)
+    return 60.0 / gap if gap > 0.0 else None
+
+
 async def compute(engine: Engine, *, hosts_shown: int = HOSTS_SHOWN) -> CapacityOut:
     now = engine.clock.now()
     since = iso(now - WINDOW)
@@ -87,7 +103,7 @@ async def compute(engine: Engine, *, hosts_shown: int = HOSTS_SHOWN) -> Capacity
         return repo.demand_rows(conn), repo.check_time_stats(conn, since)
 
     rows, stats = await engine.db.read(read)
-    pools_raw, hosts_raw = await asyncio.to_thread(_tally, engine, rows)
+    pools_raw, hosts_raw = await asyncio.to_thread(tally, engine, rows)
     s = engine.settings
 
     pools: list[PoolDemand] = []
@@ -112,8 +128,7 @@ async def compute(engine: Engine, *, hosts_shown: int = HOSTS_SHOWN) -> Capacity
 
     hosts: list[HostDemand] = []
     for host, (count, per_s) in hosts_raw.items():
-        _, gap = engine.host_gate.limits(host)
-        ceiling = 60.0 / gap if gap > 0.0 else None
+        ceiling = host_ceiling_per_min(engine, host)
         per_min = per_s * 60.0
         util = per_min / ceiling if ceiling else None
         hosts.append(
@@ -123,7 +138,7 @@ async def compute(engine: Engine, *, hosts_shown: int = HOSTS_SHOWN) -> Capacity
                 demand_per_min=per_min,
                 ceiling_per_min=ceiling,
                 utilisation=util,
-                over_limit=util is not None and util > 1.0,
+                over_limit=ceiling is not None and exceeds(per_min, ceiling),
             )
         )
     hosts.sort(key=lambda h: (h.utilisation or 0.0, h.demand_per_min, h.host), reverse=True)

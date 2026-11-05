@@ -328,6 +328,7 @@ class CheckRunner:
     ) -> tuple[Any, int | None]:
         e = self.e
         cfg = resolved.schedule if resolved else e.settings.default_schedule
+        e.host_stretch.refresh_soon()  # at most once a minute; this check uses the current factors
         return sched.next_due(
             cfg,
             e.clock.now(),
@@ -336,6 +337,7 @@ class CheckRunner:
             on_battery=e.on_battery,
             zone=e.zone,
             rng=self.rng,
+            stretch=e.host_stretch.for_url(ctx.row["url"]),
         )
 
     # -- commits ------------------------------------------------------------------------

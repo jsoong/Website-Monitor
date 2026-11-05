@@ -733,7 +733,9 @@ class SettingsDialog(QDialog):
         if out.hosts_over_limit:
             warnings.append(
                 f"{out.hosts_over_limit} website(s) are asked for more checks than their minimum gap "
-                "allows, so those checks will fall behind. Lengthen their intervals or shorten the gap."
+                "allows, so PageWatch checks all of that website's bookmarks less often than their "
+                "schedules say (every interval is stretched by the same factor). Lengthen their "
+                "intervals or shorten the gap to stop this."
             )
         if out.hosts_total > len(out.hosts):
             warnings.append(f"Showing the {len(out.hosts)} busiest of {out.hosts_total} websites.")

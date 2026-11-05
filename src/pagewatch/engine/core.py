@@ -49,6 +49,7 @@ from pagewatch.engine.store import backup as backups
 from pagewatch.engine.store import repo
 from pagewatch.engine.store.blobs import BlobStore
 from pagewatch.engine.store.db import Database, migrate
+from pagewatch.engine.stretch import HostStretch
 from pagewatch.engine.tray import TrayBackend, TrayController
 from pagewatch.engine.workers import WorkerPool
 from pagewatch.models import AutowatchState, HealthOut, OnBattery, Settings, Trigger
@@ -93,6 +94,7 @@ class Engine:
         self.online = True
         self.on_battery = False
         self.host_gate = HostGate(self.clock, lambda: self.settings)
+        self.host_stretch = HostStretch(self)  # intervals of hosts asked for more than they allow
         self.secrets: SecretStore = secret_store or default_secrets()
         self.static_fetcher = StaticFetcher()
         self.browser = BrowserManager(lambda: self.settings, self.clock, browser_launcher)
@@ -189,6 +191,7 @@ class Engine:
         if interrupted:
             log.warning("interrupted_checks_requeued", bookmarks=interrupted)
         await self._load_scheduler()
+        await self.host_stretch.refresh()  # so the first reschedules after a restart already apply
         if self.settings.autowatch_state == "paused":
             until = (
                 parse_iso(self.settings.autowatch_paused_until)
@@ -291,6 +294,7 @@ class Engine:
             self.power.apply_keep_awake()
             self.power.poll_battery()  # the battery-saver option may have just been turned on
         self.scheduler.wake()
+        self.host_stretch.refresh_soon(force=True)  # host limits and schedules may have changed
         self.events.publish("engine_state", {"reason": "settings"})
         return new
 

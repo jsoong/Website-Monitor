@@ -256,6 +256,7 @@ async def patch(engine: Engine, bookmark_id: int, body: BookmarkPatch) -> sqlite
         due, interval = sched.next_due(
             resolved.schedule, now, current_interval_s=None, changed=True,
             on_battery=engine.on_battery, zone=engine.zone,
+            stretch=engine.host_stretch.for_url(updated["url"]),
         )  # fmt: skip
         await engine.db.write(
             lambda c: repo.bookmark_update(

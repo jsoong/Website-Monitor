@@ -7,6 +7,7 @@ the *local* wall clock through a ``Zone`` so DST shifts are handled; an IANA zon
 
 from __future__ import annotations
 
+import math
 import random
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Protocol
@@ -103,12 +104,19 @@ def next_time_of_day(cfg: ScheduleConfig, now: datetime, zone: Zone) -> datetime
     return None
 
 
-def effective_interval_s(cfg: ScheduleConfig, current: int | None, *, on_battery: bool) -> int:
+def effective_interval_s(
+    cfg: ScheduleConfig, current: int | None, *, on_battery: bool, stretch: float = 1.0
+) -> int:
+    """The gap between two checks. ``stretch`` (>= 1) is the host's over-capacity factor (see
+    ``engine/stretch.py``): it lengthens the gap only, so the stored adaptive interval, which the
+    demand figure is computed from, is not affected."""
     base = cfg.interval_s
     if cfg.mode is ScheduleMode.ADAPTIVE:
         base = current if current is not None else cfg.adaptive.min_s
     if on_battery and cfg.on_battery is OnBattery.SLOW:
         base *= SLOW_FACTOR
+    if stretch > 1.0:
+        base = math.ceil(base * stretch)
     return base
 
 
@@ -141,11 +149,13 @@ def next_due(
     on_battery: bool = False,
     zone: Zone | None = None,
     rng: random.Random | None = None,
+    stretch: float = 1.0,
 ) -> tuple[datetime | None, int | None]:
     """When the next check is due and the adaptive state to store.
 
     ``changed`` is only meaningful for adaptive schedules: ``True`` after a real change,
-    ``False`` after an unchanged check, ``None`` after an error.
+    ``False`` after an unchanged check, ``None`` after an error. ``stretch`` lengthens the gap of
+    interval and adaptive schedules (not fixed times, which are clock times, not gaps).
     """
     zone = zone or SystemZone()
     rng = rng or random.Random()
@@ -157,6 +167,6 @@ def next_due(
         return (apply_limits(cfg, due, zone) if due else None), state
     if cfg.mode is ScheduleMode.ADAPTIVE:
         state = adaptive_next_interval(cfg, current_interval_s, changed=changed)
-    interval = effective_interval_s(cfg, state, on_battery=on_battery)
+    interval = effective_interval_s(cfg, state, on_battery=on_battery, stretch=stretch)
     due = now + timedelta(seconds=jittered(interval, cfg.jitter_pct, rng))
     return apply_limits(cfg, due, zone), state

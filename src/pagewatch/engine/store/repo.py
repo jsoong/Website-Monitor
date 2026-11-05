@@ -117,8 +117,8 @@ def bookmark_delete(conn: sqlite3.Connection, ids: Iterable[int]) -> int:
 
 def bookmark_schedule_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
-        "SELECT id, url, enabled, priority, check_method, next_due_at, schedule_json, folder_id "
-        "FROM bookmark"
+        "SELECT id, url, enabled, priority, check_method, next_due_at, schedule_json, folder_id, "
+        "status FROM bookmark"
     ).fetchall()
 
 
@@ -584,7 +584,11 @@ def commit_check(conn: sqlite3.Connection, c: CheckCommit) -> CommitResult:
             (c.etag, c.last_modified, c.refresh_etag_of),
         )
 
-    if status is None and row["status"] in ("new", "error") and c.outcome is not Outcome.ERROR:
+    if (
+        status is None
+        and row["status"] in ("new", "error", "needs_login")
+        and c.outcome is not Outcome.ERROR
+    ):
         status = BookmarkStatus.CHANGED if row["unread"] else BookmarkStatus.OK
     if status is not None:
         upd["status"] = status.value
@@ -680,3 +684,80 @@ def bookmark_counts(conn: sqlite3.Connection, since: str) -> dict[str, Any]:
         "keyword_hits": hits,
         "by_folder": by_folder,
     }
+
+
+# -- logins (M6) ------------------------------------------------------------------------
+
+
+def login_state_get(conn: sqlite3.Connection, bookmark_id: int) -> sqlite3.Row | None:
+    row: sqlite3.Row | None = conn.execute(
+        "SELECT * FROM login_state WHERE bookmark_id=?", (bookmark_id,)
+    ).fetchone()
+    return row
+
+
+_LOGIN_FIELDS = (
+    "last_signin_at", "last_auto_login_at", "auto_login_blocked", "needs_login_at", "reason",
+    "last_prompt_at",
+)  # fmt: skip
+
+
+def login_state_set(conn: sqlite3.Connection, bookmark_id: int, **fields: Any) -> None:
+    """Create the row if needed, then set only the given columns."""
+    unknown = set(fields) - set(_LOGIN_FIELDS)
+    if unknown:
+        raise ValueError(f"unknown login_state field(s): {sorted(unknown)}")
+    conn.execute("INSERT OR IGNORE INTO login_state(bookmark_id) VALUES(?)", (bookmark_id,))
+    if fields:
+        sets = ", ".join(f"{k}=?" for k in fields)
+        conn.execute(
+            f"UPDATE login_state SET {sets} WHERE bookmark_id=?",  # noqa: S608 - names checked above
+            [*fields.values(), bookmark_id],
+        )
+
+
+def login_state_all(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
+    return {r["bookmark_id"]: r for r in conn.execute("SELECT * FROM login_state")}
+
+
+def macro_list(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT m.id, m.name, m.steps_json, m.login_signal_json, "
+        "(SELECT COUNT(*) FROM bookmark b WHERE b.macro_id=m.id) AS bookmarks "
+        "FROM macro m ORDER BY m.name COLLATE NOCASE, m.id"
+    ).fetchall()
+
+
+def macro_get(conn: sqlite3.Connection, macro_id: int) -> sqlite3.Row | None:
+    row: sqlite3.Row | None = conn.execute(
+        "SELECT m.id, m.name, m.steps_json, m.login_signal_json, "
+        "(SELECT COUNT(*) FROM bookmark b WHERE b.macro_id=m.id) AS bookmarks "
+        "FROM macro m WHERE m.id=?",
+        (macro_id,),
+    ).fetchone()
+    return row
+
+
+def macro_insert(
+    conn: sqlite3.Connection, name: str, steps_json: str, signal_json: str | None
+) -> int:
+    cur = conn.execute(
+        "INSERT INTO macro(name, steps_json, login_signal_json) VALUES(?,?,?)",
+        (name, steps_json, signal_json),
+    )
+    assert cur.lastrowid is not None
+    return cur.lastrowid
+
+
+def macro_update(
+    conn: sqlite3.Connection, macro_id: int, name: str, steps_json: str, signal_json: str | None
+) -> bool:
+    cur = conn.execute(
+        "UPDATE macro SET name=?, steps_json=?, login_signal_json=? WHERE id=?",
+        (name, steps_json, signal_json, macro_id),
+    )
+    return cur.rowcount > 0
+
+
+def macro_delete(conn: sqlite3.Connection, macro_id: int) -> bool:
+    return conn.execute("DELETE FROM macro WHERE id=?", (macro_id,)).rowcount > 0

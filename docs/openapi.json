@@ -89,6 +89,45 @@
     "title": "AlertPrivacy",
     "type": "string"
    },
+   "AssertTextStep": {
+    "additionalProperties": false,
+    "properties": {
+     "op": {
+      "const": "assert_text",
+      "title": "Op",
+      "type": "string"
+     },
+     "selector": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Selector"
+     },
+     "text": {
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+     },
+     "timeout_s": {
+      "default": 15.0,
+      "exclusiveMinimum": 0.0,
+      "maximum": 120.0,
+      "title": "Timeout S",
+      "type": "number"
+     }
+    },
+    "required": [
+     "op",
+     "text"
+    ],
+    "title": "AssertTextStep",
+    "type": "object"
+   },
    "AuthConfig": {
     "additionalProperties": false,
     "properties": {
@@ -106,6 +145,7 @@
       "type": "string"
      },
      "username": {
+      "minLength": 1,
       "title": "Username",
       "type": "string"
      }
@@ -1559,6 +1599,122 @@
     "title": "CheckRunOut",
     "type": "object"
    },
+   "ClickStep": {
+    "additionalProperties": false,
+    "properties": {
+     "op": {
+      "const": "click",
+      "title": "Op",
+      "type": "string"
+     },
+     "selector": {
+      "minLength": 1,
+      "title": "Selector",
+      "type": "string"
+     },
+     "timeout_s": {
+      "default": 15.0,
+      "exclusiveMinimum": 0.0,
+      "maximum": 120.0,
+      "title": "Timeout S",
+      "type": "number"
+     }
+    },
+    "required": [
+     "op",
+     "selector"
+    ],
+    "title": "ClickStep",
+    "type": "object"
+   },
+   "CookieImportIn": {
+    "additionalProperties": false,
+    "description": "A Netscape ``cookies.txt``: its text, or the path of a file the engine can read.",
+    "properties": {
+     "path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Path"
+     },
+     "text": {
+      "anyOf": [
+       {
+        "maxLength": 2000000,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Text"
+     }
+    },
+    "title": "CookieImportIn",
+    "type": "object"
+   },
+   "CookieStatusOut": {
+    "additionalProperties": false,
+    "description": "What a bookmark's imported cookies are, without their values.",
+    "properties": {
+     "count": {
+      "default": 0,
+      "title": "Count",
+      "type": "integer"
+     },
+     "domains": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Domains",
+      "type": "array"
+     },
+     "earliest_expiry": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Earliest Expiry"
+     },
+     "expired": {
+      "default": 0,
+      "title": "Expired",
+      "type": "integer"
+     },
+     "imported_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Imported At"
+     },
+     "present": {
+      "default": false,
+      "title": "Present",
+      "type": "boolean"
+     },
+     "skipped_lines": {
+      "default": 0,
+      "title": "Skipped Lines",
+      "type": "integer"
+     }
+    },
+    "title": "CookieStatusOut",
+    "type": "object"
+   },
    "FalsePositiveOut": {
     "additionalProperties": false,
     "properties": {
@@ -1689,6 +1845,16 @@
      "listing": {
       "$ref": "#/components/schemas/ListingOptions"
      },
+     "login": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/LoginConfig"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
      "max_bytes": {
       "default": 20971520,
       "minimum": 1024.0,
@@ -1714,6 +1880,28 @@
        }
       ],
       "title": "Proxy"
+     },
+     "proxy_secret_key": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Proxy Secret Key"
+     },
+     "proxy_username": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Proxy Username"
      },
      "records": {
       "anyOf": [
@@ -1750,6 +1938,46 @@
      }
     },
     "title": "FetchConfig",
+    "type": "object"
+   },
+   "FillStep": {
+    "additionalProperties": false,
+    "properties": {
+     "op": {
+      "const": "fill",
+      "title": "Op",
+      "type": "string"
+     },
+     "selector": {
+      "minLength": 1,
+      "title": "Selector",
+      "type": "string"
+     },
+     "timeout_s": {
+      "default": 15.0,
+      "exclusiveMinimum": 0.0,
+      "maximum": 120.0,
+      "title": "Timeout S",
+      "type": "number"
+     },
+     "value": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "$ref": "#/components/schemas/SecretRef"
+       }
+      ],
+      "title": "Value"
+     }
+    },
+    "required": [
+     "op",
+     "selector",
+     "value"
+    ],
+    "title": "FillStep",
     "type": "object"
    },
    "FilterConfig": {
@@ -2159,6 +2387,33 @@
     "title": "GateConfig",
     "type": "object"
    },
+   "GotoStep": {
+    "additionalProperties": false,
+    "properties": {
+     "op": {
+      "const": "goto",
+      "title": "Op",
+      "type": "string"
+     },
+     "timeout_s": {
+      "default": 15.0,
+      "exclusiveMinimum": 0.0,
+      "maximum": 120.0,
+      "title": "Timeout S",
+      "type": "number"
+     },
+     "url": {
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "op",
+     "url"
+    ],
+    "title": "GotoStep",
+    "type": "object"
+   },
    "HTTPValidationError": {
     "properties": {
      "detail": {
@@ -2359,6 +2614,7 @@
    },
    "HostOverride": {
     "additionalProperties": false,
+    "description": "A website's exception to the politeness defaults (spec: Politeness and network).",
     "properties": {
      "concurrency": {
       "anyOf": [
@@ -2407,6 +2663,374 @@
      }
     },
     "title": "ListingOptions",
+    "type": "object"
+   },
+   "LoginConfig": {
+    "additionalProperties": false,
+    "description": "A bookmark's sign-in policy (``fetch.login``).",
+    "properties": {
+     "allow_stored_password": {
+      "default": false,
+      "title": "Allow Stored Password",
+      "type": "boolean"
+     },
+     "min_login_interval_s": {
+      "default": 21600,
+      "minimum": 3600.0,
+      "title": "Min Login Interval S",
+      "type": "integer"
+     },
+     "semi_attended": {
+      "default": false,
+      "title": "Semi Attended",
+      "type": "boolean"
+     },
+     "signal": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/LoginSignal"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "signin_url": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Signin Url"
+     }
+    },
+    "title": "LoginConfig",
+    "type": "object"
+   },
+   "LoginSignal": {
+    "additionalProperties": false,
+    "description": "How the engine recognises \"you are signed out\": any one of these appearing means the\ncheck landed on a login page (a selector, or a redirect to the login URL).",
+    "properties": {
+     "selector": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Selector"
+     },
+     "text": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Text"
+     },
+     "url_contains": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Url Contains"
+     }
+    },
+    "title": "LoginSignal",
+    "type": "object"
+   },
+   "LoginStatusOut": {
+    "additionalProperties": false,
+    "properties": {
+     "auto_login_blocked": {
+      "default": false,
+      "title": "Auto Login Blocked",
+      "type": "boolean"
+     },
+     "bookmark_id": {
+      "title": "Bookmark Id",
+      "type": "integer"
+     },
+     "cookies": {
+      "$ref": "#/components/schemas/CookieStatusOut"
+     },
+     "last_auto_login_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Auto Login At"
+     },
+     "last_signin_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Signin At"
+     },
+     "macro_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Macro Id"
+     },
+     "needs_login": {
+      "default": false,
+      "title": "Needs Login",
+      "type": "boolean"
+     },
+     "next_auto_login_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Next Auto Login At"
+     },
+     "profile_exists": {
+      "default": false,
+      "title": "Profile Exists",
+      "type": "boolean"
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Reason"
+     },
+     "semi_attended": {
+      "default": false,
+      "title": "Semi Attended",
+      "type": "boolean"
+     },
+     "signed_in_mode": {
+      "enum": [
+       "none",
+       "server_auth",
+       "cookies",
+       "macro",
+       "semi_attended"
+      ],
+      "title": "Signed In Mode",
+      "type": "string"
+     },
+     "signing_in": {
+      "default": false,
+      "title": "Signing In",
+      "type": "boolean"
+     },
+     "stored_password": {
+      "default": false,
+      "title": "Stored Password",
+      "type": "boolean"
+     },
+     "stored_password_allowed": {
+      "default": false,
+      "title": "Stored Password Allowed",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "bookmark_id",
+     "signed_in_mode"
+    ],
+    "title": "LoginStatusOut",
+    "type": "object"
+   },
+   "MacroDef": {
+    "additionalProperties": false,
+    "description": "The body of a macro (``macro.steps_json`` holds ``steps``).",
+    "properties": {
+     "login_signal": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/LoginSignal"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "name": {
+      "maxLength": 120,
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+     },
+     "steps": {
+      "items": {
+       "discriminator": {
+        "mapping": {
+         "assert_text": "#/components/schemas/AssertTextStep",
+         "click": "#/components/schemas/ClickStep",
+         "fill": "#/components/schemas/FillStep",
+         "goto": "#/components/schemas/GotoStep",
+         "press": "#/components/schemas/PressStep",
+         "select": "#/components/schemas/SelectStep",
+         "wait_for": "#/components/schemas/WaitForStep"
+        },
+        "propertyName": "op"
+       },
+       "oneOf": [
+        {
+         "$ref": "#/components/schemas/GotoStep"
+        },
+        {
+         "$ref": "#/components/schemas/FillStep"
+        },
+        {
+         "$ref": "#/components/schemas/ClickStep"
+        },
+        {
+         "$ref": "#/components/schemas/SelectStep"
+        },
+        {
+         "$ref": "#/components/schemas/PressStep"
+        },
+        {
+         "$ref": "#/components/schemas/WaitForStep"
+        },
+        {
+         "$ref": "#/components/schemas/AssertTextStep"
+        }
+       ]
+      },
+      "maxItems": 100,
+      "minItems": 1,
+      "title": "Steps",
+      "type": "array"
+     }
+    },
+    "required": [
+     "name",
+     "steps"
+    ],
+    "title": "MacroDef",
+    "type": "object"
+   },
+   "MacroOut": {
+    "additionalProperties": false,
+    "properties": {
+     "bookmarks": {
+      "default": 0,
+      "title": "Bookmarks",
+      "type": "integer"
+     },
+     "id": {
+      "title": "Id",
+      "type": "integer"
+     },
+     "login_signal": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/LoginSignal"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "name": {
+      "maxLength": 120,
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+     },
+     "secret_keys_used": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Secret Keys Used",
+      "type": "array"
+     },
+     "steps": {
+      "items": {
+       "discriminator": {
+        "mapping": {
+         "assert_text": "#/components/schemas/AssertTextStep",
+         "click": "#/components/schemas/ClickStep",
+         "fill": "#/components/schemas/FillStep",
+         "goto": "#/components/schemas/GotoStep",
+         "press": "#/components/schemas/PressStep",
+         "select": "#/components/schemas/SelectStep",
+         "wait_for": "#/components/schemas/WaitForStep"
+        },
+        "propertyName": "op"
+       },
+       "oneOf": [
+        {
+         "$ref": "#/components/schemas/GotoStep"
+        },
+        {
+         "$ref": "#/components/schemas/FillStep"
+        },
+        {
+         "$ref": "#/components/schemas/ClickStep"
+        },
+        {
+         "$ref": "#/components/schemas/SelectStep"
+        },
+        {
+         "$ref": "#/components/schemas/PressStep"
+        },
+        {
+         "$ref": "#/components/schemas/WaitForStep"
+        },
+        {
+         "$ref": "#/components/schemas/AssertTextStep"
+        }
+       ]
+      },
+      "maxItems": 100,
+      "minItems": 1,
+      "title": "Steps",
+      "type": "array"
+     },
+     "stored_password": {
+      "default": false,
+      "title": "Stored Password",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "name",
+     "steps",
+     "id"
+    ],
+    "title": "MacroOut",
     "type": "object"
    },
    "OnBattery": {
@@ -2610,6 +3234,46 @@
      "size"
     ],
     "title": "PoolDemand",
+    "type": "object"
+   },
+   "PressStep": {
+    "additionalProperties": false,
+    "properties": {
+     "key": {
+      "maxLength": 40,
+      "minLength": 1,
+      "title": "Key",
+      "type": "string"
+     },
+     "op": {
+      "const": "press",
+      "title": "Op",
+      "type": "string"
+     },
+     "selector": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Selector"
+     },
+     "timeout_s": {
+      "default": 15.0,
+      "exclusiveMinimum": 0.0,
+      "maximum": 120.0,
+      "title": "Timeout S",
+      "type": "number"
+     }
+    },
+    "required": [
+     "op",
+     "key"
+    ],
+    "title": "PressStep",
     "type": "object"
    },
    "PreviewOut": {
@@ -2945,6 +3609,110 @@
     "title": "ProposalOut",
     "type": "object"
    },
+   "RecordOut": {
+    "additionalProperties": false,
+    "properties": {
+     "error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Error"
+     },
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "state": {
+      "enum": [
+       "running",
+       "done",
+       "failed",
+       "cancelled"
+      ],
+      "title": "State",
+      "type": "string"
+     },
+     "steps": {
+      "items": {
+       "discriminator": {
+        "mapping": {
+         "assert_text": "#/components/schemas/AssertTextStep",
+         "click": "#/components/schemas/ClickStep",
+         "fill": "#/components/schemas/FillStep",
+         "goto": "#/components/schemas/GotoStep",
+         "press": "#/components/schemas/PressStep",
+         "select": "#/components/schemas/SelectStep",
+         "wait_for": "#/components/schemas/WaitForStep"
+        },
+        "propertyName": "op"
+       },
+       "oneOf": [
+        {
+         "$ref": "#/components/schemas/GotoStep"
+        },
+        {
+         "$ref": "#/components/schemas/FillStep"
+        },
+        {
+         "$ref": "#/components/schemas/ClickStep"
+        },
+        {
+         "$ref": "#/components/schemas/SelectStep"
+        },
+        {
+         "$ref": "#/components/schemas/PressStep"
+        },
+        {
+         "$ref": "#/components/schemas/WaitForStep"
+        },
+        {
+         "$ref": "#/components/schemas/AssertTextStep"
+        }
+       ]
+      },
+      "title": "Steps",
+      "type": "array"
+     },
+     "warnings": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+     }
+    },
+    "required": [
+     "id",
+     "state"
+    ],
+    "title": "RecordOut",
+    "type": "object"
+   },
+   "RecordStartIn": {
+    "additionalProperties": false,
+    "description": "Start Playwright codegen on ``url`` (opens a browser window on the owner's desktop).",
+    "properties": {
+     "password_secret_key": {
+      "default": "macro-password",
+      "title": "Password Secret Key",
+      "type": "string"
+     },
+     "url": {
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "url"
+    ],
+    "title": "RecordStartIn",
+    "type": "object"
+   },
    "RecordsConfig": {
     "additionalProperties": false,
     "description": "A JSON or CSV feed whose rows are watched record by record (spec: Records sources).",
@@ -3190,6 +3958,95 @@
     "title": "ScreenshotFilters",
     "type": "object"
    },
+   "SecretIn": {
+    "additionalProperties": false,
+    "properties": {
+     "value": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "title": "Value",
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "title": "SecretIn",
+    "type": "object"
+   },
+   "SecretOut": {
+    "additionalProperties": false,
+    "description": "Values are write-only: this says whether a secret exists, never what it is.",
+    "properties": {
+     "available": {
+      "default": true,
+      "title": "Available",
+      "type": "boolean"
+     },
+     "exists": {
+      "title": "Exists",
+      "type": "boolean"
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "exists"
+    ],
+    "title": "SecretOut",
+    "type": "object"
+   },
+   "SecretRef": {
+    "additionalProperties": false,
+    "description": "A macro value kept in the credential store: ``{\"secret\": \"<key>\"}``, never inline.",
+    "properties": {
+     "secret": {
+      "title": "Secret",
+      "type": "string"
+     }
+    },
+    "required": [
+     "secret"
+    ],
+    "title": "SecretRef",
+    "type": "object"
+   },
+   "SelectStep": {
+    "additionalProperties": false,
+    "properties": {
+     "op": {
+      "const": "select",
+      "title": "Op",
+      "type": "string"
+     },
+     "selector": {
+      "minLength": 1,
+      "title": "Selector",
+      "type": "string"
+     },
+     "timeout_s": {
+      "default": 15.0,
+      "exclusiveMinimum": 0.0,
+      "maximum": 120.0,
+      "title": "Timeout S",
+      "type": "number"
+     },
+     "value": {
+      "title": "Value",
+      "type": "string"
+     }
+    },
+    "required": [
+     "op",
+     "selector",
+     "value"
+    ],
+    "title": "SelectStep",
+    "type": "object"
+   },
    "Settings": {
     "additionalProperties": false,
     "properties": {
@@ -3343,6 +4200,34 @@
       ],
       "title": "Global Proxy"
      },
+     "global_proxy_secret_key": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Global Proxy Secret Key"
+     },
+     "global_proxy_username": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Global Proxy Username"
+     },
+     "host_load_refresh_s": {
+      "default": 300.0,
+      "minimum": 0.05,
+      "title": "Host Load Refresh S",
+      "type": "number"
+     },
      "host_overrides": {
       "additionalProperties": {
        "$ref": "#/components/schemas/HostOverride"
@@ -3454,6 +4339,16 @@
       "title": "Rss Limit Mb",
       "type": "integer"
      },
+     "signin_prompt_enabled": {
+      "default": true,
+      "title": "Signin Prompt Enabled",
+      "type": "boolean"
+     },
+     "signin_prompt_time": {
+      "default": "09:00",
+      "title": "Signin Prompt Time",
+      "type": "string"
+     },
      "startup_delay_s": {
       "default": 30.0,
       "minimum": 0.0,
@@ -3466,6 +4361,16 @@
       "minimum": 1.0,
       "title": "Static Pool",
       "type": "integer"
+     },
+     "stored_password_logins": {
+      "default": false,
+      "title": "Stored Password Logins",
+      "type": "boolean"
+     },
+     "stretch_hosts": {
+      "default": true,
+      "title": "Stretch Hosts",
+      "type": "boolean"
      },
      "timezone": {
       "anyOf": [
@@ -3505,6 +4410,35 @@
      }
     },
     "title": "Settings",
+    "type": "object"
+   },
+   "SignInOut": {
+    "additionalProperties": false,
+    "properties": {
+     "bookmark_id": {
+      "title": "Bookmark Id",
+      "type": "integer"
+     },
+     "message": {
+      "default": "",
+      "title": "Message",
+      "type": "string"
+     },
+     "state": {
+      "enum": [
+       "started",
+       "finished",
+       "idle"
+      ],
+      "title": "State",
+      "type": "string"
+     }
+    },
+    "required": [
+     "bookmark_id",
+     "state"
+    ],
+    "title": "SignInOut",
     "type": "object"
    },
    "SourceType": {
@@ -3754,6 +4688,52 @@
      "type"
     ],
     "title": "ValidationError",
+    "type": "object"
+   },
+   "WaitForStep": {
+    "additionalProperties": false,
+    "properties": {
+     "ms": {
+      "anyOf": [
+       {
+        "maximum": 60000.0,
+        "minimum": 1.0,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ms"
+     },
+     "op": {
+      "const": "wait_for",
+      "title": "Op",
+      "type": "string"
+     },
+     "selector": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Selector"
+     },
+     "timeout_s": {
+      "default": 15.0,
+      "exclusiveMinimum": 0.0,
+      "maximum": 120.0,
+      "title": "Timeout S",
+      "type": "number"
+     }
+    },
+    "required": [
+     "op"
+    ],
+    "title": "WaitForStep",
     "type": "object"
    },
    "Window": {
@@ -4442,6 +5422,132 @@
     ]
    }
   },
+  "/bookmarks/{bookmark_id}/cookies": {
+   "delete": {
+    "operationId": "remove_cookies_bookmarks__bookmark_id__cookies_delete",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Remove Cookies",
+    "tags": [
+     "logins"
+    ]
+   },
+   "get": {
+    "operationId": "cookie_status_bookmarks__bookmark_id__cookies_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/CookieStatusOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Cookie Status",
+    "tags": [
+     "logins"
+    ]
+   },
+   "post": {
+    "description": "Import a Netscape cookies.txt for this bookmark. Values are never returned.",
+    "operationId": "import_cookies_bookmarks__bookmark_id__cookies_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/CookieImportIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/CookieStatusOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Import Cookies",
+    "tags": [
+     "logins"
+    ]
+   }
+  },
   "/bookmarks/{bookmark_id}/diff": {
    "get": {
     "description": "The viewer's default: everything unread (last-read version -> latest). ``view=new`` and\n``view=old`` return the stored pages unmarked; ``view=screenshot`` compares the last-read\nand latest screenshots (``format=png`` for the overlay picture).",
@@ -4540,6 +5646,91 @@
     "summary": "Unread Diff",
     "tags": [
      "changes"
+    ]
+   }
+  },
+  "/bookmarks/{bookmark_id}/login": {
+   "get": {
+    "operationId": "login_status_bookmarks__bookmark_id__login_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/LoginStatusOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Login Status",
+    "tags": [
+     "logins"
+    ]
+   }
+  },
+  "/bookmarks/{bookmark_id}/login/resume": {
+   "post": {
+    "description": "The owner fixed the sign-in: leave needs_login, clear a macro block, check now.",
+    "operationId": "resume_login_bookmarks__bookmark_id__login_resume_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/LoginStatusOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Resume Login",
+    "tags": [
+     "logins"
     ]
    }
   },
@@ -4652,6 +5843,128 @@
     "summary": "List Runs",
     "tags": [
      "bookmarks"
+    ]
+   }
+  },
+  "/bookmarks/{bookmark_id}/session": {
+   "delete": {
+    "description": "\"Wipe session\": delete the browser profile and the in-memory cookies.",
+    "operationId": "wipe_session_bookmarks__bookmark_id__session_delete",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Wipe Session",
+    "tags": [
+     "logins"
+    ]
+   }
+  },
+  "/bookmarks/{bookmark_id}/signin": {
+   "post": {
+    "description": "Open the visible sign-in window on the bookmark's browser profile.",
+    "operationId": "start_signin_bookmarks__bookmark_id__signin_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SignInOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Start Signin",
+    "tags": [
+     "logins"
+    ]
+   }
+  },
+  "/bookmarks/{bookmark_id}/signin/finish": {
+   "post": {
+    "description": "Close the window, save the session and check at once.",
+    "operationId": "finish_signin_bookmarks__bookmark_id__signin_finish_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SignInOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Finish Signin",
+    "tags": [
+     "logins"
     ]
    }
   },
@@ -5107,6 +6420,320 @@
     "summary": "Health"
    }
   },
+  "/macros": {
+   "get": {
+    "operationId": "list_macros_macros_get",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "$ref": "#/components/schemas/MacroOut"
+         },
+         "title": "Response List Macros Macros Get",
+         "type": "array"
+        }
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "summary": "List Macros",
+    "tags": [
+     "logins"
+    ]
+   },
+   "post": {
+    "operationId": "create_macro_macros_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/MacroDef"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "201": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MacroOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Create Macro",
+    "tags": [
+     "logins"
+    ]
+   }
+  },
+  "/macros/record": {
+   "post": {
+    "description": "Open Playwright codegen on the owner's desktop; poll the recording until it is done.",
+    "operationId": "start_recording_macros_record_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RecordStartIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "201": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RecordOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Start Recording",
+    "tags": [
+     "logins"
+    ]
+   }
+  },
+  "/macros/record/{rec_id}": {
+   "delete": {
+    "operationId": "cancel_recording_macros_record__rec_id__delete",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "rec_id",
+      "required": true,
+      "schema": {
+       "title": "Rec Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RecordOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Cancel Recording",
+    "tags": [
+     "logins"
+    ]
+   },
+   "get": {
+    "operationId": "get_recording_macros_record__rec_id__get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "rec_id",
+      "required": true,
+      "schema": {
+       "title": "Rec Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RecordOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Get Recording",
+    "tags": [
+     "logins"
+    ]
+   }
+  },
+  "/macros/{macro_id}": {
+   "delete": {
+    "description": "Bookmarks that used it keep running without a macro (their macro_id is cleared).",
+    "operationId": "delete_macro_macros__macro_id__delete",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "macro_id",
+      "required": true,
+      "schema": {
+       "title": "Macro Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Delete Macro",
+    "tags": [
+     "logins"
+    ]
+   },
+   "get": {
+    "operationId": "get_macro_macros__macro_id__get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "macro_id",
+      "required": true,
+      "schema": {
+       "title": "Macro Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MacroOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Get Macro",
+    "tags": [
+     "logins"
+    ]
+   },
+   "put": {
+    "operationId": "replace_macro_macros__macro_id__put",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "macro_id",
+      "required": true,
+      "schema": {
+       "title": "Macro Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/MacroDef"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MacroOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Replace Macro",
+    "tags": [
+     "logins"
+    ]
+   }
+  },
   "/preview": {
    "post": {
     "description": "Trial fetch of a URL and options for the add-bookmark assistant; nothing is stored.",
@@ -5234,6 +6861,146 @@
     "summary": "Restore",
     "tags": [
      "maintenance"
+    ]
+   }
+  },
+  "/secrets/{name}": {
+   "delete": {
+    "operationId": "delete_secret_secrets__name__delete",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "name",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "minLength": 1,
+       "title": "Name",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SecretOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Delete Secret",
+    "tags": [
+     "logins"
+    ]
+   },
+   "get": {
+    "description": "Whether a secret is stored. The value is never returned.",
+    "operationId": "get_secret_secrets__name__get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "name",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "minLength": 1,
+       "title": "Name",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SecretOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Get Secret",
+    "tags": [
+     "logins"
+    ]
+   },
+   "put": {
+    "description": "Store a password in the OS credential store. The database keeps only the name.",
+    "operationId": "put_secret_secrets__name__put",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "name",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "minLength": 1,
+       "title": "Name",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SecretIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SecretOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Put Secret",
+    "tags": [
+     "logins"
     ]
    }
   },

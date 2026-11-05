@@ -20,8 +20,10 @@ from pagewatch.engine import schedule as sched
 from pagewatch.engine.clock import iso
 from pagewatch.engine.config import Resolved, resolve, source_options
 from pagewatch.engine.fetch.base import FetchError, FetchRequest, FetchResult
+from pagewatch.engine.fetch.login import signal_in_html
 from pagewatch.engine.fetch.select import BROWSER, Route, method_kind, route_for
 from pagewatch.engine.hostgate import host_of
+from pagewatch.engine.logins.service import needs_browser
 from pagewatch.engine.logs import get_logger
 from pagewatch.engine.pipeline.core import PipelineJob, PipelineResult, VersionRef, process_check
 from pagewatch.engine.pipeline.sources import resolve_kind
@@ -100,13 +102,21 @@ class CheckRunner:
             return await self._fail(ctx, resolved, run_id, trigger, 0, FetchError(
                 FetchErrorKind.PARSE, "a records source needs a 'records' configuration"
             ))  # fmt: skip
-        route = route_for(row["url"], row["source_type"], row["check_method"], resolved.fetch)
+        route = route_for(
+            row["url"], row["source_type"], row["check_method"], resolved.fetch,
+            signed_in=needs_browser(resolved.fetch, row["macro_id"]),
+        )  # fmt: skip
         if route is None:
             return await self._fail(ctx, resolved, run_id, trigger, 0, FetchError(
                 FetchErrorKind.PARSE, f"unsupported url scheme: {row['url'][:40]}"
             ))  # fmt: skip
+        if e.logins.signin.is_open(bookmark_id):
+            return await self._skip_signing_in(ctx, run_id)
 
         fetch = await self._fetch(ctx, resolved, force, route)
+        gone = self._login_gone(resolved, fetch, route)
+        if gone is not None:
+            return await self._needs_login(ctx, resolved, run_id, fetch, route, gone)
         if fetch.error is not None:
             return await self._fail(
                 ctx, resolved, run_id, trigger, fetch.elapsed_ms, fetch.error, route
@@ -189,6 +199,7 @@ class CheckRunner:
     ) -> FetchResult:
         url: str = ctx.row["url"]
         use_cache = route.name in ("static", "feed", "file", "ftp")
+        browser_route = route.name in ("browser", "screenshot")
         req = FetchRequest(
             url=url,
             resolved=resolved,
@@ -196,8 +207,86 @@ class CheckRunner:
             etag=ctx.latest["etag"] if ctx.latest and use_cache else None,
             last_modified=ctx.latest["last_modified"] if ctx.latest and use_cache else None,
             force=force,
+            bookmark_id=ctx.row["id"],
+            login=await self.e.logins.plan_for(ctx.row, resolved.fetch) if browser_route else None,
         )
         return await self.e.fetchers.get(route).fetch(req)
+
+    # -- logins -------------------------------------------------------------------------
+
+    @staticmethod
+    def _login_gone(resolved: Resolved, fetch: FetchResult, route: Route) -> str | None:
+        """Why this fetch shows that the session is gone, or ``None`` (spec: Session expiry).
+        The browser fetcher has already looked at its live page; a static fetch is judged here,
+        from its HTML, against ``fetch.login.signal``."""
+        if fetch.login_required:
+            return fetch.login_reason or "login_signal"
+        cfg = resolved.fetch
+        if (
+            fetch.error is not None
+            and fetch.error.status == 401
+            and (cfg.auth is not None or cfg.cookies_file)
+        ):
+            return "auth_rejected"  # wrong credentials: retrying would only risk a lock-out
+        signal = cfg.login.signal if cfg.login else None
+        if (
+            fetch.error is None
+            and signal is not None
+            and route.name in ("static", "feed")
+            and signal_in_html(fetch.body, fetch.final_url, signal) is not None
+        ):
+            return "login_signal"
+        return None
+
+    async def _needs_login(
+        self,
+        ctx: _Context,
+        resolved: Resolved,
+        run_id: int,
+        fetch: FetchResult,
+        route: Route,
+        reason: str,
+    ) -> RunResult:
+        """The session is gone: record it, alert once, and stop the schedule for this bookmark
+        until the owner signs in again. Not an error of the site, so the error counter and the
+        "is failing" alert stay out of it."""
+        e = self.e
+        row = ctx.row
+        first = row["status"] != BookmarkStatus.NEEDS_LOGIN.value
+        commit = repo.CheckCommit(
+            bookmark_id=row["id"],
+            run_id=run_id,
+            finished_at=iso(e.clock.now()),
+            outcome=Outcome.ERROR,
+            reason=reason,
+            duration_ms=fetch.elapsed_ms,
+            byte_count=None,
+            next_due_at=None,
+            current_interval_s=row["current_interval_s"],
+            status=BookmarkStatus.NEEDS_LOGIN,
+            method=route.kind.value,
+        )
+        await self._write(ctx, commit)
+        await e.logins.alert_needs_login(row, reason, fetch.macro_error, first=first)
+        return RunResult(None)
+
+    async def _skip_signing_in(self, ctx: _Context, run_id: int) -> RunResult:
+        """The owner has the bookmark's browser profile open: a check would fight them for it."""
+        e = self.e
+        due = e.clock.now() + timedelta(seconds=30)
+        commit = repo.CheckCommit(
+            bookmark_id=ctx.row["id"],
+            run_id=run_id,
+            finished_at=iso(e.clock.now()),
+            outcome=Outcome.SKIPPED,
+            reason="signing_in",
+            duration_ms=0,
+            byte_count=None,
+            next_due_at=iso(due),
+            current_interval_s=ctx.row["current_interval_s"],
+        )
+        await self._write(ctx, commit)
+        return RunResult(due)
 
     # -- scheduling ---------------------------------------------------------------------
 
@@ -443,6 +532,11 @@ class CheckRunner:
         e = self.e
         result = await e.db.write(lambda c: repo.commit_check(c, commit))
         row = ctx.row
+        if row["status"] == BookmarkStatus.NEEDS_LOGIN.value and commit.outcome not in (
+            Outcome.ERROR,
+            Outcome.SKIPPED,
+        ):
+            await e.logins.session_restored(row["id"])
         log.info(
             "check",
             bookmark_id=row["id"],

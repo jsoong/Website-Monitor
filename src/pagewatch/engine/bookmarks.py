@@ -12,13 +12,17 @@ from pydantic import ValidationError
 from pagewatch.engine import schedule as sched
 from pagewatch.engine.clock import iso
 from pagewatch.engine.config import FOLDER_SCALAR_DEFAULTS, resolve, validate_sections
+from pagewatch.engine.logins.service import macro_def
+from pagewatch.engine.logins.validate import check_signed_in, default_private_when_signed_in
 from pagewatch.engine.store import repo
 from pagewatch.models import (
     AlertPrivacy,
     BookmarkIn,
     BookmarkPatch,
     BookmarkStatus,
+    FetchConfig,
     apply_patch,
+    deep_merge,
     dumps,
     loads,
 )
@@ -59,6 +63,42 @@ def _check(
         raise InvalidError(str(exc)) from exc
 
 
+async def _check_signed_in(
+    engine: Engine,
+    *,
+    url: str,
+    check_method: str,
+    stored_fetch: dict[str, Any],
+    folder_id: int | None,
+    macro_id: int | None,
+) -> FetchConfig:
+    """Macro and sign-in rules (the macro exists, the browser method, a login signal). Returns
+    the effective fetch configuration, which the privacy default also needs."""
+    inherited = engine.folders.chain_defaults(folder_id)
+    try:
+        fetch = FetchConfig.model_validate(deep_merge(inherited.get("fetch") or {}, stored_fetch))
+    except ValidationError as exc:
+        raise InvalidError(_validation_message(exc)) from exc
+    macro = None
+    exists = True
+    if macro_id is not None:
+        mrow = await engine.db.read(lambda c: repo.macro_get(c, macro_id))
+        exists = mrow is not None
+        if mrow is not None:
+            try:
+                macro = macro_def(mrow)
+            except ValidationError:
+                macro = None
+    try:
+        check_signed_in(
+            url=url, check_method=check_method, fetch=fetch, macro_id=macro_id,
+            macro_row_exists=exists, macro=macro,
+        )  # fmt: skip
+    except ValueError as exc:
+        raise InvalidError(str(exc)) from exc
+    return fetch
+
+
 def default_name(url: str) -> str:
     host = urlsplit(url).hostname
     return host or url[:80]
@@ -81,6 +121,16 @@ async def create(engine: Engine, body: BookmarkIn) -> sqlite3.Row:
         else body.source_type.value
     )
     _check(engine, sections, body.folder_id, source_type)
+    check_method = (
+        inherited["check_method"]
+        if "check_method" not in body.model_fields_set and "check_method" in inherited
+        else body.check_method.value
+    )
+    fetch_cfg = await _check_signed_in(
+        engine, url=body.url, check_method=check_method,
+        stored_fetch=sections.get("fetch") or {}, folder_id=body.folder_id, macro_id=body.macro_id,
+    )  # fmt: skip
+    default_private_when_signed_in(sections, inherited, fetch_cfg, body.macro_id)
 
     fields: dict[str, Any] = {
         "folder_id": body.folder_id,
@@ -177,6 +227,40 @@ async def patch(engine: Engine, bookmark_id: int, body: BookmarkPatch) -> sqlite
         _check(
             engine, {n: loads(row[f"{n}_json"], {}) or {} for n in SECTIONS}, folder_id, source_type
         )
+
+    macro_id = fields["macro_id"] if "macro_id" in fields else row["macro_id"]
+    signed_before = False
+    if {"fetch", "macro_id", "url", "check_method", "actions"} & (changed | set(fields)):
+        stored_fetch = stored.get("fetch")
+        if stored_fetch is None:
+            stored_fetch = loads(row["fetch_json"], {}) or {}
+        cfg_after = await _check_signed_in(
+            engine,
+            url=fields.get("url", row["url"]),
+            check_method=fields.get("check_method", row["check_method"]),
+            stored_fetch=stored_fetch,
+            folder_id=folder_id,
+            macro_id=macro_id,
+        )
+        cfg_before = FetchConfig.model_validate(
+            deep_merge(
+                engine.folders.chain_defaults(row["folder_id"]).get("fetch") or {},
+                loads(row["fetch_json"], {}) or {},
+            )
+        )
+        from pagewatch.engine.logins.service import is_signed_in
+
+        signed_before = is_signed_in(cfg_before, row["macro_id"])
+        if not signed_before and "actions" not in stored:
+            current_actions = loads(row["actions_json"], {})
+            if isinstance(current_actions, list):
+                current_actions = {"actions": current_actions}
+            sections_now = {"actions": current_actions} if current_actions else {}
+            if default_private_when_signed_in(
+                sections_now, engine.folders.chain_defaults(folder_id), cfg_after, macro_id
+            ):
+                fields["actions_json"] = dumps(sections_now["actions"])
+                changed.add("actions")
 
     now = engine.clock.now()
     reset = bool(changed & _RESETS_VERSIONS)

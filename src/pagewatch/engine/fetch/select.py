@@ -29,9 +29,15 @@ BROWSER = Route("browser", CheckKind.BROWSER)
 
 
 def route_for(
-    url: str, source_type: str, check_method: str, cfg: FetchConfig | None = None
+    url: str,
+    source_type: str,
+    check_method: str,
+    cfg: FetchConfig | None = None,
+    *,
+    signed_in: bool = False,
 ) -> Route | None:
-    """``None`` for a scheme nothing can fetch."""
+    """``None`` for a scheme nothing can fetch. A bookmark with a macro or a semi-attended
+    session always goes through the browser (its sign-in lives in a browser profile)."""
     try:
         scheme = urlsplit(url).scheme.lower()
     except ValueError:
@@ -44,7 +50,7 @@ def route_for(
         return None
     if check_method == "screenshot":
         return Route("screenshot", CheckKind.SCREENSHOT)
-    if check_method == "browser":
+    if check_method == "browser" or signed_in:
         return BROWSER
     if source_type == "feed" and cfg is not None and cfg.feed.download_enclosures:
         return Route("feed", CheckKind.FEED)

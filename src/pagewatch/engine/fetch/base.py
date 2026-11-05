@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from pagewatch.engine.config import Resolved
+from pagewatch.engine.fetch.login import LoginPlan
 from pagewatch.models import FetchErrorKind, Settings
 
 
@@ -45,6 +46,12 @@ class FetchResult:
     not_modified: bool = False  # HTTP 304, or unchanged mtime+size for files
     error: FetchError | None = None
     extra: dict[str, str] = field(default_factory=dict)
+    # -- logins (M6) ----------------------------------------------------------------------
+    # The page the check ended on is a login page: the session is gone (spec: Session expiry).
+    login_required: bool = False
+    login_reason: str | None = None  # `login_signal`, `auth_rejected`, `macro_failed`, ...
+    macro_ran: bool = False  # a Check-Macro logged in during this fetch
+    macro_error: str | None = None
 
     @property
     def etag(self) -> str | None:
@@ -63,6 +70,8 @@ class FetchRequest:
     etag: str | None = None  # of the latest version, for conditional GET
     last_modified: str | None = None
     force: bool = False
+    bookmark_id: int | None = None  # signed-in checks keep a session of their own per bookmark
+    login: LoginPlan | None = None  # macro / semi-attended sign-in (browser checks)
 
 
 class Fetcher(Protocol):

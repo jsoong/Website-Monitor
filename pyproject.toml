@@ -9,7 +9,7 @@ dependencies = [
     "pydantic>=2.8",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
-    "httpx[http2]>=0.27",
+    "httpx[http2,socks]>=0.27",
     "lxml>=5.2",
     "cssselect>=1.2",
     "zstandard>=0.23",
@@ -32,6 +32,7 @@ dependencies = [
     "openpyxl>=3.1.5",
     "feedparser>=6.0.14",
     "aioftp>=0.28.3",
+    "keyring>=25.7.0",
 ]
 
 [project.scripts]
@@ -71,7 +72,7 @@ select = ["E", "F", "W", "I", "UP", "B", "ASYNC", "SIM", "C4"]
 ignore = ["B008"]  # FastAPI Depends() in defaults
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["E501"]
+"tests/**" = ["E501", "ASYNC109"]  # test doubles mirror Playwright's timeout= parameters
 "src/pagewatch/engine/pipeline/viewer.py" = ["E501"]  # the embedded stylesheet
 "src/pagewatch/ui/**" = ["E501"]  # Qt label and tooltip strings
 

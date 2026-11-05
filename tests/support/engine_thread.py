@@ -16,6 +16,7 @@ from pagewatch.engine.clock import FakeClock
 from pagewatch.engine.core import Engine
 from pagewatch.engine.instance import remove_lockfile, write_lockfile
 from pagewatch.engine.paths import DataDir
+from pagewatch.engine.secrets import MemorySecrets, SecretStore
 from pagewatch.models import LockInfo
 from tests.support.fixture_site import FixtureSite
 from tests.support.sim import advance, settle
@@ -24,8 +25,15 @@ T = TypeVar("T")
 
 
 class EngineThread:
-    def __init__(self, root: Path, overrides: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        overrides: dict[str, Any] | None = None,
+        secret_store: SecretStore | None = None,
+    ) -> None:
         self.data_dir = DataDir(root).ensure()
+        # never the machine's real credential store: UI tests may save passwords
+        self.secret_store: SecretStore = secret_store or MemorySecrets()
         self.overrides = {
             "startup_delay_s": 0.0, "per_host_min_gap_s": 0.0, "per_host_concurrency": 16,
             "worker_processes": 2, "toast_coalesce_s": 0.0, **(overrides or {}),
@@ -48,6 +56,7 @@ class EngineThread:
             self.engine = Engine(
                 self.data_dir, clock=self.clock, worker_mode="thread",
                 settings_overrides=self.overrides, toast_backend=self.toasts,
+                secret_store=self.secret_store,
             )  # fmt: skip
             await self.engine.start()
             self.server = ApiServer(self.engine)

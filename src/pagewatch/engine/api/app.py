@@ -13,6 +13,7 @@ from pagewatch.engine.api import (
     routes_checks,
     routes_folders,
     routes_health,
+    routes_logins,
     routes_maintenance,
     routes_problems,
 )
@@ -39,5 +40,6 @@ def create_app(engine: Engine) -> FastAPI:
     app.include_router(routes_changes.router)
     app.include_router(routes_maintenance.router)
     app.include_router(routes_problems.router)
+    app.include_router(routes_logins.router)
     app.add_middleware(GuardMiddleware, token=lambda: engine.token)
     return app

@@ -34,6 +34,7 @@ from pagewatch.engine.fetch.select import FetcherSet
 from pagewatch.engine.fetch.static import StaticFetcher
 from pagewatch.engine.guard import ResourceGuard, tree_rss_mb
 from pagewatch.engine.hostgate import HostGate
+from pagewatch.engine.logins.service import Logins
 from pagewatch.engine.logs import get_logger, set_debug
 from pagewatch.engine.maintenance import Maintenance
 from pagewatch.engine.paths import DataDir
@@ -41,7 +42,7 @@ from pagewatch.engine.pipeline.core import RebuildJob, rebuild_version
 from pagewatch.engine.power import Connectivity, PowerBackend, PowerMonitor, ProbeFn
 from pagewatch.engine.runner import CheckRunner
 from pagewatch.engine.scheduler import Scheduler
-from pagewatch.engine.secrets import NullSecrets, SecretStore
+from pagewatch.engine.secrets import SecretStore, default_secrets
 from pagewatch.engine.settings import SettingsStore
 from pagewatch.engine.store import backup as backups
 from pagewatch.engine.store import repo
@@ -91,15 +92,15 @@ class Engine:
         self.online = True
         self.on_battery = False
         self.host_gate = HostGate(self.clock, lambda: self.settings)
-        self.secrets: SecretStore = secret_store or NullSecrets()
-        self.static_fetcher = StaticFetcher()
+        self.secrets: SecretStore = secret_store or default_secrets()
+        self.static_fetcher = StaticFetcher(self.secrets)
         self.browser = BrowserManager(lambda: self.settings, self.clock, browser_launcher)
         self.fetchers = FetcherSet(
             {
                 "static": self.static_fetcher,
                 "feed": FeedFetcher(self.static_fetcher),
-                "browser": BrowserFetcher(self.browser),
-                "screenshot": ScreenshotFetcher(self.browser),
+                "browser": BrowserFetcher(self.browser, self.secrets),
+                "screenshot": ScreenshotFetcher(self.browser, self.secrets),
                 "ftp": FtpFetcher(self.secrets),
                 "file": FileFetcher(),
             }
@@ -113,6 +114,7 @@ class Engine:
             on_autowatch_change=self._autowatch_changed,
         )
         self.actions = ActionQueue(self)
+        self.logins = Logins(self)
         self.tray: TrayController | None = (
             TrayController(self, tray_backend) if (enable_tray or tray_backend) else None
         )
@@ -224,7 +226,9 @@ class Engine:
         now = self.clock.now()
         loaded: list[tuple[int, str, int, str, bool, datetime | None, bool]] = []
         for r in rows:
-            due = parse_iso(r["next_due_at"]) if r["next_due_at"] else now
+            due: datetime | None = parse_iso(r["next_due_at"]) if r["next_due_at"] else now
+            if r["status"] == "needs_login":
+                due = None  # paused until the owner signs in again (spec: Session expiry)
             loaded.append(
                 (r["id"], r["url"], r["priority"], r["check_method"], bool(r["enabled"]), due,
                  self._pauses_on_battery(r))
@@ -256,6 +260,7 @@ class Engine:
         if self.connectivity is not None:
             await self.connectivity.stop()
         await self.scheduler.stop(grace_s=10.0)
+        await self.logins.aclose()
         await self.actions.stop()
         await self.toasts.aclose()
         for task in list(self._background):
@@ -298,6 +303,8 @@ class Engine:
     def schedule_bookmark(self, row: sqlite3.Row) -> None:
         """(Re)register a bookmark row with the scheduler."""
         due = parse_iso(row["next_due_at"]) if row["next_due_at"] else None
+        if row["status"] == "needs_login":
+            due = None  # paused until the owner signs in again
         self.scheduler.upsert(
             row["id"],
             url=row["url"],
@@ -512,11 +519,13 @@ class Engine:
         else:
             self.events.publish("open_change", {"bookmark_ids": bookmark_ids})
 
-    def notify_problem(self, bookmark_id: int | None, title: str, body: str) -> None:
+    def notify_problem(
+        self, bookmark_id: int | None, title: str, body: str, kind: str = "bookmark_error"
+    ) -> None:
         """A bookmark-level problem (e.g. it started failing): one event and one toast."""
         self.events.publish(
             "problem",
-            {"kind": "bookmark_error", "bookmark_id": bookmark_id, "message": f"{title}: {body}"},
+            {"kind": kind, "bookmark_id": bookmark_id, "message": f"{title}: {body}"},
         )
         self.spawn(self.toasts.notify(bookmark_id or 0, title, body), "problem-toast")
 

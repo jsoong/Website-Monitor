@@ -48,7 +48,7 @@ restore, only between a restore request and the next start), `plugins/`, `engine
 | `engine/fetch/select.py` | `route_for` (URL scheme + `check_method` -> fetcher), `method_kind` (the name `check_run.method` gets once the content is known), `FetcherSet`. |
 | `engine/fetch/browser.py` | `BrowserManager` (one shared browser, generations, idle close, recycle, Edge -> bundled Chromium) and `BrowserFetcher`; `screenshot.py` is its PNG-taking subclass. |
 | `engine/fetch/localfile.py`, `ftp.py`, `feed.py` | Files and folders (mtime+size shortcut, listing table), FTP/FTPS (aioftp), feeds (static fetch + optional enclosure download). |
-| `engine/secrets.py` | `SecretStore` interface (passwords are looked up by key name; the keyring implementation is M6). |
+| `engine/secrets.py` | Secret stores, looked up by key name: `KeyringSecrets` (Windows Credential Manager), `NullSecrets` (no credential store), `MemorySecrets` (tests). Written only through `PUT /secrets/{name}`; never returned. |
 | `engine/pipeline/` | `extract` (bytes→blocks), `special` filters, `differs` (pluggable) + `diff` (two-stage), `gate`, `render`, `core` (the worker entry points). |
 | `engine/pipeline/filters.py` | Cosmetic/watch/ignore filters (marks, regions, ranges, text spans, digit masks). |
 | `engine/pipeline/keywords.py` | Keyword language: parser and evaluator (`page()`, `num()`, `[same_block]`, `[near N]`, NOT). |
@@ -61,7 +61,6 @@ restore, only between a restore request and the next start), `plugins/`, `engine
 | `engine/pipeline/records.py` | Records sources: JSONPath subset, row filter, JSON/CSV rows -> one block per record, new/changed/removed events. |
 | `engine/pipeline/screenshot.py` | The pixel diff (grayscale, ignore rectangles, threshold, regions, overlay PNG). Pillow only. |
 | `engine/tray.py` | `TrayController` (state, menu) + Windows `pystray` adapter; icons drawn with Pillow. |
-| `engine/actions/` | `toast` (coalesced), `builtin` (action registry), `queue` (durable job runner: per-change order, retries, restart-safe). |
 | `engine/power.py` | `PowerBackend` (Windows window / `NullPowerBackend`), `PowerMonitor` (resume detection, battery, keep-awake), `Connectivity` (probe, offline mode). |
 | `engine/maintenance.py` | Daily backup (03:00) and nightly retention (03:30) "or at the next wake"; last-run state persisted. |
 | `engine/guard.py` | `ResourceGuard` (RSS of the process tree → recycle browser → exit 3; hourly `metric` samples) and `LoopWatchdog` (stack dump on a stalled loop). |
@@ -71,6 +70,9 @@ restore, only between a restore request and the next start), `plugins/`, `engine
 | `engine/problems.py` | The Problems list (read-only): bookmarks in `error` / `needs_login` with the last failing check's reason, and action jobs that gave up. `GET /problems`. |
 | `engine/capacity.py` | Demand against capacity (read-only): checks/s each schedule asks for, per pool and per host, against pool size / mean check time and each host's spacing. `GET /capacity`. |
 | `cli/service.py` | Task Scheduler task XML and `schtasks` wrapper for `service install\|uninstall\|status`. |
+| `engine/actions/` | `queue` (durable job runner), `builtin` (action registry), `toast` (coalesced); M6: `mailer`, `ntfy`, `webhook`, `export` (+ `assets`), `program`, `scrape`, `script`; shared `content` (alert content from blobs, worker job), `htmlmail` (email-safe HTML), `templating` (`{var}` and sandboxed Jinja2), `common`, `testing` (send-test). |
+| `engine/store/action_jobs.py` | SQL for the Problems list (list, retry, dismiss failed action jobs). |
+| `engine/api/routes_actions.py` | `/action-jobs`, `/notifications/test`, `/secrets/{name}`. |
 | `cli/` | `pagewatch-cli`: a synchronous client of the local API. |
 
 ## Rules that hold everywhere
@@ -230,6 +232,37 @@ memory limit). Task Scheduler restarts on any non-zero code, every minute.
 A restarted engine has a **new port and a new token**. The UI follows it (see below); the CLI
 reads the lockfile on every call and so always finds the current one.
 
+## Actions (M6, as built)
+
+```
+commit_check (one transaction) ── action_job rows (change, action_index, type) ──▶ ActionQueue
+ActionQueue ──▶ ACTIONS[type](engine, AlertContext)          retries 1, 5, 30, 30 min; 5 attempts
+                  │                                            final failure ▶ `problem` event + Problems list
+                  ├─ toast · sound · open · mark_read          (M1)
+                  ├─ email    ─ content ─┐  build_message (text + inline-styled HTML, Message-ID per change)
+                  │                      │  deliver: aiosmtplib, ssl | starttls | none, password from secret store
+                  ├─ ntfy     ─ JSON POST to the server root (topic, title, message, priority, click)
+                  ├─ webhook  ─ Jinja2 body → JSON → POST/PUT/PATCH/GET, no redirects
+                  ├─ export   ─ render_change_raw (pool) → html | html_assets | text | diff_json → atomic write
+                  ├─ run_program ─ argv, no shell, temp files only when used, timeout kills the tree
+                  ├─ scrape   ─ fields read in the pool → CSV | JSON Lines | XML, once per change id
+                  └─ script   ─ check_folder · pause_bookmark
+content.load_content(engine, change_id) ──▶ WorkerPool ▶ build_content(job)   (blobs in, strings out)
+     added/removed text · plain diff · changes HTML (inline styles) · full highlighted page (optional)
+```
+
+* **Privacy is enforced where data is assembled.** A `private` alert never calls `load_content`
+  and `alert_vars` hands templates the name and ids only, so no channel can leak content by
+  mistake. `export`, `scrape` and `run_program` write to the owner's machine and are not affected.
+* **Two kinds of failure.** `ActionConfigError` (nothing to retry: no server, bad template, HTTP
+  4xx) fails the job at once; anything else is retried by the queue.
+* **Two template languages.** `{var}` (paths, program arguments; not `str.format`) and sandboxed,
+  strict Jinja2 (emails, webhooks).
+* **Secrets.** Settings and action parameters hold key names (`smtp.password_key`,
+  `token_key`); the engine reads values from `engine.secrets` off the event loop.
+* Action parameters are validated by `models.ACTION_PARAMS` when a bookmark or folder default is
+  saved, and again when the action runs. `docs/DECISIONS_M6.md` lists the choices behind this.
+
 ## The UI (`pagewatch.ui`, optional `ui` extra)
 
 ```
@@ -239,6 +272,8 @@ MainWindow ── FolderTree (built-ins + folders + counts) ─┐
                                   └─ Screenshot diff tab: the overlay PNG from the engine, fitted to the pane
            ── EventStream (QWebSocket /events) ──▶ refresh rows / counts / viewer
 dialogs:   BookmarkEditor · AddBookmarkDialog · FalsePositiveDialog · SettingsDialog
+           ActionParamsDialog (per action) · NotificationSettingsDialog · FailedActionsDialog (Problems)
+           ActionTools: the second toolbar (Notifications..., Problems (n)) and the failed-action status message
 windows:   ProblemsWindow (not modal; refreshes on `problem` events)
 ```
 

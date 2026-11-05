@@ -48,3 +48,9 @@ Action = Callable[["Engine", AlertContext], Awaitable[None]]
 class ActionUnavailable(RuntimeError):
     """The action type exists in the model but is not implemented in this build; the job is
     marked failed immediately (no retries) so it shows up in Problems."""
+
+
+class ActionConfigError(ActionUnavailable):
+    """The action is set up wrongly (no recipients, no SMTP server, an unknown secret, a template
+    that fails): retrying cannot help, so the job fails at once and the Problems list shows this
+    message. Anything else an action raises is treated as transient and retried."""

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from pagewatch.models import (
+    ACTION_PARAMS,
     DAYS,
     ActionType,
     BookmarkOut,
@@ -41,9 +43,11 @@ from pagewatch.models import (
     TestFilterOut,
 )
 from pagewatch.ui.client import ApiClient
+from pagewatch.ui.windows.action_params import ActionParamsDialog
 from pagewatch.ui.workers import run_async
 
-IMPLEMENTED_ACTIONS = {"toast", "sound", "open", "mark_read"}
+IMPLEMENTED_ACTIONS = {t.value for t in ActionType} - {"pushover"}  # pushover: after v1
+CONFIGURABLE_ACTIONS = {t.value for t in ACTION_PARAMS}
 UNITS = [("minutes", 60), ("hours", 3600), ("days", 86400)]
 RULE_LISTS = ("cosmetic", "watch", "ignore")
 RULE_TYPES = ("selector", "between", "text", "number_mask")
@@ -534,6 +538,7 @@ class BookmarkEditor(QDialog):
         current = {a.type.value: a.params for a in self._orig.actions.actions}
         self._action_params = dict(current)
         self.action_boxes: dict[str, QCheckBox] = {}
+        self.action_buttons: dict[str, QPushButton] = {}
         for t in ActionType:
             label = t.value + (
                 "" if t.value in IMPLEMENTED_ACTIONS else "  (not available in this build)"
@@ -541,12 +546,69 @@ class BookmarkEditor(QDialog):
             box = QCheckBox(label)
             box.setChecked(t.value in current)
             self.action_boxes[t.value] = box
-            form.addRow(box)
+            row = QHBoxLayout()
+            row.addWidget(box, 1)
+            if t.value in CONFIGURABLE_ACTIONS:
+                button = QPushButton("Configure...")
+                button.setEnabled(box.isChecked())
+                button.clicked.connect(lambda _c=False, name=t.value: self.configure_action(name))
+                box.toggled.connect(lambda on, name=t.value: self._action_toggled(name, on))
+                self.action_buttons[t.value] = button
+                row.addWidget(button)
+            form.addRow(row)
         self.privacy = QComboBox()
         self.privacy.addItem("Include the changes", "content")
         self.privacy.addItem("Private: only say which bookmark changed", "private")
         self.privacy.setCurrentIndex(self.privacy.findData(self._orig.actions.alert_privacy.value))
         form.addRow("Alert content", self.privacy)
+
+    def configure_action(self, name: str) -> bool:
+        """Open the settings dialog of one action. True if the user accepted it."""
+        dialog = ActionParamsDialog(name, self._action_params.get(name, {}), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        self._action_params[name] = dialog.params()
+        return True
+
+    def _action_toggled(self, name: str, on: bool) -> None:
+        self.action_buttons[name].setEnabled(on)
+        if not on:
+            return
+        model = ACTION_PARAMS[ActionType(name)]
+        try:
+            model.model_validate(self._action_params.get(name, {}))
+        except ValidationError:
+            # needs settings before it can run (a path, a URL, a confirmation): ask now
+            if not self.configure_action(name):
+                box = self.action_boxes[name]
+                box.blockSignals(True)
+                box.setChecked(False)
+                box.blockSignals(False)
+                self.action_buttons[name].setEnabled(False)
+
+    def _signed_in(self) -> bool:
+        f = self._orig.fetch
+        return f.auth is not None or bool(f.cookies_file) or self._orig.macro_id is not None
+
+    def _confirm_content_alerts(self) -> bool:
+        """Spec: a signed-in bookmark defaults to private alerts, and switching one to content
+        needs an explicit confirmation."""
+        if (
+            self.bulk
+            or not self._signed_in()
+            or self._orig.actions.alert_privacy.value != "private"
+            or self.privacy.currentData() != "content"
+        ):
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Show page content in alerts?",
+            "This bookmark is behind a login. With 'Include the changes', emails, notifications "
+            "and webhooks will contain text from your signed-in pages. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     def _build_login(self) -> None:
         form = self._tab("Login")
@@ -771,6 +833,8 @@ class BookmarkEditor(QDialog):
             self.error.setText(f"Invalid filter rule: {exc.errors()[0]['msg']}")
             return
         self.error.setText("")
+        if "actions" in patch and not self._confirm_content_alerts():
+            return
         if not patch:
             self.accept()
             return

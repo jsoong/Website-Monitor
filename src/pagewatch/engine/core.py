@@ -41,7 +41,7 @@ from pagewatch.engine.pipeline.core import RebuildJob, rebuild_version
 from pagewatch.engine.power import Connectivity, PowerBackend, PowerMonitor, ProbeFn
 from pagewatch.engine.runner import CheckRunner
 from pagewatch.engine.scheduler import Scheduler
-from pagewatch.engine.secrets import NullSecrets, SecretStore
+from pagewatch.engine.secrets import SecretStore, default_secrets
 from pagewatch.engine.settings import SettingsStore
 from pagewatch.engine.store import backup as backups
 from pagewatch.engine.store import repo
@@ -91,7 +91,7 @@ class Engine:
         self.online = True
         self.on_battery = False
         self.host_gate = HostGate(self.clock, lambda: self.settings)
-        self.secrets: SecretStore = secret_store or NullSecrets()
+        self.secrets: SecretStore = secret_store or default_secrets()
         self.static_fetcher = StaticFetcher()
         self.browser = BrowserManager(lambda: self.settings, self.clock, browser_launcher)
         self.fetchers = FetcherSet(

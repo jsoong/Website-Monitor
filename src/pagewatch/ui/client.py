@@ -16,6 +16,7 @@ from pagewatch.cli.client import ApiError, EngineNotRunning
 from pagewatch.engine.instance import read_lockfile
 from pagewatch.engine.paths import DataDir
 from pagewatch.models import (
+    ActionJobOut,
     AutowatchState,
     BackupOut,
     BookmarkCounts,
@@ -32,8 +33,10 @@ from pagewatch.models import (
     ProblemsOut,
     RenderOut,
     RestoreOut,
+    SecretOut,
     Settings,
     TestFilterOut,
+    TestNotificationOut,
 )
 
 __all__ = ["ApiClient", "ApiError", "EngineNotRunning", "ScreenshotDiff", "connect"]
@@ -127,6 +130,37 @@ class ApiClient:
     def restore(self, path: str) -> RestoreOut:
         """Stage a backup; the engine then restarts itself to apply it (new port, new token)."""
         return RestoreOut.model_validate(self._call("POST", "/restore", json={"path": path}))
+
+    # -- actions: Problems list, test notifications, secrets -----------------------------
+
+    def action_jobs(self, status: str = "failed", limit: int = 200) -> list[ActionJobOut]:
+        rows = self._call("GET", "/action-jobs", params={"status": status, "limit": limit})
+        return [ActionJobOut.model_validate(r) for r in rows]
+
+    def retry_action_job(self, job_id: int) -> ActionJobOut:
+        return ActionJobOut.model_validate(self._call("POST", f"/action-jobs/{job_id}/retry"))
+
+    def dismiss_action_job(self, job_id: int) -> None:
+        self._call("DELETE", f"/action-jobs/{job_id}")
+
+    def test_notification(
+        self, channel: str, params: dict[str, Any] | None = None
+    ) -> TestNotificationOut:
+        body = {"channel": channel, "params": params or {}}
+        return TestNotificationOut.model_validate(
+            self._call("POST", "/notifications/test", json=body, timeout=60)
+        )
+
+    def secret_status(self, name: str) -> SecretOut:
+        return SecretOut.model_validate(self._call("GET", f"/secrets/{name}"))
+
+    def set_secret(self, name: str, value: str) -> SecretOut:
+        return SecretOut.model_validate(
+            self._call("PUT", f"/secrets/{name}", json={"value": value})
+        )
+
+    def delete_secret(self, name: str) -> SecretOut:
+        return SecretOut.model_validate(self._call("DELETE", f"/secrets/{name}"))
 
     # -- folders ------------------------------------------------------------------------
 

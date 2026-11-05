@@ -5,13 +5,15 @@ Problems window, and the Settings additions."""
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtTest import QTest
 
 from pagewatch.engine.fetch.base import FetchRequest, FetchResult
@@ -24,11 +26,32 @@ from pagewatch.ui.windows.macros import MacrosDialog, RecordDialog, steps_text
 from pagewatch.ui.windows.main_window import MainWindow
 from pagewatch.ui.windows.problems import ProblemsWindow, explain
 from pagewatch.ui.windows.settings import SettingsDialog
+from pagewatch.ui.workers import wait_idle
 from tests.support.engine_thread import EngineThread
 from tests.support.fakes import ScriptedFetcher
 from tests.support.fixture_site import article
 
 SIGNAL = {"selector": "input[type=password]"}
+
+
+@pytest.fixture(autouse=True)
+def _dispose_widgets(qapp: Any) -> Iterator[None]:
+    """Close and delete every dialog a test opened. Left alive they pile up in the one shared
+    QApplication and slow every later test: tests/ui/test_scale.py has a hard latency budget and
+    measurably missed it when these 27 tests did not clean up. Runs after the engine has stopped
+    (fixture teardown is last-in first-out), so no callback is still on its way to a widget."""
+    before = set(qapp.topLevelWidgets())
+    yield
+    wait_idle(2000)
+    for w in qapp.topLevelWidgets():
+        if w not in before:
+            w.close()
+            w.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    QCoreApplication.processEvents()
+    gc.collect()
+
+
 MACRO = {
     "name": "portal",
     "steps": [

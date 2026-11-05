@@ -182,6 +182,14 @@ class SignInService:
         finally:
             self._closing.discard(bookmark_id)
 
+    async def discard(self, bookmark_id: int) -> None:
+        """The bookmark is being deleted: close its window without checking or resuming."""
+        held = self._open.pop(bookmark_id, None)
+        if held is not None:
+            held.watcher.cancel()
+            with suppress(Exception):
+                await held.window.close()
+
     async def aclose(self) -> None:
         for bookmark_id, held in list(self._open.items()):
             held.watcher.cancel()

@@ -317,6 +317,7 @@ async def delete(engine: Engine, ids: list[int]) -> int:
     n = await engine.db.write(lambda c: repo.bookmark_delete(c, ids))
     for bid in ids:
         engine.scheduler.remove(bid)
+        await engine.logins.forget(bid)  # saved sessions are secrets: they go with the bookmark
         engine.events.publish("bookmark_updated", {"bookmark_id": bid, "deleted": True})
     return n
 

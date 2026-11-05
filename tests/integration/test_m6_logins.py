@@ -343,7 +343,9 @@ async def test_semi_attended_sign_in_checks_immediately_and_an_expired_session_a
     portal.expire_all()
     shown_before = len(toasts.shown)
     await advance(engine, clock, 70, step=10)
-    assert (await get(client, bid))["status"] == "needs_login"
+    paused = await get(client, bid)
+    assert paused["status"] == "needs_login"
+    assert paused["next_due_at"] is None  # the list must not promise a check that will not happen
     assert len(toasts.shown) == shown_before + 1
     assert [p["kind"] for p in problems_of(sub)] == ["needs_login"]
     n_runs = len(await runs(client, bid))
@@ -644,3 +646,39 @@ async def test_wiping_a_session_removes_the_profile_but_not_while_a_window_is_op
     assert (await client.delete(f"/bookmarks/{bid}/session")).status_code == 204
     assert not profile.exists() and (await login_of(client, bid))["last_signin_at"] is None
     assert (await client.delete(f"/bookmarks/{bid}/session")).status_code == 204  # nothing: fine
+
+
+async def test_deleting_a_bookmark_removes_its_saved_sessions_too(
+    client: httpx.AsyncClient, engine: Engine, clock: FakeClock, portal: LoginSite
+) -> None:
+    """A profile holds live session cookies and a cookie file holds a login: secrets that must not
+    outlive the bookmark, however it is deleted."""
+    opener = FakeOpener()
+    engine.logins.signin.set_opener(opener)
+    semi = await add(client, portal.url("/account"), fetch=SEMI, enabled=False)
+    jar = await add(client, portal.url("/cookie-page"), check_method="static", enabled=False)
+    for bid in (semi, jar):
+        profile = engine.logins.profile_dir(bid)
+        profile.mkdir(parents=True)
+        (profile / "pagewatch-session.json").write_text('[{"name":"sid"}]')
+    await client.post(
+        f"/bookmarks/{jar}/cookies", json={"text": "127.0.0.1\tFALSE\t/\tFALSE\t0\ttoken\tabc123\n"}
+    )
+    cookie_file = engine.logins.cookie_path(jar)
+    assert cookie_file.exists()
+    await client.post(f"/bookmarks/{semi}/signin")  # a window is open when it is deleted
+    window = opener.window
+    assert engine.logins.signin.is_open(semi)
+
+    assert (await client.delete(f"/bookmarks/{semi}")).status_code in (200, 204)
+    assert not engine.logins.profile_dir(semi).exists() and window.closed.is_set()
+    assert not engine.logins.signin.is_open(semi)
+    r = await client.post(
+        "/bookmarks/bulk", json={"ids": [jar], "action": "delete"}
+    )  # the other route
+    assert r.status_code == 200
+    assert not engine.logins.profile_dir(jar).exists() and not cookie_file.exists()
+    gone = await engine.db.read(
+        lambda c: c.execute("SELECT COUNT(*) FROM login_state").fetchone()[0]
+    )
+    assert gone == 0  # and the sign-in memory went with them (ON DELETE CASCADE)

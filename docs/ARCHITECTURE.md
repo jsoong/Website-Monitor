@@ -20,6 +20,9 @@ Data folder (`%LOCALAPPDATA%\PageWatch`, or `--data-dir`):
 `pagewatch.db` (WAL), `blobs/ab/cd/<sha256>.zst`, `profiles/`, `logs/engine.log`,
 `backups/` (automatic and manual zips, pre-migration and pre-restore copies), `restore/` (a staged
 restore, only between a restore request and the next start), `plugins/`, `engine.lock`, `engine.mutex`.
+Sign-in state (M6): `profiles/<bookmark id>/` (a browser profile and `pagewatch-session.json`, the
+session cookies Chromium would drop), `cookies/<bookmark id>.txt` (imported cookies, owner-only),
+`experiments/` (portal-experiment logs and saved challenge pages). None of it is in a backup.
 
 ## Layers (as built)
 
@@ -48,7 +51,7 @@ restore, only between a restore request and the next start), `plugins/`, `engine
 | `engine/fetch/select.py` | `route_for` (URL scheme + `check_method` -> fetcher), `method_kind` (the name `check_run.method` gets once the content is known), `FetcherSet`. |
 | `engine/fetch/browser.py` | `BrowserManager` (one shared browser, generations, idle close, recycle, Edge -> bundled Chromium) and `BrowserFetcher`; `screenshot.py` is its PNG-taking subclass. |
 | `engine/fetch/localfile.py`, `ftp.py`, `feed.py` | Files and folders (mtime+size shortcut, listing table), FTP/FTPS (aioftp), feeds (static fetch + optional enclosure download). |
-| `engine/secrets.py` | `SecretStore` interface (passwords are looked up by key name; the keyring implementation is M6). |
+| `engine/secrets.py` | Secret stores, looked up by key name: `KeyringSecrets` (Windows Credential Manager), `NullSecrets` (no credential store), `MemorySecrets` (tests). Written only through `PUT /secrets/{name}`; never returned. |
 | `engine/pipeline/` | `extract` (bytes→blocks), `special` filters, `differs` (pluggable) + `diff` (two-stage), `gate`, `render`, `core` (the worker entry points). |
 | `engine/pipeline/filters.py` | Cosmetic/watch/ignore filters (marks, regions, ranges, text spans, digit masks). |
 | `engine/pipeline/keywords.py` | Keyword language: parser and evaluator (`page()`, `num()`, `[same_block]`, `[near N]`, NOT). |
@@ -70,6 +73,11 @@ restore, only between a restore request and the next start), `plugins/`, `engine
 | `engine/api/routes_maintenance.py` | `POST /backup`, `POST /restore`. |
 | `engine/problems.py` | The Problems list (read-only): bookmarks in `error` / `needs_login` with the last failing check's reason, and action jobs that gave up. `GET /problems`. |
 | `engine/capacity.py` | Demand against capacity (read-only): checks/s each schedule asks for, per pool and per host, against pool size / mean check time and each host's spacing. `GET /capacity`. |
+| `engine/hostload.py` | Over-limit hosts (M6): measures each host's demand against its ceiling (overrides included) and gives `schedule.next_due(stretch=...)` the factor that slows all of that host's interval checks evenly. |
+| `engine/fetch/proxy.py`, `cookies.py` | Which proxy a check uses (bookmark's, else global) with its password from the secret store; Netscape `cookies.txt` -> httpx jar / Playwright cookies. |
+| `engine/fetch/login.py`, `macro.py` | `LoginPlan` and login-signal detection (live page and serialised HTML); the macro interpreter (errors never repeat a typed value). |
+| `engine/logins/` | `service.py` (`Logins`: the stored-password rules, `needs_login`, resume, wipe, cookie import, status), `signin.py` (semi-attended window), `prompt.py` (the daily offer), `recorder.py` (Playwright codegen -> steps), `experiment.py` (the portal experiment), `validate.py`, `common.py`. |
+| `engine/api/routes_logins.py` | `/macros`, `/macros/record`, `/bookmarks/{id}/login`, `/signin`, `/session`, `/cookies`, `/experiments`, `/secrets/{name}`. |
 | `cli/service.py` | Task Scheduler task XML and `schtasks` wrapper for `service install\|uninstall\|status`. |
 | `cli/` | `pagewatch-cli`: a synchronous client of the local API. |
 
@@ -230,6 +238,43 @@ memory limit). Task Scheduler restarts on any non-zero code, every minute.
 A restarted engine has a **new port and a new token**. The UI follows it (see below); the CLI
 reads the lockfile on every call and so always finds the current one.
 
+## Logins (M6, as built)
+
+```
+check ─▶ runner ─ route_for(signed_in) ─▶ static fetcher  (Basic/Digest from the secret store, imported cookies,
+   │                                          proxy; one client + cookie jar per signed-in bookmark)
+   │                              └────▶ browser fetcher ─ SessionSpec ─▶ BrowserManager
+   │                                         profile_dir  → persistent context = its own browser process
+   │                                                        (session cookies saved beside it, restored on launch)
+   │                                         else         → a fresh context in the shared browser, closed with the page
+   │                                      goto ▶ login signal?  no  ▶ read the page (the macro is skipped)
+   │                                                            yes ▶ plan.permit_macro() ▶ run_macro ▶ goto again ▶ signal gone?
+   └─ fetch.login_required ▶ _needs_login: status needs_login · one alert · next_due NULL (paused, restart-safe)
+```
+
+* **Signed in** means credentials, a cookie file, a macro, or a semi-attended session
+  (`logins.common.is_signed_in`). Such bookmarks default to `alert_privacy: private`, also when the
+  login is added later.
+* **A macro or a hand sign-in always uses the browser** (`route_for(signed_in=True)`), on the
+  bookmark's own profile. Chromium keeps one process per profile, so a profile is open for one thing
+  at a time: while the owner's sign-in window is open, scheduled checks of that bookmark are skipped
+  (`signing_in`), not failed.
+* **Stored-password login** (a macro with a `{"secret": ...}` fill) needs `Settings.stored_password_logins`
+  *and* the bookmark's `fetch.login.allow_stored_password`; then at most one per
+  `min_login_interval_s` (6 h) and none after a failure until `POST .../login/resume`. The attempt is
+  written to `login_state` before the macro runs.
+* **Session expiry** is one rule for every kind of login: a login signal on the page (or a 401 for a
+  bookmark that sent credentials or cookies) moves the bookmark to `needs_login`. Only that
+  transition alerts; manual checks of a paused bookmark stay quiet. Signing in, importing cookies
+  or `resume` clears it and checks at once.
+* **Per-host politeness.** `HostGate` (concurrency, spacing, `Retry-After`) was already there;
+  `Settings.host_overrides` keys are normalised to the host name; `HostLoad` stretches an
+  over-limit host's intervals by `demand / ceiling`, on the due time only (never on the stored
+  adaptive interval, so the factor cannot feed back into the demand it came from).
+* **Schema:** migration `0002_logins.sql` adds `login_state` (per-bookmark sign-in memory). Macros
+  use the `macro` table that has existed since v1.
+* `docs/DECISIONS_M6_LOGINS.md` has the reasoning, what was verified, and what could not be.
+
 ## The UI (`pagewatch.ui`, optional `ui` extra)
 
 ```
@@ -263,3 +308,11 @@ restart or one done by hand.
 
 Closing the window stops only its own timers and WebSocket; the engine is a separate process and
 keeps checking. Lazy list: the engine pages (`/bookmarks` keyset cursor), the model appends.
+
+**Logins in the UI (M6).** The editor's Login tab is `windows/login_panel.py` (server login, cookie
+import, macro, "sign in by hand", wipe session, resume); the Advanced tab gained the proxy login.
+`windows/macros.py` is the Macros dialog (JSON steps validated with the engine's own models, a table
+of the passwords a macro needs, "Record..." which runs Playwright codegen through the engine).
+The main window has *Sign in...* and *Macros* on the toolbar and shows the daily sign-in offer in the
+status bar; Problems offers *Sign in...* and *Resume checks* for a bookmark that needs one.
+Passwords typed anywhere are sent once to `PUT /secrets/{name}` and the field is emptied.

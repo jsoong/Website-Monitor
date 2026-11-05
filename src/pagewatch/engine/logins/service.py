@@ -214,6 +214,22 @@ class Logins:
         await self.e.db.write(lambda c: repo.login_state_set(c, bookmark_id, last_signin_at=None))
         return existed
 
+    async def forget(self, bookmark_id: int) -> None:
+        """The bookmark was deleted, so is whatever it signed in with: its browser profile (session
+        cookies), its imported cookies and its in-memory cookie jar. These are secrets and must not
+        outlive the bookmark. A sign-in window still open for it is closed."""
+        await self.signin.discard(bookmark_id)
+
+        def remove() -> None:
+            shutil.rmtree(self.profile_dir(bookmark_id), ignore_errors=True)
+            shutil.rmtree(
+                self.e.data_dir.profiles_dir / f"experiment-{bookmark_id}", ignore_errors=True
+            )
+            self.cookie_path(bookmark_id).unlink(missing_ok=True)
+
+        await asyncio.to_thread(remove)
+        self.e.static_fetcher.forget_session(bookmark_id)
+
     async def import_cookies(self, bookmark_id: int, body: CookieImportIn) -> CookieStatusOut:
         """Validate a cookies.txt, keep a private copy in the data folder, point the bookmark
         at it, and resume the bookmark if it was waiting for a login."""

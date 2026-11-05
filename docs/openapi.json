@@ -19,6 +19,111 @@
     "title": "ActionConfig",
     "type": "object"
    },
+   "ActionJobOut": {
+    "additionalProperties": false,
+    "description": "One action of one change (the Problems list shows the failed ones).",
+    "properties": {
+     "action_index": {
+      "title": "Action Index",
+      "type": "integer"
+     },
+     "action_type": {
+      "title": "Action Type",
+      "type": "string"
+     },
+     "attempts": {
+      "title": "Attempts",
+      "type": "integer"
+     },
+     "bookmark_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Bookmark Id"
+     },
+     "bookmark_name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Bookmark Name"
+     },
+     "change_id": {
+      "title": "Change Id",
+      "type": "integer"
+     },
+     "detected_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Detected At"
+     },
+     "id": {
+      "title": "Id",
+      "type": "integer"
+     },
+     "last_error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Error"
+     },
+     "next_attempt_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Next Attempt At"
+     },
+     "status": {
+      "enum": [
+       "queued",
+       "done",
+       "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "change_id",
+     "bookmark_id",
+     "bookmark_name",
+     "action_index",
+     "action_type",
+     "status",
+     "attempts",
+     "next_attempt_at",
+     "last_error",
+     "detected_at"
+    ],
+    "title": "ActionJobOut",
+    "type": "object"
+   },
    "ActionType": {
     "enum": [
      "toast",
@@ -2206,6 +2311,55 @@
     "title": "ListingOptions",
     "type": "object"
    },
+   "NotificationSettings": {
+    "additionalProperties": false,
+    "properties": {
+     "ntfy": {
+      "$ref": "#/components/schemas/NtfySettings"
+     },
+     "smtp": {
+      "$ref": "#/components/schemas/SmtpSettings"
+     }
+    },
+    "title": "NotificationSettings",
+    "type": "object"
+   },
+   "NtfySettings": {
+    "additionalProperties": false,
+    "description": "ntfy.sh or a self-hosted server. On the public server the topic name is the only\nprotection unless the topic has access control (spec: ntfy exposure).",
+    "properties": {
+     "server": {
+      "default": "https://ntfy.sh",
+      "title": "Server",
+      "type": "string"
+     },
+     "timeout_s": {
+      "default": 15.0,
+      "maximum": 120.0,
+      "minimum": 1.0,
+      "title": "Timeout S",
+      "type": "number"
+     },
+     "token_key": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Token Key"
+     },
+     "topic": {
+      "default": "",
+      "title": "Topic",
+      "type": "string"
+     }
+    },
+    "title": "NtfySettings",
+    "type": "object"
+   },
    "OnBattery": {
     "enum": [
      "normal",
@@ -2742,6 +2896,47 @@
     "title": "ScreenshotFilters",
     "type": "object"
    },
+   "SecretIn": {
+    "additionalProperties": false,
+    "properties": {
+     "value": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "title": "Value",
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "title": "SecretIn",
+    "type": "object"
+   },
+   "SecretOut": {
+    "additionalProperties": false,
+    "description": "Values are write-only: this says whether a secret exists, never what it is.",
+    "properties": {
+     "available": {
+      "default": true,
+      "title": "Available",
+      "type": "boolean"
+     },
+     "exists": {
+      "title": "Exists",
+      "type": "boolean"
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "exists"
+    ],
+    "title": "SecretOut",
+    "type": "object"
+   },
    "Settings": {
     "additionalProperties": false,
     "properties": {
@@ -2851,6 +3046,9 @@
       "title": "Keep Changed Versions",
       "type": "integer"
      },
+     "notifications": {
+      "$ref": "#/components/schemas/NotificationSettings"
+     },
      "notify_on_first_check": {
       "default": false,
       "title": "Notify On First Check",
@@ -2914,6 +3112,76 @@
      }
     },
     "title": "Settings",
+    "type": "object"
+   },
+   "SmtpSettings": {
+    "additionalProperties": false,
+    "description": "Outgoing mail (spec: SMTP over TLS; the password is a secret-store entry).",
+    "properties": {
+     "from_addr": {
+      "default": "",
+      "title": "From Addr",
+      "type": "string"
+     },
+     "host": {
+      "default": "",
+      "title": "Host",
+      "type": "string"
+     },
+     "password_key": {
+      "default": "smtp-password",
+      "title": "Password Key",
+      "type": "string"
+     },
+     "port": {
+      "default": 587,
+      "maximum": 65535.0,
+      "minimum": 1.0,
+      "title": "Port",
+      "type": "integer"
+     },
+     "security": {
+      "default": "starttls",
+      "enum": [
+       "starttls",
+       "ssl",
+       "none"
+      ],
+      "title": "Security",
+      "type": "string"
+     },
+     "timeout_s": {
+      "default": 30.0,
+      "maximum": 300.0,
+      "minimum": 1.0,
+      "title": "Timeout S",
+      "type": "number"
+     },
+     "to": {
+      "items": {
+       "type": "string"
+      },
+      "title": "To",
+      "type": "array"
+     },
+     "username": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Username"
+     },
+     "verify_tls": {
+      "default": true,
+      "title": "Verify Tls",
+      "type": "boolean"
+     }
+    },
+    "title": "SmtpSettings",
     "type": "object"
    },
    "SourceType": {
@@ -3117,6 +3385,50 @@
     "title": "TestFilterRequest",
     "type": "object"
    },
+   "TestNotificationOut": {
+    "additionalProperties": false,
+    "properties": {
+     "detail": {
+      "title": "Detail",
+      "type": "string"
+     },
+     "ok": {
+      "title": "Ok",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "ok",
+     "detail"
+    ],
+    "title": "TestNotificationOut",
+    "type": "object"
+   },
+   "TestNotificationRequest": {
+    "additionalProperties": false,
+    "description": "Send a sample through a channel with the saved settings; ``params`` are the action's own.",
+    "properties": {
+     "channel": {
+      "enum": [
+       "email",
+       "ntfy",
+       "webhook"
+      ],
+      "title": "Channel",
+      "type": "string"
+     },
+     "params": {
+      "additionalProperties": true,
+      "title": "Params",
+      "type": "object"
+     }
+    },
+    "required": [
+     "channel"
+    ],
+    "title": "TestNotificationRequest",
+    "type": "object"
+   },
    "ThresholdMode": {
     "enum": [
      "cumulative",
@@ -3190,6 +3502,151 @@
  },
  "openapi": "3.1.0",
  "paths": {
+  "/action-jobs": {
+   "get": {
+    "description": "Action jobs, newest first. The default, ``failed``, is the Problems list.",
+    "operationId": "list_action_jobs_action_jobs_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "status",
+      "required": false,
+      "schema": {
+       "default": "failed",
+       "enum": [
+        "queued",
+        "done",
+        "failed",
+        "all"
+       ],
+       "title": "Status",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 100,
+       "maximum": 500,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "$ref": "#/components/schemas/ActionJobOut"
+         },
+         "title": "Response List Action Jobs Action Jobs Get",
+         "type": "array"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "List Action Jobs",
+    "tags": [
+     "actions"
+    ]
+   }
+  },
+  "/action-jobs/{job_id}": {
+   "delete": {
+    "description": "Remove a failed job from the Problems list.",
+    "operationId": "dismiss_action_job_action_jobs__job_id__delete",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "job_id",
+      "required": true,
+      "schema": {
+       "title": "Job Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Dismiss Action Job",
+    "tags": [
+     "actions"
+    ]
+   }
+  },
+  "/action-jobs/{job_id}/retry": {
+   "post": {
+    "description": "Run a failed job again, with a fresh set of attempts.",
+    "operationId": "retry_action_job_action_jobs__job_id__retry_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "job_id",
+      "required": true,
+      "schema": {
+       "title": "Job Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ActionJobOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Retry Action Job",
+    "tags": [
+     "actions"
+    ]
+   }
+  },
   "/autowatch": {
    "get": {
     "operationId": "get_autowatch_autowatch_get",
@@ -4421,6 +4878,48 @@
     "summary": "Health"
    }
   },
+  "/notifications/test": {
+   "post": {
+    "description": "Send a sample through email, ntfy or a webhook with the saved settings.",
+    "operationId": "test_notification_notifications_test_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/TestNotificationRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TestNotificationOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Test Notification",
+    "tags": [
+     "actions"
+    ]
+   }
+  },
   "/preview": {
    "post": {
     "description": "Trial fetch of a URL and options for the add-bookmark assistant; nothing is stored.",
@@ -4460,6 +4959,146 @@
     "summary": "Preview",
     "tags": [
      "changes"
+    ]
+   }
+  },
+  "/secrets/{name}": {
+   "delete": {
+    "operationId": "delete_secret_secrets__name__delete",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "name",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "minLength": 1,
+       "title": "Name",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SecretOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Delete Secret",
+    "tags": [
+     "actions"
+    ]
+   },
+   "get": {
+    "description": "Whether a secret is stored. The value is never returned.",
+    "operationId": "get_secret_secrets__name__get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "name",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "minLength": 1,
+       "title": "Name",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SecretOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Get Secret",
+    "tags": [
+     "actions"
+    ]
+   },
+   "put": {
+    "description": "Store a secret (an SMTP password, an access token) in the OS credential store. The\ndatabase keeps only the name.",
+    "operationId": "put_secret_secrets__name__put",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "name",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "minLength": 1,
+       "title": "Name",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SecretIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SecretOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Put Secret",
+    "tags": [
+     "actions"
     ]
    }
   },

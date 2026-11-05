@@ -7,6 +7,13 @@ import webbrowser
 from typing import TYPE_CHECKING
 
 from pagewatch.engine.actions.base import Action, ActionUnavailable, AlertContext
+from pagewatch.engine.actions.export import export
+from pagewatch.engine.actions.mailer import email
+from pagewatch.engine.actions.ntfy import ntfy
+from pagewatch.engine.actions.program import run_program
+from pagewatch.engine.actions.scrape import scrape
+from pagewatch.engine.actions.script import script
+from pagewatch.engine.actions.webhook import webhook
 
 if TYPE_CHECKING:
     from pagewatch.engine.core import Engine
@@ -49,12 +56,12 @@ ACTIONS: dict[str, Action] = {
     "sound": sound,
     "open": open_,
     "mark_read": mark_read,
-    "email": _unavailable("email", "planned for M6"),
-    "export": _unavailable("export", "planned for M6"),
-    "run_program": _unavailable("run_program", "planned for M6"),
-    "ntfy": _unavailable("ntfy", "planned for M6"),
-    "scrape": _unavailable("scrape", "planned for M6"),
-    "script": _unavailable("script", "planned for M6"),
-    "webhook": _unavailable("webhook", "after v1"),
+    "email": email,
+    "export": export,
+    "run_program": run_program,
+    "ntfy": ntfy,
+    "scrape": scrape,
+    "script": script,
+    "webhook": webhook,
     "pushover": _unavailable("pushover", "after v1"),
 }

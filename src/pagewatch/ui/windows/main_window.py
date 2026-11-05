@@ -40,6 +40,7 @@ from pagewatch.ui.models import (
     FolderTree,
     SummaryRole,
 )
+from pagewatch.ui.windows.action_tools import ActionTools
 from pagewatch.ui.windows.add_assistant import AddBookmarkDialog
 from pagewatch.ui.windows.bookmark_editor import BookmarkEditor
 from pagewatch.ui.windows.false_positive import FalsePositiveDialog
@@ -109,6 +110,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.splitter)
 
         self._build_actions()
+        self.tools = ActionTools(self)  # Notifications... and Problems, beside the main toolbar
         self._build_status_bar()
         self._wire()
         if persist:

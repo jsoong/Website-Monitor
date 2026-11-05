@@ -16,7 +16,7 @@ import re
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 # --------------------------------------------------------------------------------------
 # Enumerations
@@ -492,6 +492,23 @@ class GateConfig(PWModel):
 
 
 class ActionConfig(PWModel):
+    @model_validator(mode="after")
+    def _params_valid(self) -> ActionConfig:
+        # The parameter models are defined below (ACTION_PARAMS); a bad template, an unknown
+        # variable or a missing path is rejected here, at the model boundary (HTTP 422).
+        model = ACTION_PARAMS.get(self.type)
+        if model is not None:
+            try:
+                model.model_validate(self.params)
+            except ValidationError as exc:
+                first = exc.errors()[0]
+                where = ".".join(str(p) for p in first["loc"])
+                raise ValueError(
+                    f"{self.type.value} action: {where + ': ' if where else ''}"
+                    f"{str(first['msg']).removeprefix('Value error, ')}"
+                ) from exc
+        return self
+
     type: ActionType
     params: dict[str, Any] = Field(default_factory=dict)
 
@@ -507,6 +524,372 @@ class ActionsConfig(PWModel):
         if isinstance(data, list):
             return {"actions": data}
         return data
+
+
+# --------------------------------------------------------------------------------------
+# Action parameters (spec: Actions and notifications)
+#
+# ``ActionConfig.params`` stays a plain dict in the stored JSON; these models validate it (at
+# create/patch time, and again when the action runs) and fill in the defaults.
+# --------------------------------------------------------------------------------------
+
+SECRET_NAME = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")  # a secret store key; never the secret
+
+
+def _secret_name(value: str | None) -> str | None:
+    if value is not None and not SECRET_NAME.match(value):
+        raise ValueError("a secret name uses letters, digits and _ . : - (at most 64)")
+    return value
+
+
+def _address(value: str) -> str:
+    from email.utils import parseaddr
+
+    value = value.strip()
+    _, addr = parseaddr(value)
+    if not addr or "@" not in addr or any(c in value for c in "\r\n\x00"):
+        raise ValueError(f"{value!r} is not an email address")
+    return value
+
+
+def _http_url(value: str) -> str:
+    value = value.strip()
+    if not re.match(r"^https?://[^/\s]+", value, re.IGNORECASE):
+        raise ValueError("expected an http:// or https:// URL")
+    return value
+
+
+def _jinja(value: str | None, what: str) -> str | None:
+    if value:
+        from pagewatch.engine.actions.templating import TemplateError, check_jinja
+
+        try:
+            check_jinja(value, what)
+        except TemplateError as exc:
+            raise ValueError(str(exc)) from exc
+    return value
+
+
+def _brace(value: str, allowed: frozenset[str], what: str) -> str:
+    from pagewatch.engine.actions.templating import TemplateError, check_brace_template
+
+    try:
+        check_brace_template(value, allowed, what)
+    except TemplateError as exc:
+        raise ValueError(str(exc)) from exc
+    return value
+
+
+class EmailParams(PWModel):
+    """``email``: one message per change over SMTP (server settings: ``Settings.notifications``)."""
+
+    to: list[str] = Field(default_factory=list)  # empty: the default recipients in Settings
+    format: Literal["full", "simple", "changes_only"] = "changes_only"
+    attach_screenshot: bool = False  # screenshot bookmarks: the picture (or its diff) as a PNG
+    subject: str | None = Field(None, max_length=300)  # Jinja2; default "<name> changed"
+    template: str | None = Field(None, max_length=20000)  # Jinja2; replaces the built-in body
+    priority: Literal["low", "normal", "high"] = "normal"
+
+    @field_validator("to")
+    @classmethod
+    def _to(cls, v: list[str]) -> list[str]:
+        return [_address(a) for a in v]
+
+    @field_validator("subject")
+    @classmethod
+    def _subject(cls, v: str | None) -> str | None:
+        return _jinja(v, "subject")
+
+    @field_validator("template")
+    @classmethod
+    def _template(cls, v: str | None) -> str | None:
+        return _jinja(v, "template")
+
+
+NTFY_PRIORITY = {"min": 1, "low": 2, "default": 3, "high": 4, "max": 5}
+_NTFY_TOPIC = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_NTFY_TAG = re.compile(r"^[\w+-]{1,40}$")
+
+
+class NtfyParams(PWModel):
+    """``ntfy``: publish to a topic. What is left out comes from ``Settings.notifications``."""
+
+    server: str | None = None
+    topic: str | None = None
+    token_key: str | None = None  # secret-store key of the access token
+    priority: Literal["min", "low", "default", "high", "max"] = "default"
+    tags: list[str] = Field(default_factory=list, max_length=10)
+
+    @field_validator("server")
+    @classmethod
+    def _server(cls, v: str | None) -> str | None:
+        return _http_url(v) if v else None
+
+    @field_validator("topic")
+    @classmethod
+    def _topic(cls, v: str | None) -> str | None:
+        if v and not _NTFY_TOPIC.match(v):
+            raise ValueError("a topic uses letters, digits, _ and - (at most 64)")
+        return v or None
+
+    @field_validator("token_key")
+    @classmethod
+    def _token(cls, v: str | None) -> str | None:
+        return _secret_name(v or None)
+
+    @field_validator("tags")
+    @classmethod
+    def _tags(cls, v: list[str]) -> list[str]:
+        for tag in v:
+            if not _NTFY_TAG.match(tag):
+                raise ValueError(f"bad tag {tag!r}")
+        return v
+
+
+_HEADER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*$")
+_FORBIDDEN_HEADERS = {"host", "content-length", "transfer-encoding", "connection"}
+
+
+class WebhookParams(PWModel):
+    """``webhook``: call a URL (Home Assistant, n8n, Discord, Slack, ...). The body is a Jinja2
+    template that must render to JSON; without one a standard JSON object is sent."""
+
+    url: str
+    method: Literal["POST", "PUT", "PATCH", "GET"] = "POST"
+    body: str | None = Field(None, max_length=20000)
+    headers: dict[str, str] = Field(default_factory=dict)
+    token_key: str | None = None  # secret-store key of a bearer token
+    timeout_s: float = Field(15.0, ge=1.0, le=120.0)
+    verify_tls: bool = True
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, v: str) -> str:
+        return _http_url(v)
+
+    @field_validator("body")
+    @classmethod
+    def _body(cls, v: str | None) -> str | None:
+        return _jinja(v, "body")
+
+    @field_validator("token_key")
+    @classmethod
+    def _token(cls, v: str | None) -> str | None:
+        return _secret_name(v or None)
+
+    @field_validator("headers")
+    @classmethod
+    def _headers(cls, v: dict[str, str]) -> dict[str, str]:
+        for name, value in v.items():
+            if not _HEADER_NAME.match(name) or name.lower() in _FORBIDDEN_HEADERS:
+                raise ValueError(f"header {name!r} is not allowed")
+            if any(c in value for c in "\r\n\x00"):
+                raise ValueError(f"header {name!r} has a line break in its value")
+        return v
+
+
+class ExportParams(PWModel):
+    """``export``: write the change to a file. ``{id} {name} {datetime} {change_id}
+    {info1..3} {date:<fmt>}`` in the path."""
+
+    path: str = Field(min_length=1, max_length=500)
+    format: Literal["html", "html_assets", "text", "diff_json"] = "html"
+    highlight: bool = True  # html formats: mark the changes (off: the page as it is now)
+
+    @field_validator("path")
+    @classmethod
+    def _path(cls, v: str) -> str:
+        from pagewatch.engine.actions.templating import PATH_VARS
+
+        return _brace(v, PATH_VARS, "path")
+
+
+class RunProgramParams(PWModel):
+    """``run_program``: start a program, no shell. ``{url} {file_new} {file_old} {file_changes}
+    {info1..3} {id} {name} {change_id} {datetime}`` in the arguments."""
+
+    executable: str = Field(min_length=1, max_length=500)
+    args: list[str] = Field(default_factory=list, max_length=50)
+    timeout_s: float = Field(60.0, ge=1.0, le=3600.0)
+    cwd: str | None = None
+    confirmed: bool = False  # spec: enabling it needs an explicit confirmation
+
+    @field_validator("executable")
+    @classmethod
+    def _exe(cls, v: str) -> str:
+        if any(c in v for c in "\r\n\x00"):
+            raise ValueError("the executable path has a line break in it")
+        return v
+
+    @field_validator("args")
+    @classmethod
+    def _args(cls, v: list[str]) -> list[str]:
+        from pagewatch.engine.actions.templating import ARG_VARS
+
+        return [_brace(a, ARG_VARS, "argument") for a in v]
+
+    @model_validator(mode="after")
+    def _confirmed(self) -> RunProgramParams:
+        if not self.confirmed:
+            raise ValueError(
+                "running a program needs an explicit confirmation (set 'confirmed' to true)"
+            )
+        return self
+
+
+_FIELD_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,40}$")
+SCRAPE_RESERVED = ("change_id", "detected_at", "bookmark_id", "bookmark", "url")
+
+
+class ScrapeField(PWModel):
+    name: str
+    kind: Literal["css", "xpath", "regex"]
+    expr: str = Field(min_length=1, max_length=1000)
+    attr: str | None = None  # css/xpath: read this attribute instead of the element's text
+    multiple: bool = False  # all matches joined with " | " (default: the first)
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str) -> str:
+        if not _FIELD_NAME.match(v):
+            raise ValueError(f"field name {v!r} must be a plain identifier")
+        if v in SCRAPE_RESERVED:
+            raise ValueError(f"{v!r} is a column PageWatch adds itself")
+        return v
+
+    @model_validator(mode="after")
+    def _expr(self) -> ScrapeField:
+        if self.kind == "regex":
+            try:
+                re.compile(self.expr)
+            except re.error as exc:
+                raise ValueError(f"invalid regex {self.expr!r}: {exc}") from exc
+        else:
+            _check_selector(self.kind, self.expr)
+        return self
+
+
+class ScrapeParams(PWModel):
+    """``scrape``: append one record per change, with the fields read from the new page."""
+
+    path: str = Field(min_length=1, max_length=500)
+    format: Literal["csv", "jsonl", "xml"] = "csv"
+    fields: list[ScrapeField] = Field(min_length=1, max_length=50)
+
+    @field_validator("path")
+    @classmethod
+    def _path(cls, v: str) -> str:
+        from pagewatch.engine.actions.templating import PATH_VARS
+
+        return _brace(v, PATH_VARS, "path")
+
+    @model_validator(mode="after")
+    def _unique(self) -> ScrapeParams:
+        names = [f.name for f in self.fields]
+        if len(set(names)) != len(names):
+            raise ValueError("field names must be unique")
+        return self
+
+
+class ScriptStep(PWModel):
+    """One step of the ``script`` action (WebSite-Watcher's script actions, declaratively)."""
+
+    op: Literal["check_folder", "pause_bookmark"]
+    name: str | None = None  # check_folder: the folder (and its subfolders) to check now
+    minutes: int | None = Field(None, ge=1, le=60 * 24 * 30)  # pause_bookmark
+
+    @model_validator(mode="after")
+    def _args(self) -> ScriptStep:
+        if self.op == "check_folder" and not (self.name or "").strip():
+            raise ValueError("check_folder needs a folder 'name'")
+        if self.op == "pause_bookmark" and self.minutes is None:
+            raise ValueError("pause_bookmark needs 'minutes'")
+        return self
+
+
+class ScriptParams(PWModel):
+    steps: list[ScriptStep] = Field(min_length=1, max_length=20)
+
+
+ACTION_PARAMS: dict[ActionType, type[PWModel]] = {
+    ActionType.EMAIL: EmailParams,
+    ActionType.NTFY: NtfyParams,
+    ActionType.WEBHOOK: WebhookParams,
+    ActionType.EXPORT: ExportParams,
+    ActionType.RUN_PROGRAM: RunProgramParams,
+    ActionType.SCRAPE: ScrapeParams,
+    ActionType.SCRIPT: ScriptParams,
+}
+
+
+class SmtpSettings(PWModel):
+    """Outgoing mail (spec: SMTP over TLS; the password is a secret-store entry)."""
+
+    host: str = ""
+    port: int = Field(587, ge=1, le=65535)
+    security: Literal["starttls", "ssl", "none"] = "starttls"  # none: only for a local relay
+    username: str | None = None
+    password_key: str = "smtp-password"
+    from_addr: str = ""
+    to: list[str] = Field(default_factory=list)  # default recipients
+    timeout_s: float = Field(30.0, ge=1.0, le=300.0)
+    verify_tls: bool = True
+
+    @field_validator("host")
+    @classmethod
+    def _host(cls, v: str) -> str:
+        v = v.strip()
+        if re.search(r"[\s/]", v):
+            raise ValueError("expected a host name such as smtp.example.com")
+        return v
+
+    @field_validator("from_addr")
+    @classmethod
+    def _from(cls, v: str) -> str:
+        return _address(v) if v.strip() else ""
+
+    @field_validator("to")
+    @classmethod
+    def _to(cls, v: list[str]) -> list[str]:
+        return [_address(a) for a in v]
+
+    @field_validator("password_key")
+    @classmethod
+    def _key(cls, v: str) -> str:
+        return _secret_name(v) or "smtp-password"
+
+
+class NtfySettings(PWModel):
+    """ntfy.sh or a self-hosted server. On the public server the topic name is the only
+    protection unless the topic has access control (spec: ntfy exposure)."""
+
+    server: str = "https://ntfy.sh"
+    topic: str = ""
+    token_key: str | None = None  # secret-store key of an access token
+    timeout_s: float = Field(15.0, ge=1.0, le=120.0)
+
+    @field_validator("server")
+    @classmethod
+    def _server(cls, v: str) -> str:
+        return _http_url(v).rstrip("/")
+
+    @field_validator("topic")
+    @classmethod
+    def _topic(cls, v: str) -> str:
+        v = v.strip()
+        if v and not _NTFY_TOPIC.match(v):
+            raise ValueError("a topic uses letters, digits, _ and - (at most 64)")
+        return v
+
+    @field_validator("token_key")
+    @classmethod
+    def _token(cls, v: str | None) -> str | None:
+        return _secret_name(v or None)
+
+
+class NotificationSettings(PWModel):
+    smtp: SmtpSettings = Field(default_factory=SmtpSettings)
+    ntfy: NtfySettings = Field(default_factory=NtfySettings)
 
 
 # --------------------------------------------------------------------------------------
@@ -535,6 +918,7 @@ class Settings(PWModel):
     global_proxy: str | None = None
     notify_on_first_check: bool = False
     toast_coalesce_s: float = Field(30.0, ge=0.0)
+    notifications: NotificationSettings = Field(default_factory=NotificationSettings)
     keep_changed_versions: int = Field(20, ge=1)
     disk_cap_gb: float = Field(10.0, gt=0.0)
     backlog_warning: int = Field(200, ge=1)
@@ -566,6 +950,49 @@ class Page[T](PWModel):
     items: list[T]
     next_cursor: str | None = None
     total: int | None = None
+
+
+ActionJobStatus = Literal["queued", "done", "failed"]
+
+
+class ActionJobOut(PWModel):
+    """One action of one change (the Problems list shows the failed ones)."""
+
+    id: int
+    change_id: int
+    bookmark_id: int | None
+    bookmark_name: str | None
+    action_index: int
+    action_type: str
+    status: ActionJobStatus
+    attempts: int
+    next_attempt_at: str | None
+    last_error: str | None
+    detected_at: str | None
+
+
+class TestNotificationRequest(PWModel):
+    """Send a sample through a channel with the saved settings; ``params`` are the action's own."""
+
+    channel: Literal["email", "ntfy", "webhook"]
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class TestNotificationOut(PWModel):
+    ok: bool
+    detail: str
+
+
+class SecretIn(PWModel):
+    value: str = Field(min_length=1, max_length=4096)
+
+
+class SecretOut(PWModel):
+    """Values are write-only: this says whether a secret exists, never what it is."""
+
+    name: str
+    exists: bool
+    available: bool = True  # False: this machine has no usable secret store
 
 
 class FolderIn(PWModel):

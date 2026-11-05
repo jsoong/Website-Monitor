@@ -19,6 +19,7 @@ from pagewatch.models import (
     BookmarkPatch,
     BookmarkStatus,
     apply_patch,
+    deep_merge,
     dumps,
     loads,
 )
@@ -59,6 +60,25 @@ def _check(
         raise InvalidError(str(exc)) from exc
 
 
+def _default_private_when_signed_in(
+    sections: dict[str, Any], inherited: dict[str, Any], macro_id: int | None
+) -> None:
+    """Spec (Actions, alert privacy): signed-in bookmarks default to ``private``. "Signed in"
+    here means credentials, a cookie file or a macro. An explicit choice, on the bookmark or on
+    a folder it inherits from, is left alone."""
+    fetch = deep_merge(inherited.get("fetch") or {}, sections.get("fetch") or {})
+    if not (fetch.get("auth") or fetch.get("cookies_file") or macro_id is not None):
+        return
+    chosen = sections.get("actions")
+    if isinstance(chosen, list):
+        chosen = {"actions": chosen}
+    inherited_actions = inherited.get("actions")
+    for source in (chosen, inherited_actions):
+        if isinstance(source, dict) and "alert_privacy" in source:
+            return
+    sections["actions"] = {**(chosen or {}), "alert_privacy": "private"}
+
+
 def default_name(url: str) -> str:
     host = urlsplit(url).hostname
     return host or url[:80]
@@ -75,6 +95,7 @@ async def create(engine: Engine, body: BookmarkIn) -> sqlite3.Row:
     inherited = engine.folders.chain_defaults(body.folder_id)
     if "actions" not in sections and "actions" not in inherited:
         sections["actions"] = {"actions": [{"type": "toast"}]}  # toast is on by default
+    _default_private_when_signed_in(sections, inherited, body.macro_id)
     source_type = (
         inherited["source_type"]
         if "source_type" not in body.model_fields_set and "source_type" in inherited

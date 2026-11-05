@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
+from pagewatch.engine import kv
 from pagewatch.engine import schedule as sched
 from pagewatch.engine.clock import iso
 from pagewatch.engine.config import FOLDER_SCALAR_DEFAULTS, resolve, validate_sections
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
 
 SECTIONS = ("schedule", "fetch", "filter", "gate", "actions")
 _RESETS_VERSIONS = {"url"}
-_REBUILD_FIELDS = {"filter", "highlight_mode", "source_type"}
+_REBUILD_FIELDS = {"filter", "highlight_mode", "source_type", "plugin"}
 
 
 class NotFoundError(LookupError):
@@ -59,6 +60,20 @@ def _check(
         raise InvalidError(str(exc)) from exc
 
 
+def _check_plugin(engine: Engine, name: str | None) -> None:
+    if name and not engine.plugins.exists(name):
+        raise InvalidError(
+            f"plugin {name!r} is not installed (see GET /plugins; examples can be installed)"
+        )
+
+
+def _not_virtual(engine: Engine, folder_id: int | None) -> None:
+    if engine.folders.is_virtual(folder_id):
+        raise InvalidError(
+            f"folder {folder_id} is a saved search; bookmarks cannot be placed in it"
+        )
+
+
 def default_name(url: str) -> str:
     host = urlsplit(url).hostname
     return host or url[:80]
@@ -67,6 +82,8 @@ def default_name(url: str) -> str:
 async def create(engine: Engine, body: BookmarkIn) -> sqlite3.Row:
     if body.folder_id is not None and not engine.folders.exists(body.folder_id):
         raise InvalidError(f"folder {body.folder_id} does not exist")
+    _not_virtual(engine, body.folder_id)
+    _check_plugin(engine, body.plugin)
     sections: dict[str, Any] = {}
     for name in SECTIONS:
         value = getattr(body, name)
@@ -137,6 +154,10 @@ async def patch(engine: Engine, bookmark_id: int, body: BookmarkPatch) -> sqlite
     for scalar in ("priority", "macro_id", "plugin", "info1", "info2", "info3", "note"):
         if scalar in explicit:
             fields[scalar] = getattr(body, scalar)
+    if "plugin" in explicit and (body.plugin or None) != row["plugin"]:
+        _check_plugin(engine, body.plugin)
+        fields["plugin"] = body.plugin or None
+        changed.add("plugin")  # its preprocess hook shapes the stored blocks
     if "url" in explicit and body.url is not None:
         probe = BookmarkIn(url=body.url)  # reuses the url validation
         if probe.url != row["url"]:
@@ -149,6 +170,7 @@ async def patch(engine: Engine, bookmark_id: int, body: BookmarkPatch) -> sqlite
     elif "folder_id" in explicit and body.folder_id is not None:
         if not engine.folders.exists(body.folder_id):
             raise InvalidError(f"folder {body.folder_id} does not exist")
+        _not_virtual(engine, body.folder_id)
         folder_id = body.folder_id
         fields["folder_id"] = folder_id
 
@@ -227,12 +249,32 @@ async def patch(engine: Engine, bookmark_id: int, body: BookmarkPatch) -> sqlite
     engine.schedule_bookmark(updated)
     if changed & _REBUILD_FIELDS and updated["latest_version_id"] and not reset:
         engine.spawn(engine.rebuild_versions(bookmark_id), f"rebuild-{bookmark_id}")
+    _follow_after_edit(engine, row, updated, changed)
     engine.events.publish("bookmark_updated", {"bookmark_id": bookmark_id})
     return updated
 
 
+def _follow_after_edit(
+    engine: Engine, before: sqlite3.Row, after: sqlite3.Row, changed: set[str]
+) -> None:
+    """Follow-Links: new follow settings look at the stored page again; any other edit of a
+    crawl's root refreshes what its children inherit."""
+    old = (loads(before["fetch_json"], {}) or {}).get("follow")
+    new = (loads(after["fetch_json"], {}) or {}).get("follow")
+    bid = after["id"]
+    if new and new != old and after["latest_version_id"]:
+        engine.spawn(engine.follow.rediscover(bid), f"follow-{bid}")
+    elif changed & {"schedule", "fetch", "filter", "gate", "actions", "check_method"}:
+        engine.spawn(engine.follow.sync_folder(bid), f"follow-sync-{bid}")
+
+
 async def delete(engine: Engine, ids: list[int]) -> int:
-    n = await engine.db.write(lambda c: repo.bookmark_delete(c, ids))
+    def write(conn: sqlite3.Connection) -> int:
+        removed = repo.bookmark_delete(conn, ids)
+        kv.forget_bookmarks(conn, ids)  # plugin state, Follow-Links memory
+        return removed
+
+    n = await engine.db.write(write)
     for bid in ids:
         engine.scheduler.remove(bid)
         engine.events.publish("bookmark_updated", {"bookmark_id": bid, "deleted": True})

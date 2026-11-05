@@ -60,6 +60,20 @@ class EngineClient:
             return None
         return resp.json()
 
+    def raw(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        """The response as it is (a downloaded report or export), with the usual error handling."""
+        try:
+            resp = self._http.request(method, path, **kwargs)
+        except httpx.TransportError as exc:
+            raise EngineNotRunning(f"cannot reach the engine: {exc}") from exc
+        if resp.status_code >= 400:
+            try:
+                detail = resp.json().get("detail", resp.text)
+            except ValueError:
+                detail = resp.text
+            raise ApiError(resp.status_code, str(detail))
+        return resp
+
     def get(self, path: str, **params: Any) -> Any:
         return self.request("GET", path, params={k: v for k, v in params.items() if v is not None})
 

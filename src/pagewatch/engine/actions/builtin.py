@@ -7,6 +7,7 @@ import webbrowser
 from typing import TYPE_CHECKING
 
 from pagewatch.engine.actions.base import Action, ActionUnavailable, AlertContext
+from pagewatch.engine.actions.report import report
 
 if TYPE_CHECKING:
     from pagewatch.engine.core import Engine
@@ -49,6 +50,7 @@ ACTIONS: dict[str, Action] = {
     "sound": sound,
     "open": open_,
     "mark_read": mark_read,
+    "report": report,
     "email": _unavailable("email", "planned for M6"),
     "export": _unavailable("export", "planned for M6"),
     "run_program": _unavailable("run_program", "planned for M6"),

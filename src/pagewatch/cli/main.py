@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from pagewatch import __version__
+from pagewatch.cli import power
 from pagewatch.cli.client import ApiError, EngineClient, EngineNotRunning
 from pagewatch.engine.paths import resolve_data_dir
 
@@ -66,6 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     )  # fmt: skip
     add.add_argument("--keywords", help="keyword rules, one per line (\\n separated)")
     add.add_argument("--private", action="store_true", help="alerts never include page content")
+    power.add_options(add)
 
     ls = sub.add_parser("list", help="list bookmarks")
     ls.add_argument("--folder")
@@ -100,11 +102,13 @@ def build_parser() -> argparse.ArgumentParser:
     fadd = fsub.add_parser("add")
     fadd.add_argument("name")
     fadd.add_argument("--parent")
+    power.folder_options(fadd)
     fsub.add_parser("list")
     frm = fsub.add_parser("rm")
     frm.add_argument("folder")
 
     sub.add_parser("status", help="engine health")
+    power.register(sub)
     return p
 
 
@@ -172,6 +176,8 @@ def _summary_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def run(args: argparse.Namespace, client: EngineClient) -> Any:
     cmd = args.cmd
+    if cmd in power.COMMANDS:
+        return power.run(args, client)
     if cmd == "add":
         body: dict[str, Any] = {"url": args.url}
         if args.name:
@@ -190,6 +196,7 @@ def run(args: argparse.Namespace, client: EngineClient) -> Any:
             body["gate"] = {"keywords": args.keywords.replace("\\n", "\n")}
         if args.private:
             body["actions"] = {"actions": [{"type": "toast"}], "alert_privacy": "private"}
+        power.apply_add_options(args, body)
         return client.post("/bookmarks", body)
     if cmd == "list":
         params: dict[str, Any] = {"status": args.status, "q": args.query}
@@ -235,9 +242,8 @@ def run(args: argparse.Namespace, client: EngineClient) -> Any:
         return client.post("/bookmarks/bulk", {"ids": args.ids, "action": "delete"})
     if cmd == "folder":
         if args.folder_cmd == "add":
-            return client.post(
-                "/folders", {"name": args.name, "parent_id": _folder_id(client, args.parent)}
-            )
+            body = {"name": args.name, "parent_id": _folder_id(client, args.parent)}
+            return client.post("/folders", power.folder_body(args, body))
         if args.folder_cmd == "list":
             return client.get("/folders")
         fid = _folder_id(client, args.folder)
@@ -252,6 +258,8 @@ def render(args: argparse.Namespace, result: Any) -> str:
     if args.json:
         return json.dumps(result, indent=2)
     cmd = args.cmd
+    if cmd in power.COMMANDS:
+        return power.render(args, result)
     if cmd == "list":
         return _table(_summary_rows(result)) if result else "(no bookmarks)"
     if cmd == "add":
@@ -270,6 +278,7 @@ def render(args: argparse.Namespace, result: Any) -> str:
             return (
                 "\n".join(
                     f"{f['id']:>4}  {f['name']}"
+                    + ("  [saved search]" if f.get("is_virtual") else "")
                     + (f"  (in {f['parent_id']})" if f["parent_id"] else "")
                     for f in result
                 )

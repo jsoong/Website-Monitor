@@ -307,7 +307,8 @@ def builtin_query(key: str, now: datetime | None = None) -> dict[str, Any]:
 
 
 class FolderTree(QTreeWidget):
-    """Built-in virtual folders first, then the real folder hierarchy."""
+    """Built-in virtual folders first, then the real folder hierarchy, then the user's saved
+    searches (virtual folders: the engine resolves them, so selecting one is just ``folder=id``)."""
 
     query_selected = Signal(dict)
 
@@ -324,6 +325,10 @@ class FolderTree(QTreeWidget):
             item.setData(0, KeyRole, key)
             self.addTopLevelItem(item)
             self._builtin_items[key] = item
+        self._saved_items: dict[int, QTreeWidgetItem] = {}
+        self._saved_root = QTreeWidgetItem(["Saved searches"])
+        self._saved_root.setFlags(self._saved_root.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        self.addTopLevelItem(self._saved_root)
         self._folders_root = QTreeWidgetItem(["Folders"])
         self._folders_root.setFlags(self._folders_root.flags() & ~Qt.ItemFlag.ItemIsSelectable)
         self.addTopLevelItem(self._folders_root)
@@ -347,14 +352,18 @@ class FolderTree(QTreeWidget):
         current = self.currentItem()
         keep = current.data(0, KeyRole) if current is not None else "all"
         self.blockSignals(True)
-        for child in self._folders_root.takeChildren():
-            del child
+        for root in (self._folders_root, self._saved_root):
+            for child in root.takeChildren():
+                del child
         self._folder_items = {}
+        self._saved_items = {}
         for f in sorted(folders, key=lambda f: (f.sort_order, f.name.lower())):
-            if f.is_virtual:
-                continue
             item = QTreeWidgetItem([f.name])
             item.setData(0, KeyRole, f.id)
+            if f.is_virtual:
+                self._saved_items[f.id] = item
+                self._saved_root.addChild(item)
+                continue
             self._folder_items[f.id] = item
         for f in folders:
             item = self._folder_items.get(f.id)
@@ -363,6 +372,8 @@ class FolderTree(QTreeWidget):
             parent = self._folder_items.get(f.parent_id) if f.parent_id is not None else None
             (parent or self._folders_root).addChild(item)
         self._folders_root.setExpanded(True)
+        self._saved_root.setExpanded(True)
+        self._saved_root.setHidden(not self._saved_items)  # nothing to show until one exists
         if counts is not None:
             for key, label in BUILTINS:
                 n = {
@@ -378,22 +389,34 @@ class FolderTree(QTreeWidget):
                 item.setFont(
                     0, self._bold if key in ("unread", "errors", "keyword_hits") and n else QFont()
                 )
-            for fid, item in self._folder_items.items():
+            for fid, item in {**self._folder_items, **self._saved_items}.items():
                 c = counts.by_folder.get(fid)
                 name = item.text(0).split(" (")[0]
                 item.setText(0, f"{name} ({c.unread})" if c and c.unread else name)
                 item.setFont(0, self._bold if c and c.unread else QFont())
         target = (
-            self._builtin_items.get(keep) if isinstance(keep, str) else self._folder_items.get(keep)
+            self._builtin_items.get(keep)
+            if isinstance(keep, str)
+            else self._folder_items.get(keep) or self._saved_items.get(keep)
         )
         self.blockSignals(False)
         if target is not None and target is not self.currentItem():
             self.setCurrentItem(target)
 
     def selected_folder_id(self) -> int | None:
+        """The selected *real* folder (a saved search holds no bookmarks, so it is never a
+        place to put one)."""
         item = self.currentItem()
         key = item.data(0, KeyRole) if item is not None else None
-        return key if isinstance(key, int) else None
+        return key if isinstance(key, int) and key in self._folder_items else None
+
+    def selected_saved_id(self) -> int | None:
+        item = self.currentItem()
+        key = item.data(0, KeyRole) if item is not None else None
+        return key if isinstance(key, int) and key in self._saved_items else None
+
+    def saved_ids(self) -> list[int]:
+        return list(self._saved_items)
 
     def folder_ids(self) -> list[int]:
         return list(self._folder_items)

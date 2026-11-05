@@ -36,6 +36,9 @@ from pagewatch.models import (
     BookmarkOut,
     FilterRule,
     FolderOut,
+    FollowLinksConfig,
+    MergePagesConfig,
+    PluginInfo,
     RecordsConfig,
     Rect,
     TestFilterOut,
@@ -119,12 +122,14 @@ class BookmarkEditor(QDialog):
         bookmarks: list[BookmarkOut],
         folders: list[FolderOut],
         parent: Any = None,
+        plugins: list[PluginInfo] | None = None,
     ) -> None:
         super().__init__(parent)
         self._client = client
         self._all = bookmarks
         self._orig = bookmarks[0]
         self._folders = folders
+        self._plugins = [p.name for p in plugins or [] if p.installed]
         self.bulk = len(bookmarks) > 1
         self.setWindowTitle(
             f"Edit {len(bookmarks)} bookmarks" if self.bulk else f"Edit bookmark: {self._orig.name}"
@@ -210,12 +215,20 @@ class BookmarkEditor(QDialog):
         self.enabled.setChecked(o.enabled)
         self.hotsite = QCheckBox("Hotsite: jump the queue")
         self.hotsite.setChecked(bool(o.priority))
+        self.plugin = QComboBox()
+        self.plugin.setObjectName("plugin")
+        self.plugin.addItem("(none)", None)
+        for name in sorted({*self._plugins, *([o.plugin] if o.plugin else [])}):
+            self.plugin.addItem(name, name)
+        self.plugin.setCurrentIndex(max(0, self.plugin.findData(o.plugin)))
+        self.plugin.setToolTip("A Python plugin from the plugins folder (see Tools in the manual)")
         if not self.bulk:
             form.addRow("Name", self.name)
             form.addRow("URL", self.url)
         form.addRow("Folder", self.folder)
         form.addRow("Check method", self.method)
         form.addRow("Source type", self.source)
+        form.addRow("Plugin", self.plugin)
         form.addRow(self.enabled)
         form.addRow(self.hotsite)
 
@@ -607,6 +620,103 @@ class BookmarkEditor(QDialog):
         form.addRow("Browser: mouse moves", self.b_mouse)
         form.addRow(self.b_full)
         form.addRow("Records source (JSON)", self.records_json)
+        self._build_multi_page(form)
+
+    def _build_multi_page(self, form: QFormLayout) -> None:
+        """Follow-Links and merge pages (spec: Multi-page sources)."""
+        fl, mg = self._orig.fetch.follow, self._orig.fetch.merge
+        self.follow_on = QCheckBox("Follow links: watch each matching link as its own bookmark")
+        self.follow_on.setObjectName("followOn")
+        self.follow_on.setChecked(bool(fl and fl.enabled))
+        self.follow_include = QPlainTextEdit("\n".join(fl.include) if fl else "")
+        self.follow_include.setObjectName("followInclude")
+        self.follow_include.setPlaceholderText("/news/*   (empty: every link)")
+        self.follow_include.setMaximumHeight(60)
+        self.follow_exclude = QPlainTextEdit("\n".join(fl.exclude) if fl else "")
+        self.follow_exclude.setObjectName("followExclude")
+        self.follow_exclude.setMaximumHeight(60)
+        self.follow_kind = QComboBox()
+        self.follow_kind.addItem("wildcards (* and ?)", "wildcard")
+        self.follow_kind.addItem("regular expressions", "regex")
+        self.follow_kind.setCurrentIndex(
+            max(0, self.follow_kind.findData(fl.pattern_kind if fl else "wildcard"))
+        )
+        self.follow_depth = QSpinBox()
+        self.follow_depth.setRange(1, 5)
+        self.follow_depth.setValue(fl.depth if fl else 1)
+        self.follow_pages = QSpinBox()
+        self.follow_pages.setRange(1, 500)
+        self.follow_pages.setValue(fl.max_pages if fl else 50)
+        self.follow_same = QCheckBox("Only links on this site")
+        self.follow_same.setChecked(fl.same_host if fl else True)
+        form.addRow(self.follow_on)
+        form.addRow("    Include links matching", self.follow_include)
+        form.addRow("    Exclude links matching", self.follow_exclude)
+        form.addRow("    Patterns are", self.follow_kind)
+        form.addRow("    Levels deep", self.follow_depth)
+        form.addRow("    At most (bookmarks)", self.follow_pages)
+        form.addRow(self.follow_same)
+
+        self.merge_mode = QComboBox()
+        self.merge_mode.setObjectName("mergeMode")
+        self.merge_mode.addItem("Off", None)
+        self.merge_mode.addItem("Follow the next-page link (CSS selector)", "selector")
+        self.merge_mode.addItem("Numbered pages (URL with {n})", "pattern")
+        on = mg is not None and mg.enabled
+        mode = None if not on or mg is None else ("selector" if mg.next_selector else "pattern")
+        self.merge_mode.setCurrentIndex(self.merge_mode.findData(mode))
+        self.merge_value = QLineEdit(((mg.next_selector or mg.url_pattern) if mg else "") or "")
+        self.merge_value.setObjectName("mergeValue")
+        self.merge_value.setPlaceholderText("a.next   or   /list?page={n}")
+        self.merge_pages = QSpinBox()
+        self.merge_pages.setRange(2, 50)
+        self.merge_pages.setValue(mg.max_pages if mg else 5)
+        self.merge_first = QSpinBox()
+        self.merge_first.setRange(0, 1000)
+        self.merge_first.setValue(mg.first_n if mg else 2)
+        form.addRow("Merge pages", self.merge_mode)
+        form.addRow("    Selector or URL pattern", self.merge_value)
+        form.addRow("    Pages in all", self.merge_pages)
+        form.addRow("    {n} of the second page", self.merge_first)
+
+    def follow_dict(self) -> dict[str, Any] | None:
+        orig = self._orig.fetch.follow
+        if orig is None and not self.follow_on.isChecked():
+            return None
+        raw = {
+            "enabled": self.follow_on.isChecked(),
+            "include": _lines(self.follow_include),
+            "exclude": _lines(self.follow_exclude),
+            "pattern_kind": self.follow_kind.currentData(),
+            "depth": self.follow_depth.value(),
+            "max_pages": self.follow_pages.value(),
+            "same_host": self.follow_same.isChecked(),
+            "folder_name": orig.folder_name if orig else None,
+        }
+        try:
+            return FollowLinksConfig.model_validate(raw).model_dump(mode="json")
+        except ValidationError as exc:
+            raise SettingError(f"Follow links: {exc.errors()[0]['msg']}") from exc
+
+    def merge_dict(self) -> dict[str, Any] | None:
+        orig = self._orig.fetch.merge
+        mode = self.merge_mode.currentData()
+        if orig is None and mode is None:
+            return None
+        if mode is None and orig is not None:  # switched off: keep the rest for later
+            return {**orig.model_dump(mode="json"), "enabled": False}
+        value = self.merge_value.text().strip()
+        raw = {
+            "enabled": True,
+            "next_selector": value if mode == "selector" else None,
+            "url_pattern": value if mode == "pattern" else None,
+            "first_n": self.merge_first.value(),
+            "max_pages": self.merge_pages.value(),
+        }
+        try:
+            return MergePagesConfig.model_validate(raw).model_dump(mode="json")
+        except ValidationError as exc:
+            raise SettingError(f"Merge pages: {exc.errors()[0]['msg']}") from exc
 
     def _build_notes(self) -> None:
         o = self._orig
@@ -657,6 +767,8 @@ class BookmarkEditor(QDialog):
                 "full_page": self.b_full.isChecked(),
             },
             "records": records,
+            "follow": self.follow_dict(),
+            "merge": self.merge_dict(),
             "method": self.http_method.currentText(),
             "headers": headers,
             "body": self.body.toPlainText() or None,
@@ -709,6 +821,7 @@ class BookmarkEditor(QDialog):
                 ("source_type", self.source.currentData(), o.source_type.value),
                 ("enabled", self.enabled.isChecked(), o.enabled),
                 ("priority", int(self.hotsite.isChecked()), o.priority),
+                ("plugin", self.plugin.currentData(), o.plugin),
             ):
                 if self.bulk or value != before:
                     patch[key] = value

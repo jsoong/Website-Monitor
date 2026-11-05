@@ -6,6 +6,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from pagewatch.engine import bookmarks as svc
+from pagewatch.engine import virtual
 from pagewatch.engine.api.app_deps import engine_dep
 from pagewatch.engine.api.serializers import (
     bookmark_out,
@@ -64,14 +65,18 @@ async def list_bookmarks(
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> Page[BookmarkSummary]:
     def read(conn: Any) -> Any:
+        saved = virtual.load_query(conn, folder) if folder is not None else None
         folder_ids = None
-        if folder is not None:
+        if folder is not None and saved is None:
             folder_ids = repo.folder_with_descendants(conn, folder) if subfolders else [folder]
-        return repo.bookmark_query(
-            conn, folder_ids=folder_ids, status=status, unread=unread, enabled=enabled,
-            q=q, changed_since=changed_since, keyword_hits=keyword_hits,
-            sort=sort, desc=desc, cursor=cursor, limit=limit,
-        )  # fmt: skip
+        explicit: dict[str, Any] = {
+            "folder_ids": folder_ids, "status": status, "unread": unread, "enabled": enabled,
+            "q": q, "changed_since": changed_since, "keyword_hits": keyword_hits,
+        }  # fmt: skip
+        paging: dict[str, Any] = {"sort": sort, "desc": desc, "cursor": cursor, "limit": limit}
+        if saved is not None:  # a virtual folder: its saved search, narrowed by this request
+            return virtual.query_rows(conn, saved, engine.clock.now(), **explicit, **paging)
+        return repo.bookmark_query(conn, **explicit, **paging)
 
     def read_page(conn: Any) -> Any:
         rows, nxt, total = read(conn)
@@ -90,9 +95,15 @@ async def list_bookmarks(
 @router.get("/bookmarks/counts", response_model=BookmarkCounts)
 async def counts(engine: EngineDep) -> BookmarkCounts:
     """Totals for the folder tree and the built-in virtual folders."""
-    since = iso(engine.clock.now() - timedelta(hours=24))
-    data = await engine.db.read(lambda c: repo.bookmark_counts(c, since))
-    return BookmarkCounts.model_validate(data)
+    now = engine.clock.now()
+    since = iso(now - timedelta(hours=24))
+
+    def read(conn: Any) -> Any:
+        data = repo.bookmark_counts(conn, since)
+        data["by_folder"].update(virtual.counts(conn, now))  # saved searches count like folders
+        return data
+
+    return BookmarkCounts.model_validate(await engine.db.read(read))
 
 
 @router.post("/bookmarks", response_model=BookmarkOut, status_code=201)

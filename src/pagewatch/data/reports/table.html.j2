@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ title }}</title>
+<style>
+  body { font: 14px/1.45 system-ui, "Segoe UI", sans-serif; margin: 1.5rem; color: #1b1b1b; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: .35rem .6rem; border-bottom: 1px solid #ddd; vertical-align: top; }
+  th { background: #f3f3f3; }
+  .meta { color: #666; margin-bottom: 1rem; }
+  .err { color: #a11; }
+</style>
+</head>
+<body>
+<h1>{{ title }}</h1>
+<p class="meta">Generated {{ generated_at }}{% if since %} · changes since {{ since }}{% endif %}
+ · {{ rows|length }} row{{ "" if rows|length == 1 else "s" }}</p>
+{% if rows %}
+<table>
+<thead><tr>{% for key, header in columns %}<th>{{ header }}</th>{% endfor %}</tr></thead>
+<tbody>
+{% for row in rows %}<tr>{% for key, header in columns %}<td>{% if key == "url" %}<a href="{{ row[key] }}">{{ row[key] }}</a>{% else %}{{ row[key] }}{% endif %}</td>{% endfor %}</tr>
+{% endfor %}
+</tbody>
+</table>
+{% else %}
+<p>Nothing to report.</p>
+{% endif %}
+</body>
+</html>

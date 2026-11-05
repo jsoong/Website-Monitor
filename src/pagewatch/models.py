@@ -126,6 +126,7 @@ class ActionType(StrEnum):
     SCRAPE = "scrape"
     SCRIPT = "script"
     MARK_READ = "mark_read"
+    REPORT = "report"  # M7: write a report file when a change is detected
 
 
 class FetchErrorKind(StrEnum):
@@ -339,6 +340,58 @@ class RecordsConfig(PWModel):
         return self
 
 
+def _check_link_patterns(kind: str, patterns: list[str]) -> None:
+    for p in patterns:
+        if not p.strip():
+            raise ValueError("link patterns must not be empty")
+        if kind == "regex":
+            try:
+                re.compile(p)
+            except re.error as exc:
+                raise ValueError(f"invalid regex {p!r}: {exc}") from exc
+
+
+class FollowLinksConfig(PWModel):
+    """Follow-Links (spec: Multi-page sources): discover links on this page and watch each match
+    as a child bookmark in a generated folder."""
+
+    enabled: bool = True
+    include: list[str] = Field(default_factory=list)  # empty = every link
+    exclude: list[str] = Field(default_factory=list)
+    pattern_kind: Literal["wildcard", "regex"] = "wildcard"  # matched against the absolute URL
+    depth: int = Field(1, ge=1, le=5)  # 1 = the links on this page; 2 = and the links on those
+    max_pages: int = Field(50, ge=1, le=500)  # child bookmarks over the whole crawl
+    same_host: bool = True  # only links on the parent's host (a leading www. is ignored)
+    folder_name: str | None = Field(None, max_length=200)  # default: "<name> (followed)"
+
+    @model_validator(mode="after")
+    def _patterns(self) -> FollowLinksConfig:
+        _check_link_patterns(self.pattern_kind, self.include)
+        _check_link_patterns(self.pattern_kind, self.exclude)
+        return self
+
+
+class MergePagesConfig(PWModel):
+    """Merge pages (spec: Multi-page sources): follow a next-page link or a URL pattern up to
+    ``max_pages`` pages and concatenate them before extraction."""
+
+    enabled: bool = True
+    next_selector: str | None = None  # CSS selector of the "next page" link
+    url_pattern: str | None = None  # e.g. ``https://example.com/list?page={n}``
+    first_n: int = Field(2, ge=0, le=1000)  # the value of {n} for the second page
+    max_pages: int = Field(5, ge=2, le=50)  # pages in all, including the first
+
+    @model_validator(mode="after")
+    def _one_way(self) -> MergePagesConfig:
+        if self.enabled and bool(self.next_selector) == bool(self.url_pattern):
+            raise ValueError("merge pages needs exactly one of 'next_selector' or 'url_pattern'")
+        if self.next_selector:
+            _check_selector("css", self.next_selector)
+        if self.url_pattern and "{n}" not in self.url_pattern:
+            raise ValueError("'url_pattern' must contain {n}")
+        return self
+
+
 class FetchConfig(PWModel):
     method: Literal["GET", "POST"] = "GET"
     headers: dict[str, str] = Field(default_factory=dict)
@@ -354,6 +407,8 @@ class FetchConfig(PWModel):
     feed: FeedOptions = Field(default_factory=FeedOptions)
     listing: ListingOptions = Field(default_factory=ListingOptions)
     records: RecordsConfig | None = None
+    follow: FollowLinksConfig | None = None
+    merge: MergePagesConfig | None = None
 
 
 # --------------------------------------------------------------------------------------
@@ -860,6 +915,193 @@ class PreviewOut(PWModel):
     warnings: list[str] = Field(default_factory=list)
     error: str | None = None
     elapsed_ms: int = 0
+
+
+# --------------------------------------------------------------------------------------
+# M7: virtual folders, import / export, reports, plugins, the filter assistant
+# --------------------------------------------------------------------------------------
+
+
+class VirtualQuery(PWModel):
+    """A saved search (``folder.query_json`` of a virtual folder). Every field that is set must
+    match; the list endpoint resolves ``GET /bookmarks?folder=<virtual id>`` through it."""
+
+    q: str | None = None  # substring of the name or the URL
+    status: BookmarkStatus | None = None
+    unread: bool | None = None
+    enabled: bool | None = None
+    folder: int | None = None  # a real folder, including its subfolders
+    changed_within_h: float | None = Field(None, gt=0)
+    keyword_hits: bool | None = None
+    source_type: SourceType | None = None
+    check_method: CheckMethod | None = None
+    plugin: str | None = None
+    min_errors: int | None = Field(None, ge=1)  # consecutive errors at least this many
+
+    def is_empty(self) -> bool:
+        return not self.model_dump(exclude_none=True)
+
+
+ImportFormat = Literal["auto", "netscape", "urls", "csv", "xlsx", "json"]
+ExportFormat = Literal["json", "opml", "csv"]
+EXPORT_VERSION = 1
+
+
+class ImportRequest(PWModel):
+    format: ImportFormat = "auto"
+    filename: str | None = None  # a hint for ``auto``
+    content: str | None = None  # text formats
+    content_base64: str | None = None  # xlsx
+    folder_id: int | None = None  # import under this folder
+    dry_run: bool = False
+
+    @model_validator(mode="after")
+    def _one_source(self) -> ImportRequest:
+        if (self.content is None) == (self.content_base64 is None):
+            raise ValueError("give exactly one of 'content' and 'content_base64'")
+        return self
+
+
+class ImportRowError(PWModel):
+    row: int
+    message: str
+
+
+class ImportResult(PWModel):
+    format: str
+    dry_run: bool
+    created: int
+    skipped_duplicates: int
+    folders_created: int
+    errors: list[ImportRowError] = Field(default_factory=list)
+    bookmark_ids: list[int] = Field(default_factory=list)
+
+
+class ExportFolder(PWModel):
+    id: int
+    parent_id: int | None
+    name: str
+    sort_order: int = 0
+    is_virtual: bool = False
+    query: dict[str, Any] | None = None
+    defaults: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExportBookmark(PWModel):
+    """One bookmark as exported: its stored overrides, never the inherited values, and no secrets
+    (credential fields name a keyring entry, they never hold the password)."""
+
+    name: str
+    url: str
+    folder_id: int | None = None
+    source_type: SourceType = SourceType.AUTO
+    check_method: CheckMethod = CheckMethod.AUTO
+    enabled: bool = True
+    priority: int = 0
+    highlight_mode: HighlightMode = HighlightMode.STANDARD
+    schedule: dict[str, Any] = Field(default_factory=dict)
+    fetch: dict[str, Any] = Field(default_factory=dict)
+    filter: dict[str, Any] = Field(default_factory=dict)
+    gate: dict[str, Any] = Field(default_factory=dict)
+    actions: dict[str, Any] | list[Any] = Field(default_factory=dict)
+    plugin: str | None = None
+    info1: str | None = None
+    info2: str | None = None
+    info3: str | None = None
+    note: str | None = None
+
+
+class ExportDocument(PWModel):
+    format: Literal["pagewatch-export"] = "pagewatch-export"
+    version: int = EXPORT_VERSION
+    exported_at: str
+    app_version: str
+    folders: list[ExportFolder] = Field(default_factory=list)
+    bookmarks: list[ExportBookmark] = Field(default_factory=list)
+
+
+ReportFormat = Literal["html", "csv", "json", "xml"]
+
+
+class ReportRequest(PWModel):
+    format: ReportFormat | None = None  # default: the template's own
+    since: str | None = None  # ISO-8601 UTC; default for ``changed``: the last report
+    mark: bool = True  # move the "last report" marker to now
+    folder_id: int | None = None
+
+
+class ReportInfo(PWModel):
+    name: str
+    title: str
+    builtin: bool
+    formats: list[str]
+
+
+PLUGIN_HOOKS = (
+    "before_check",
+    "merge_pages",
+    "preprocess",
+    "compare",
+    "check_keywords",
+    "on_change",
+    "after_check",
+)
+
+
+class PluginInfo(PWModel):
+    name: str
+    installed: bool
+    example: bool  # shipped with PageWatch
+    hooks: list[str] = Field(default_factory=list)
+    description: str | None = None
+    error: str | None = None  # why it cannot be loaded
+
+
+class PluginInstallRequest(PWModel):
+    name: str = Field(min_length=1, max_length=80)
+    overwrite: bool = False
+
+
+FilterChoiceId = Literal[
+    "ignore_element", "watch_element", "ignore_text", "ignore_to_here", "ignore_from_here"
+]
+
+
+class FilterAssistRequest(PWModel):
+    """What the viewer's bridge reports: the element(s) holding the selection and its text."""
+
+    path: str = Field(min_length=1)  # DOM path (``data-pw-path``) of the selected element
+    end_path: str | None = None  # where the selection ends, if elsewhere
+    text: str = ""  # the selected text; empty when an element was right-clicked
+    version: Literal["new", "old"] = "new"  # which stored page the user was looking at
+    version_id: int | None = None  # ... or exactly this stored version (history view)
+    levels_up: int = Field(0, ge=0, le=12)  # widen to the parent element this many times
+
+
+class FilterChoice(PWModel):
+    id: FilterChoiceId
+    label: str
+    section: Literal["ignore", "watch"]
+    rule: FilterRule
+    patch: dict[str, Any]  # a ready ``PATCH /bookmarks/{id}`` body that adds the rule
+    explanation: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+class FilterAssistElement(PWModel):
+    tag: str
+    path: str
+    selector: str
+    selector_kind: Literal["css", "xpath"]
+    can_widen: bool  # a parent element (other than the page itself) exists
+    levels_up: int
+
+
+class FilterAssistOut(PWModel):
+    element: FilterAssistElement | None
+    selection: str  # the selection, whitespace-normalised
+    block_text: str | None  # the page text block it falls in
+    choices: list[FilterChoice]
 
 
 class AutowatchRequest(PWModel):

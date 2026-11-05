@@ -37,6 +37,7 @@ from pagewatch.engine.pipeline.extract import (
 from pagewatch.engine.pipeline.render import render_marks
 from pagewatch.engine.pipeline.sources import resolve_kind
 from pagewatch.engine.pipeline.special import apply_special, comparison_text
+from pagewatch.engine.plugin_runtime import PluginOutcome, session_of
 from pagewatch.engine.store.blobs import BlobStore, sha256_hex, sha256_text
 from pagewatch.models import FilterConfig, GateConfig, HighlightMode, RecordsConfig
 
@@ -94,6 +95,7 @@ class PipelineResult:
     source_kind: str = "html"  # what resolve_kind made of the bytes
     screenshot_hash: str | None = None
     needs_browser: bool = False  # auto-detection: re-run this check in the browser
+    plugin: PluginOutcome | None = None  # what the bookmark's plugin did in this worker
 
 
 # -- block building ---------------------------------------------------------------------
@@ -148,6 +150,10 @@ def build_blocks(
         kind = "html"
     else:
         text = decode_body(body, content_type)
+    if kind in ("html", "json", "text"):  # plugin hook: rewrite the content before extraction
+        plugin = session_of((source_cfg or {}).get("plugin"))
+        if plugin is not None:
+            text = plugin.preprocess(text)
     root: Any = None
     if kind == "json":
         blocks = json_blocks(text, nfkc=special.normalize_unicode)
@@ -211,6 +217,9 @@ def _browser_reason(job: PipelineJob, raw_hash: str) -> str | None:
 def process_check(job: PipelineJob) -> PipelineResult:
     started = time.perf_counter()
     store = BlobStore(Path(job.blob_root))
+    plugin = session_of(job.source_cfg.get("plugin"))
+    # one session for the whole check: preprocess, check_keywords and compare share its state
+    scfg = {**job.source_cfg, "plugin": plugin} if plugin is not None else job.source_cfg
     raw_hash = sha256_hex(job.body)
     kind = resolve_kind(job.source_type, job.content_type, job.final_url, job.body)
     shot = job.screenshot_png
@@ -219,6 +228,8 @@ def process_check(job: PipelineJob) -> PipelineResult:
     def done(res: PipelineResult) -> PipelineResult:
         res.elapsed_ms = int((time.perf_counter() - started) * 1000)
         res.source_kind = kind
+        if plugin is not None:
+            res.plugin = plugin.outcome()
         if res.store_version:
             res.screenshot_hash = shot_hash
         return res
@@ -244,7 +255,7 @@ def process_check(job: PipelineJob) -> PipelineResult:
             return done(PipelineResult("needs_browser", raw_hash, reason=why, needs_browser=True))
     blocks = build_blocks(
         job.body, job.content_type, job.final_url, job.source_type, fcfg, raw_hash,
-        warnings.append, job.source_cfg,
+        warnings.append, scfg,
     )  # fmt: skip
     new_texts = _texts(blocks)
     filtered_hash = sha256_text(comparison_text(blocks, fcfg.special))
@@ -333,11 +344,18 @@ def process_check(job: PipelineJob) -> PipelineResult:
         )
         if h not in hits
     ]
+    plugin_keyword: bool | None = None
+    if plugin is not None:  # gate rule 8: the plugin's keyword logic is OR-ed with the rules
+        plugin.ctx.diff = dict(latest_diff.stats)
+        plugin_keyword = plugin.check_keywords(latest_diff.added_text(new_texts))
+        if plugin_keyword:
+            label = f"plugin:{plugin.spec.name}"
+            hits, shown = [*hits, label], [*shown, label]
     verdict = gate_mod.check_change(
         gcfg,
         latest_diff=latest_diff,
         anchor_diff=anchor_diff,
-        keywords_configured=bool(rules),
+        keywords_configured=bool(rules) or plugin_keyword is not None,
         keyword_hits=hits,
     )
     alert, reason = verdict.alert, verdict.reason
@@ -347,6 +365,10 @@ def process_check(job: PipelineJob) -> PipelineResult:
         events = records.record_events(old_blocks, blocks, ignore_case=ignore_case)
         if alert and not (events.kinds() & set(records_config(job.source_cfg).events)):
             alert, reason = False, "records_events"
+    if plugin is not None:  # compare(): force a change, force no change, or defer
+        forced = plugin.compare(_texts(old_blocks), new_texts, latest_diff.stats)
+        if forced is not None:
+            alert, reason = forced.alert, (None if forced.alert else forced.reason or "plugin")
     res = PipelineResult(
         "stored",
         raw_hash,
@@ -627,6 +649,7 @@ class RenderJob:
     context: int | None = None
     source_type: str = "auto"
     source_cfg: dict[str, Any] = field(default_factory=dict)
+    paths: bool = False  # tag elements with their DOM path (the filter assistant's anchor)
 
 
 @dataclass(slots=True)
@@ -658,7 +681,9 @@ def render_view(job: RenderJob) -> RenderResult:
             store.get(v.raw_hash), v.content_type, job.url, job.source_type, job.source_cfg,
             plain=True,
         )  # fmt: skip
-        plain = viewer.render_plain(raw, ctype, job.url, allow_remote=job.allow_remote)
+        plain = viewer.render_plain(
+            raw, ctype, job.url, allow_remote=job.allow_remote, paths=job.paths
+        )
         return RenderResult(
             viewer.wrap_document(plain, allow_remote=job.allow_remote, base_url=job.url), job.view
         )
@@ -690,7 +715,7 @@ def render_view(job: RenderJob) -> RenderResult:
         body = viewer.render_highlight(
             raw, ctype, job.url, new_blocks, old_texts,
             diff, nfkc=fcfg.special.normalize_unicode, ignore_options=fcfg.special.ignore_options,
-            allow_remote=job.allow_remote,
+            allow_remote=job.allow_remote, paths=job.paths,
         )  # fmt: skip
         if body is not None:
             produced = "highlight"

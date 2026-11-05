@@ -32,7 +32,8 @@
      "ntfy",
      "scrape",
      "script",
-     "mark_read"
+     "mark_read",
+     "report"
     ],
     "title": "ActionType",
     "type": "string"
@@ -1571,6 +1572,16 @@
      "feed": {
       "$ref": "#/components/schemas/FeedOptions"
      },
+     "follow": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/FollowLinksConfig"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
      "headers": {
       "additionalProperties": {
        "type": "string"
@@ -1586,6 +1597,16 @@
       "minimum": 1024.0,
       "title": "Max Bytes",
       "type": "integer"
+     },
+     "merge": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/MergePagesConfig"
+       },
+       {
+        "type": "null"
+       }
+      ]
      },
      "method": {
       "default": "GET",
@@ -1642,6 +1663,210 @@
      }
     },
     "title": "FetchConfig",
+    "type": "object"
+   },
+   "FilterAssistElement": {
+    "additionalProperties": false,
+    "properties": {
+     "can_widen": {
+      "title": "Can Widen",
+      "type": "boolean"
+     },
+     "levels_up": {
+      "title": "Levels Up",
+      "type": "integer"
+     },
+     "path": {
+      "title": "Path",
+      "type": "string"
+     },
+     "selector": {
+      "title": "Selector",
+      "type": "string"
+     },
+     "selector_kind": {
+      "enum": [
+       "css",
+       "xpath"
+      ],
+      "title": "Selector Kind",
+      "type": "string"
+     },
+     "tag": {
+      "title": "Tag",
+      "type": "string"
+     }
+    },
+    "required": [
+     "tag",
+     "path",
+     "selector",
+     "selector_kind",
+     "can_widen",
+     "levels_up"
+    ],
+    "title": "FilterAssistElement",
+    "type": "object"
+   },
+   "FilterAssistOut": {
+    "additionalProperties": false,
+    "properties": {
+     "block_text": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Block Text"
+     },
+     "choices": {
+      "items": {
+       "$ref": "#/components/schemas/FilterChoice"
+      },
+      "title": "Choices",
+      "type": "array"
+     },
+     "element": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/FilterAssistElement"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "selection": {
+      "title": "Selection",
+      "type": "string"
+     }
+    },
+    "required": [
+     "element",
+     "selection",
+     "block_text",
+     "choices"
+    ],
+    "title": "FilterAssistOut",
+    "type": "object"
+   },
+   "FilterAssistRequest": {
+    "additionalProperties": false,
+    "description": "What the viewer's bridge reports: the element(s) holding the selection and its text.",
+    "properties": {
+     "end_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "End Path"
+     },
+     "levels_up": {
+      "default": 0,
+      "maximum": 12.0,
+      "minimum": 0.0,
+      "title": "Levels Up",
+      "type": "integer"
+     },
+     "path": {
+      "minLength": 1,
+      "title": "Path",
+      "type": "string"
+     },
+     "text": {
+      "default": "",
+      "title": "Text",
+      "type": "string"
+     },
+     "version": {
+      "default": "new",
+      "enum": [
+       "new",
+       "old"
+      ],
+      "title": "Version",
+      "type": "string"
+     },
+     "version_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Version Id"
+     }
+    },
+    "required": [
+     "path"
+    ],
+    "title": "FilterAssistRequest",
+    "type": "object"
+   },
+   "FilterChoice": {
+    "additionalProperties": false,
+    "properties": {
+     "explanation": {
+      "title": "Explanation",
+      "type": "string"
+     },
+     "id": {
+      "enum": [
+       "ignore_element",
+       "watch_element",
+       "ignore_text",
+       "ignore_to_here",
+       "ignore_from_here"
+      ],
+      "title": "Id",
+      "type": "string"
+     },
+     "label": {
+      "title": "Label",
+      "type": "string"
+     },
+     "patch": {
+      "additionalProperties": true,
+      "title": "Patch",
+      "type": "object"
+     },
+     "rule": {
+      "$ref": "#/components/schemas/FilterRule"
+     },
+     "section": {
+      "enum": [
+       "ignore",
+       "watch"
+      ],
+      "title": "Section",
+      "type": "string"
+     },
+     "warnings": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+     }
+    },
+    "required": [
+     "id",
+     "label",
+     "section",
+     "rule",
+     "patch",
+     "explanation"
+    ],
+    "title": "FilterChoice",
     "type": "object"
    },
    "FilterConfig": {
@@ -1993,6 +2218,73 @@
     "title": "FolderPatch",
     "type": "object"
    },
+   "FollowLinksConfig": {
+    "additionalProperties": false,
+    "description": "Follow-Links (spec: Multi-page sources): discover links on this page and watch each match\nas a child bookmark in a generated folder.",
+    "properties": {
+     "depth": {
+      "default": 1,
+      "maximum": 5.0,
+      "minimum": 1.0,
+      "title": "Depth",
+      "type": "integer"
+     },
+     "enabled": {
+      "default": true,
+      "title": "Enabled",
+      "type": "boolean"
+     },
+     "exclude": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Exclude",
+      "type": "array"
+     },
+     "folder_name": {
+      "anyOf": [
+       {
+        "maxLength": 200,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Folder Name"
+     },
+     "include": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Include",
+      "type": "array"
+     },
+     "max_pages": {
+      "default": 50,
+      "maximum": 500.0,
+      "minimum": 1.0,
+      "title": "Max Pages",
+      "type": "integer"
+     },
+     "pattern_kind": {
+      "default": "wildcard",
+      "enum": [
+       "wildcard",
+       "regex"
+      ],
+      "title": "Pattern Kind",
+      "type": "string"
+     },
+     "same_host": {
+      "default": true,
+      "title": "Same Host",
+      "type": "boolean"
+     }
+    },
+    "title": "FollowLinksConfig",
+    "type": "object"
+   },
    "GateConfig": {
     "additionalProperties": false,
     "properties": {
@@ -2186,6 +2478,142 @@
     "title": "HostOverride",
     "type": "object"
    },
+   "ImportRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "content": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Content"
+     },
+     "content_base64": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Content Base64"
+     },
+     "dry_run": {
+      "default": false,
+      "title": "Dry Run",
+      "type": "boolean"
+     },
+     "filename": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Filename"
+     },
+     "folder_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Folder Id"
+     },
+     "format": {
+      "default": "auto",
+      "enum": [
+       "auto",
+       "netscape",
+       "urls",
+       "csv",
+       "xlsx",
+       "json"
+      ],
+      "title": "Format",
+      "type": "string"
+     }
+    },
+    "title": "ImportRequest",
+    "type": "object"
+   },
+   "ImportResult": {
+    "additionalProperties": false,
+    "properties": {
+     "bookmark_ids": {
+      "items": {
+       "type": "integer"
+      },
+      "title": "Bookmark Ids",
+      "type": "array"
+     },
+     "created": {
+      "title": "Created",
+      "type": "integer"
+     },
+     "dry_run": {
+      "title": "Dry Run",
+      "type": "boolean"
+     },
+     "errors": {
+      "items": {
+       "$ref": "#/components/schemas/ImportRowError"
+      },
+      "title": "Errors",
+      "type": "array"
+     },
+     "folders_created": {
+      "title": "Folders Created",
+      "type": "integer"
+     },
+     "format": {
+      "title": "Format",
+      "type": "string"
+     },
+     "skipped_duplicates": {
+      "title": "Skipped Duplicates",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "format",
+     "dry_run",
+     "created",
+     "skipped_duplicates",
+     "folders_created"
+    ],
+    "title": "ImportResult",
+    "type": "object"
+   },
+   "ImportRowError": {
+    "additionalProperties": false,
+    "properties": {
+     "message": {
+      "title": "Message",
+      "type": "string"
+     },
+     "row": {
+      "title": "Row",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "row",
+     "message"
+    ],
+    "title": "ImportRowError",
+    "type": "object"
+   },
    "ListingOptions": {
     "additionalProperties": false,
     "description": "Folder and FTP directory listings.",
@@ -2204,6 +2632,55 @@
      }
     },
     "title": "ListingOptions",
+    "type": "object"
+   },
+   "MergePagesConfig": {
+    "additionalProperties": false,
+    "description": "Merge pages (spec: Multi-page sources): follow a next-page link or a URL pattern up to\n``max_pages`` pages and concatenate them before extraction.",
+    "properties": {
+     "enabled": {
+      "default": true,
+      "title": "Enabled",
+      "type": "boolean"
+     },
+     "first_n": {
+      "default": 2,
+      "maximum": 1000.0,
+      "minimum": 0.0,
+      "title": "First N",
+      "type": "integer"
+     },
+     "max_pages": {
+      "default": 5,
+      "maximum": 50.0,
+      "minimum": 2.0,
+      "title": "Max Pages",
+      "type": "integer"
+     },
+     "next_selector": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Next Selector"
+     },
+     "url_pattern": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Url Pattern"
+     }
+    },
+    "title": "MergePagesConfig",
     "type": "object"
    },
    "OnBattery": {
@@ -2330,6 +2807,80 @@
      "items"
     ],
     "title": "Page[CheckRunOut]",
+    "type": "object"
+   },
+   "PluginInfo": {
+    "additionalProperties": false,
+    "properties": {
+     "description": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Description"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Error"
+     },
+     "example": {
+      "title": "Example",
+      "type": "boolean"
+     },
+     "hooks": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Hooks",
+      "type": "array"
+     },
+     "installed": {
+      "title": "Installed",
+      "type": "boolean"
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "installed",
+     "example"
+    ],
+    "title": "PluginInfo",
+    "type": "object"
+   },
+   "PluginInstallRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "name": {
+      "maxLength": 80,
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+     },
+     "overwrite": {
+      "default": false,
+      "title": "Overwrite",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "name"
+    ],
+    "title": "PluginInstallRequest",
     "type": "object"
    },
    "PreviewOut": {
@@ -2637,6 +3188,89 @@
      "h"
     ],
     "title": "Rect",
+    "type": "object"
+   },
+   "ReportInfo": {
+    "additionalProperties": false,
+    "properties": {
+     "builtin": {
+      "title": "Builtin",
+      "type": "boolean"
+     },
+     "formats": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Formats",
+      "type": "array"
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "title": {
+      "title": "Title",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "title",
+     "builtin",
+     "formats"
+    ],
+    "title": "ReportInfo",
+    "type": "object"
+   },
+   "ReportRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "folder_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Folder Id"
+     },
+     "format": {
+      "anyOf": [
+       {
+        "enum": [
+         "html",
+         "csv",
+         "json",
+         "xml"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Format"
+     },
+     "mark": {
+      "default": true,
+      "title": "Mark",
+      "type": "boolean"
+     },
+     "since": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Since"
+     }
+    },
+    "title": "ReportRequest",
     "type": "object"
    },
    "ScheduleConfig": {
@@ -3875,6 +4509,16 @@
        ],
        "title": "Context"
       }
+     },
+     {
+      "in": "query",
+      "name": "paths",
+      "required": false,
+      "schema": {
+       "default": false,
+       "title": "Paths",
+       "type": "boolean"
+      }
      }
     ],
     "responses": {
@@ -3900,6 +4544,59 @@
     "summary": "Unread Diff",
     "tags": [
      "changes"
+    ]
+   }
+  },
+  "/bookmarks/{bookmark_id}/filter-assist": {
+   "post": {
+    "description": "From a selection in the viewer (the DOM path of its element and its text) to up to five\nfilter rules: ignore the element, watch only it, ignore text like it, ignore from the page\nstart to it, ignore from it to the page end. Nothing is stored; each choice carries a ready\n``PATCH`` body, and ``/test-filter`` shows what it would do.",
+    "operationId": "filter_assist_bookmarks__bookmark_id__filter_assist_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "bookmark_id",
+      "required": true,
+      "schema": {
+       "title": "Bookmark Id",
+       "type": "integer"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/FilterAssistRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/FilterAssistOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Filter Assist",
+    "tags": [
+     "filter-assistant"
     ]
    }
   },
@@ -4184,6 +4881,16 @@
        ],
        "title": "Context"
       }
+     },
+     {
+      "in": "query",
+      "name": "paths",
+      "required": false,
+      "schema": {
+       "default": false,
+       "title": "Paths",
+       "type": "boolean"
+      }
      }
     ],
     "responses": {
@@ -4251,6 +4958,88 @@
     "summary": "Check",
     "tags": [
      "checks"
+    ]
+   }
+  },
+  "/export": {
+   "get": {
+    "description": "The configuration as versioned JSON, the feed bookmarks as OPML, or a CSV list.\nSecrets are never included (credentials are keyring entry names).",
+    "operationId": "export_bookmarks_export_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "format",
+      "required": false,
+      "schema": {
+       "default": "json",
+       "enum": [
+        "json",
+        "opml",
+        "csv"
+       ],
+       "title": "Format",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "folder",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Folder"
+      }
+     },
+     {
+      "in": "query",
+      "name": "ids",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "integer"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Ids"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Export Bookmarks",
+    "tags": [
+     "import-export"
     ]
    }
   },
@@ -4421,6 +5210,116 @@
     "summary": "Health"
    }
   },
+  "/import": {
+   "post": {
+    "description": "Import browser bookmarks (Netscape HTML), a URL list, CSV, XLSX or a PageWatch export.\nBookmarks whose normalised URL already exists are skipped; ``dry_run`` only reports.",
+    "operationId": "import_bookmarks_import_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ImportRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ImportResult"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Import Bookmarks",
+    "tags": [
+     "import-export"
+    ]
+   }
+  },
+  "/plugins": {
+   "get": {
+    "description": "The plugins in the data folder (with the hooks each defines, or why it cannot load) and\nthe examples PageWatch ships. Installed files are imported to find their hooks, so this runs\nin a thread.",
+    "operationId": "list_plugins_plugins_get",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "$ref": "#/components/schemas/PluginInfo"
+         },
+         "title": "Response List Plugins Plugins Get",
+         "type": "array"
+        }
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "summary": "List Plugins",
+    "tags": [
+     "plugins"
+    ]
+   }
+  },
+  "/plugins/install": {
+   "post": {
+    "description": "Copy a shipped example into the plugins folder.",
+    "operationId": "install_plugin_plugins_install_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PluginInstallRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "201": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PluginInfo"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Install Plugin",
+    "tags": [
+     "plugins"
+    ]
+   }
+  },
   "/preview": {
    "post": {
     "description": "Trial fetch of a URL and options for the add-bookmark assistant; nothing is stored.",
@@ -4460,6 +5359,90 @@
     "summary": "Preview",
     "tags": [
      "changes"
+    ]
+   }
+  },
+  "/reports": {
+   "get": {
+    "description": "The built-in reports and any ``<data>/reports/<name>.<format>.j2`` templates.",
+    "operationId": "list_reports_reports_get",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "$ref": "#/components/schemas/ReportInfo"
+         },
+         "title": "Response List Reports Reports Get",
+         "type": "array"
+        }
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "summary": "List Reports",
+    "tags": [
+     "reports"
+    ]
+   }
+  },
+  "/reports/{template}": {
+   "post": {
+    "description": "Render a report. The response body is the document itself (HTML, CSV, JSON or XML).\n``changed`` lists the changes since the last report; asking moves that marker unless\n``mark`` is false.",
+    "operationId": "make_report_reports__template__post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "template",
+      "required": true,
+      "schema": {
+       "title": "Template",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "anyOf": [
+         {
+          "$ref": "#/components/schemas/ReportRequest"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "title": "Body"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Make Report",
+    "tags": [
+     "reports"
     ]
    }
   },

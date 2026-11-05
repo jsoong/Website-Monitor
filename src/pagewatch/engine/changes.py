@@ -90,7 +90,7 @@ async def run_test_filter(
         filter_cfg=resolved.filter.model_dump(mode="json"),
         gate_cfg=resolved.gate.model_dump(mode="json"),
         highlight_mode=(req.highlight_mode.value if req.highlight_mode else row["highlight_mode"]),
-        source_cfg=source_options(resolved.fetch),
+        source_cfg=engine.source_cfg(row, resolved),
     )
     res = await engine.pool.run(test_filter, job)
     return TestFilterOut(
@@ -142,7 +142,7 @@ async def flag_false_positive(engine: Engine, change_id: int) -> FalsePositiveOu
             source_type=row["source_type"],
             filter_cfg=resolved.filter.model_dump(mode="json"),
             highlight_mode=row["highlight_mode"],
-            source_cfg=source_options(resolved.fetch),
+            source_cfg=engine.source_cfg(row, resolved),
         ),
     )
     proposals = [
@@ -187,7 +187,13 @@ def _out(res: RenderResult) -> RenderOut:
 
 
 async def render_change_raw(
-    engine: Engine, change_id: int, view: str, *, allow_remote: bool, context: int | None
+    engine: Engine,
+    change_id: int,
+    view: str,
+    *,
+    allow_remote: bool,
+    context: int | None,
+    paths: bool = False,
 ) -> RenderResult:
     """One change's own gate diff (the history view): old version -> new version. The worker's
     result, which also carries the picture for ``view=screenshot``."""
@@ -222,9 +228,10 @@ async def render_change_raw(
             filter_cfg=resolved.filter.model_dump(mode="json"),
             highlight_mode=row["highlight_mode"],
             allow_remote=allow_remote,
+            paths=paths,
             context=context,
             source_type=row["source_type"],
-            source_cfg=source_options(resolved.fetch),
+            source_cfg=engine.source_cfg(row, resolved),
         ),
     )
 
@@ -238,7 +245,13 @@ async def render_change(
 
 
 async def render_unread_raw(
-    engine: Engine, bookmark_id: int, view: str, *, allow_remote: bool, context: int | None
+    engine: Engine,
+    bookmark_id: int,
+    view: str,
+    *,
+    allow_remote: bool,
+    context: int | None,
+    paths: bool = False,
 ) -> RenderResult:
     """The viewer's default: everything unread, baseline -> latest. The text diff is computed in
     the worker pool and cached (one row per bookmark, replaced when either pointer moves); a
@@ -319,9 +332,10 @@ async def render_unread_raw(
             filter_cfg=resolved.filter.model_dump(mode="json"),
             highlight_mode=row["highlight_mode"],
             allow_remote=allow_remote,
+            paths=paths,
             context=context,
             source_type=row["source_type"],
-            source_cfg=source_options(resolved.fetch),
+            source_cfg=engine.source_cfg(row, resolved),
         ),
     )
 
@@ -337,7 +351,7 @@ async def render_unread(
 
 
 async def render_version(
-    engine: Engine, bookmark_id: int, which: str, *, allow_remote: bool
+    engine: Engine, bookmark_id: int, which: str, *, allow_remote: bool, paths: bool = False
 ) -> RenderOut:
     """The latest ("new") or last-read ("old") stored page, unmarked."""
 
@@ -367,8 +381,9 @@ async def render_version(
             new=_view_version(version) if which == "new" else None,
             old=_view_version(version) if which == "old" else None,
             allow_remote=allow_remote,
+            paths=paths,
             source_type=row["source_type"],
-            source_cfg=source_options(resolved.fetch),
+            source_cfg=engine.source_cfg(row, resolved),
         ),
     )
     return RenderOut(html=res.html, view=res.view)

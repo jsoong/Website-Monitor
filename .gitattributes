@@ -1,0 +1,5 @@
+# Batch files and text shipped to Windows users need CRLF to be reliable (cmd.exe labels).
+packaging/portable/*.cmd text eol=crlf
+packaging/portable/*.txt text eol=crlf
+packaging/*.ps1 text eol=crlf
+packaging/*.iss text eol=crlf

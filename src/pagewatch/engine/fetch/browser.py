@@ -19,7 +19,6 @@ logic is tested with a fake browser and the page logic with a real Chromium (mar
 from __future__ import annotations
 
 import asyncio
-import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
@@ -30,6 +29,7 @@ from urllib.parse import urlsplit
 from pagewatch.engine.clock import Clock
 from pagewatch.engine.fetch.base import FetchError, FetchRequest, FetchResult
 from pagewatch.engine.fetch.static import parse_retry_after
+from pagewatch.engine.frozen import playwright_install_command
 from pagewatch.engine.logs import get_logger
 from pagewatch.models import BrowserOptions, FetchErrorKind, Settings
 
@@ -100,8 +100,9 @@ async def install_bundled_chromium() -> bool:
     """``playwright install chromium``: the fallback browser is downloaded on first use."""
     log.info("browser_install_start")
     try:
+        cmd = playwright_install_command("chromium")
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "playwright", "install", "chromium",
+            *cmd.argv, env=cmd.env,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         )  # fmt: skip
         async with asyncio.timeout(INSTALL_TIMEOUT_S):

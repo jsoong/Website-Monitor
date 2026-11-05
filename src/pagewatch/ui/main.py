@@ -10,6 +10,7 @@ import time
 from collections.abc import Sequence
 
 from pagewatch import __version__
+from pagewatch.engine.frozen import component_command
 from pagewatch.engine.instance import read_lockfile
 from pagewatch.engine.paths import DataDir, resolve_data_dir
 
@@ -23,14 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def start_engine(data_dir: DataDir, wait_s: float = 25.0) -> bool:
     """Launch a detached engine for this data folder and wait for its lockfile."""
-    args = [
-        sys.executable,
-        "-m",
-        "pagewatch.engine.main",
-        "--data-dir",
-        str(data_dir.root),
-        "--no-console-log",
-    ]
+    args = component_command("engine", "--data-dir", str(data_dir.root), "--no-console-log")
     flags = 0x00000008 if sys.platform == "win32" else 0  # DETACHED_PROCESS
     subprocess.Popen(args, creationflags=flags, close_fds=True, stdin=subprocess.DEVNULL,  # noqa: S603
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # fmt: skip

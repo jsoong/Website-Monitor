@@ -54,6 +54,7 @@ dev = [
     "mypy>=1.11",
     "types-psutil",
     "types-PyYAML",
+    "pyinstaller>=6.10",  # packaging/build.py; never part of the runtime install
 ]
 
 [build-system]
@@ -97,6 +98,7 @@ testpaths = ["tests"]
 markers = [
     "browser: needs a Playwright browser",
     "soak: long-running soak tests (opt in with -m soak)",
+    "packaging: build the PyInstaller bundle and run it (minutes; opt in with -m packaging)",
 ]
-addopts = "-m 'not browser and not soak' -q"
+addopts = "-m 'not browser and not soak and not packaging' -q"
 filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning"]

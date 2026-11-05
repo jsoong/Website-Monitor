@@ -7,12 +7,15 @@ sanitised; the view additionally refuses to navigate and sends link clicks to th
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from importlib import resources
 from typing import Any
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import QFile, QIODevice, QObject, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QPixmap, QResizeEvent
-from PySide6.QtWebEngineCore import QWebEnginePage
+from PySide6.QtWebChannel import QWebChannel
+from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineScript
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -42,8 +45,53 @@ DELETION_MODES = [
 ]
 
 
+#: The bridge lives in an isolated world: the (sanitised, script-free) page cannot reach it.
+BRIDGE_WORLD = int(QWebEngineScript.ScriptWorldId.ApplicationWorld.value)
+#: Tabs whose HTML carries DOM paths, so the filter assistant can be used on them
+ASSIST_TABS = (T_HIGHLIGHT, T_NEW)
+
+
 def _ui_css() -> str:
     return resources.files("pagewatch.ui").joinpath("web/diff.css").read_text(encoding="utf-8")
+
+
+def _bridge_js() -> str:
+    return resources.files("pagewatch.ui").joinpath("web/bridge.js").read_text(encoding="utf-8")
+
+
+def _qwebchannel_js() -> str | None:
+    """Qt's own ``qwebchannel.js`` (a resource of the QtWebChannel module), or ``None``."""
+    f = QFile(":/qtwebchannel/qwebchannel.js")
+    if not f.open(QIODevice.OpenModeFlag.ReadOnly):
+        return None
+    try:
+        return bytes(f.readAll().data()).decode("utf-8")
+    finally:
+        f.close()
+
+
+class FilterBridge(QObject):
+    """What ``bridge.js`` calls: the selection (and its DOM path) the user made in the page."""
+
+    selection = Signal(dict)
+
+    @Slot(str)
+    def selected(self, payload: str) -> None:
+        try:
+            data = json.loads(payload)
+        except ValueError:
+            return
+        if not isinstance(data, dict) or not isinstance(data.get("path"), str):
+            return
+        end = data.get("end_path")
+        self.selection.emit(
+            {
+                "via": str(data.get("via", "")),
+                "text": str(data.get("text", ""))[:4000],
+                "path": data["path"],
+                "end_path": end if isinstance(end, str) else None,
+            }
+        )
 
 
 class _Page(QWebEnginePage):
@@ -66,6 +114,39 @@ class HtmlView(QWebEngineView):
         self.setPage(_Page(self))
         self.loadFinished.connect(lambda _ok: self.document_loaded.emit())
         self.last_html = ""
+        self.bridge = FilterBridge(self)
+        self.bridge_ready = self._install_bridge()
+
+    def _install_bridge(self) -> bool:
+        """Connect the page to ``bridge.js`` over QWebChannel, in an isolated world.
+
+        Qt injects ``QWebEngineScript``s into the first document only: a second ``setHtml`` into
+        the same page starts a fresh script context that never sees them (probed with Qt
+        6.11). So the scripts are run again by hand after every load."""
+        qwc = _qwebchannel_js()
+        if qwc is None:
+            return False
+        page = self.page()
+        self._channel = QWebChannel(page)
+        self._channel.registerObject("pagewatch", self.bridge)
+        page.setWebChannel(self._channel, BRIDGE_WORLD)
+        self._bridge_sources = (qwc, _bridge_js())
+        self.loadFinished.connect(self._inject_bridge)
+        return True
+
+    def _inject_bridge(self, ok: bool) -> None:
+        if ok:
+            for source in self._bridge_sources:
+                self.page().runJavaScript(source, BRIDGE_WORLD)
+
+    def request_selection(self, done: Callable[[bool], None]) -> None:
+        """Ask the page to report its current selection as if the user had Alt+selected it;
+        ``done(False)`` when there is nothing the assistant can use (no selection, wrong tab)."""
+        self.page().runJavaScript(
+            "window.__pwReport ? window.__pwReport('shortcut') : false",
+            BRIDGE_WORLD,
+            lambda ok: done(bool(ok)),
+        )
 
     def set_document(self, html: str) -> None:
         self.last_html = html
@@ -82,6 +163,9 @@ class ViewerPanel(QWidget):
     #: (tab index, view produced) after a document finished loading in the web view
     rendered = Signal(int, str)
     status_text = Signal(str)
+    #: The user selected something in the page (Alt+select, right-click, or the shortcut):
+    #: ``{bookmark_id, version_id, via, text, path, end_path}`` for the filter assistant
+    selection_made = Signal(dict)
 
     def __init__(self, client: ApiClient, parent: Any = None) -> None:
         super().__init__(parent)
@@ -90,6 +174,7 @@ class ViewerPanel(QWidget):
         self._token = 0  # bumped per bookmark: guards the history list and the check log
         self._seq = 0  # bumped per render request: only the newest request may draw
         self._changes: list[ChangeOut] = []
+        self._shown_version: int | None = None  # the stored version a history entry shows
 
         self.title = QLabel("Select a bookmark")
         self.title.setObjectName("viewerTitle")
@@ -150,6 +235,7 @@ class ViewerPanel(QWidget):
         self.images.toggled.connect(lambda _c: self.reload())
         self.changes_only.toggled.connect(lambda _c: self.reload())
         self.web.document_loaded.connect(self._on_loaded)
+        self.web.bridge.selection.connect(self._on_selection)
         self._produced = ""
 
     # -- public -------------------------------------------------------------------------
@@ -202,11 +288,19 @@ class ViewerPanel(QWidget):
         change_id = self.history.currentData()
         view = {T_HIGHLIGHT: "highlight", T_TEXT: "text", T_NEW: "new", T_OLD: "old"}[tab]
         images, context = self.images.isChecked(), 3 if self.changes_only.isChecked() else None
+        paths = tab in ASSIST_TABS  # DOM paths let the filter assistant find what was selected
+        self._shown_version = next(
+            (c.new_version_id for c in self._changes if c.id == change_id), None
+        )
 
         def fetch() -> RenderOut:
             if change_id is None:
-                return self._client.unread_diff(bid, view, images=images, context=context)
-            return self._client.change_render(change_id, view, images=images, context=context)
+                return self._client.unread_diff(
+                    bid, view, images=images, context=context, paths=paths
+                )
+            return self._client.change_render(
+                change_id, view, images=images, context=context, paths=paths
+            )
 
         run_async(fetch, lambda out: self._show(seq, tab, out), lambda exc: self._error(seq, exc))
 
@@ -224,6 +318,27 @@ class ViewerPanel(QWidget):
                 f"{fmt_time(c.detected_at)}  {words}{span}  {c.summary or ''}"[:120], c.id
             )
         self.history.blockSignals(False)
+
+    # -- filter assistant ---------------------------------------------------------------
+
+    def request_selection(self) -> None:
+        """Keyboard route to the filter assistant: use the page's current selection."""
+        if self._bid is None or self.current_tab() not in ASSIST_TABS:
+            self.status_text.emit("The filter assistant works in the Highlighted and New views")
+            return
+
+        def done(ok: bool) -> None:
+            if not ok:
+                self.status_text.emit("Select some text first (or right-click an element)")
+
+        self.web.request_selection(done)
+
+    def _on_selection(self, data: dict[str, Any]) -> None:
+        if self._bid is None or self.current_tab() not in ASSIST_TABS:
+            return
+        self.selection_made.emit(
+            {**data, "bookmark_id": self._bid, "version_id": self._shown_version}
+        )
 
     def _show(self, seq: int, tab: int, out: RenderOut) -> None:
         if seq != self._seq or tab != self.current_tab():

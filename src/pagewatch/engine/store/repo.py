@@ -179,13 +179,30 @@ def bookmark_query(
     desc: bool = False,
     cursor: str | None = None,
     limit: int = 100,
+    extra_q: str | None = None,
+    source_type: str | None = None,
+    check_method: str | None = None,
+    plugin: str | None = None,
+    min_errors: int | None = None,
 ) -> tuple[list[sqlite3.Row], str | None, int]:
-    """Keyset-paginated list. Returns ``(rows, next_cursor, total_matching)``."""
+    """Keyset-paginated list. Returns ``(rows, next_cursor, total_matching)``.
+
+    ``extra_q`` is a second name / URL substring that must match too (a virtual folder's own
+    search next to the search box); the last four filters are the saved-search criteria."""
     if sort not in SORTS:
         raise ValueError(f"unknown sort {sort!r}")
     expr = SORTS[sort]
     where: list[str] = []
     args: list[Any] = []
+    for column, value in (
+        ("source_type", source_type), ("check_method", check_method), ("plugin", plugin)
+    ):  # fmt: skip
+        if value is not None:
+            where.append(f"{column}=?")
+            args.append(value)
+    if min_errors is not None:
+        where.append("consecutive_errors>=?")
+        args.append(min_errors)
     if folder_ids is not None:
         where.append(f"folder_id IN ({','.join('?' * len(folder_ids))})" if folder_ids else "0")
         args.extend(folder_ids)
@@ -206,10 +223,11 @@ def bookmark_query(
             "EXISTS (SELECT 1 FROM change c WHERE c.bookmark_id = bookmark.id "
             "AND c.read_at IS NULL AND c.keyword_hits_json IS NOT NULL)"
         )
-    if q:
-        where.append("(name LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\')")
-        like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        args.extend([like, like])
+    for text in (q, extra_q):
+        if text:
+            where.append("(name LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\')")
+            like = "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            args.extend([like, like])
     base_where = (" WHERE " + " AND ".join(where)) if where else ""
     total = int(conn.execute(f"SELECT COUNT(*) FROM bookmark{base_where}", args).fetchone()[0])
 

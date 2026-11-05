@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 
+from pagewatch.engine import virtual
 from pagewatch.engine.api.app_deps import engine_dep
 from pagewatch.engine.clock import iso, parse_iso
 from pagewatch.engine.core import Engine
@@ -24,9 +25,15 @@ async def check(body: CheckRequest, engine: EngineDep) -> CheckQueued:
     elif body.ids:
         ids = body.ids
     elif body.folder_id is not None:
-        ids = await engine.db.read(
-            lambda c: repo.bookmark_ids_in(c, repo.folder_with_descendants(c, body.folder_id or 0))
-        )
+        folder_id = body.folder_id
+        now = engine.clock.now()
+
+        def in_folder(conn: Any) -> list[int]:
+            if engine.folders.is_virtual(folder_id):  # a saved search: whatever it matches now
+                return virtual.bookmark_ids(conn, folder_id, now)
+            return repo.bookmark_ids_in(conn, repo.folder_with_descendants(conn, folder_id))
+
+        ids = await engine.db.read(in_folder)
     else:
         raise HTTPException(422, "give 'ids', 'folder_id' or 'all'")
     return CheckQueued(queued=engine.check_now(ids, force=body.force))

@@ -10,7 +10,15 @@ from pagewatch.engine.api.serializers import folder_out
 from pagewatch.engine.config import validate_sections
 from pagewatch.engine.core import Engine
 from pagewatch.engine.store import repo
-from pagewatch.models import FolderIn, FolderOut, FolderPatch, apply_patch, dumps, loads
+from pagewatch.models import (
+    FolderIn,
+    FolderOut,
+    FolderPatch,
+    VirtualQuery,
+    apply_patch,
+    dumps,
+    loads,
+)
 
 router = APIRouter(prefix="/folders", tags=["folders"])
 EngineDep = Annotated[Engine, Depends(engine_dep)]
@@ -29,6 +37,26 @@ def _validate_defaults(engine: Engine, defaults: dict[str, Any], parent_id: int 
         raise HTTPException(422, str(exc.errors()[0]["msg"])) from exc
 
 
+def _saved_search(query: dict[str, Any] | None) -> str:
+    """The stored form of a virtual folder's query; a saved search must have criteria."""
+    try:
+        vq = VirtualQuery.model_validate(query or {})
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        loc = ".".join(str(p) for p in first["loc"])
+        raise HTTPException(422, f"query.{loc}: {first['msg']}") from exc
+    if vq.is_empty():
+        raise HTTPException(422, "a virtual folder needs at least one search criterion")
+    return dumps(vq.model_dump(mode="json", exclude_none=True))
+
+
+def _check_parent(engine: Engine, parent_id: int | None) -> None:
+    if parent_id is not None and not engine.folders.exists(parent_id):
+        raise HTTPException(422, f"parent folder {parent_id} does not exist")
+    if engine.folders.is_virtual(parent_id):
+        raise HTTPException(422, "a virtual folder (saved search) cannot contain folders")
+
+
 @router.get("", response_model=list[FolderOut])
 async def list_folders(engine: EngineDep) -> list[FolderOut]:
     rows = await engine.db.read(repo.folder_list)
@@ -37,15 +65,22 @@ async def list_folders(engine: EngineDep) -> list[FolderOut]:
 
 @router.post("", response_model=FolderOut, status_code=201)
 async def create_folder(body: FolderIn, engine: EngineDep) -> FolderOut:
-    if body.parent_id is not None and not engine.folders.exists(body.parent_id):
-        raise HTTPException(422, f"parent folder {body.parent_id} does not exist")
+    _check_parent(engine, body.parent_id)
+    if body.is_virtual:
+        if body.defaults:
+            raise HTTPException(422, "a virtual folder holds no bookmarks, so it has no defaults")
+        query_json: str | None = _saved_search(body.query)
+    elif body.query is not None:
+        raise HTTPException(422, "only a virtual folder has a query")
+    else:
+        query_json = None
     _validate_defaults(engine, body.defaults, body.parent_id)
     data = {
         "parent_id": body.parent_id,
         "name": body.name,
         "sort_order": body.sort_order,
         "is_virtual": body.is_virtual,
-        "query_json": dumps(body.query) if body.query is not None else None,
+        "query_json": query_json,
         "defaults_json": dumps(body.defaults),
     }
     row = await engine.db.write(lambda c: repo.folder_get(c, repo.folder_insert(c, data)))
@@ -68,16 +103,19 @@ async def patch_folder(folder_id: int, body: FolderPatch, engine: EngineDep) -> 
     parent = row["parent_id"]
     if "parent_id" in explicit:
         if body.parent_id is not None:
-            if not engine.folders.exists(body.parent_id):
-                raise HTTPException(422, f"parent folder {body.parent_id} does not exist")
+            _check_parent(engine, body.parent_id)
             if engine.folders.is_ancestor(folder_id, body.parent_id):
                 raise HTTPException(422, "a folder cannot be moved into itself or its descendants")
         parent = body.parent_id
         fields["parent_id"] = parent
     if "query" in explicit:
-        fields["query_json"] = dumps(body.query) if body.query is not None else None
+        if not row["is_virtual"]:
+            raise HTTPException(422, "only a virtual folder has a query")
+        fields["query_json"] = _saved_search(body.query)
     defaults_changed = False
     if "defaults" in explicit and body.defaults is not None:
+        if row["is_virtual"]:
+            raise HTTPException(422, "a virtual folder holds no bookmarks, so it has no defaults")
         merged = apply_patch(loads(row["defaults_json"], {}) or {}, body.defaults)
         _validate_defaults(engine, merged, parent)
         fields["defaults_json"] = dumps(merged)

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<report name="{{ name }}" generated="{{ generated_at }}"{% if since %} since="{{ since }}"{% endif %} rows="{{ rows|length }}">
+  <title>{{ title }}</title>
+{% for row in rows %}  <item>
+{% for key, header in columns %}    <{{ key }}>{{ row[key] }}</{{ key }}>
+{% endfor %}  </item>
+{% endfor %}</report>

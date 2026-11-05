@@ -10,25 +10,31 @@ from __future__ import annotations
 
 import random
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urljoin
 
 from pydantic import ValidationError
 
 from pagewatch.engine import schedule as sched
 from pagewatch.engine.clock import iso
-from pagewatch.engine.config import Resolved, resolve, source_options
+from pagewatch.engine.config import Resolved, resolve
 from pagewatch.engine.fetch.base import FetchError, FetchRequest, FetchResult
 from pagewatch.engine.fetch.select import BROWSER, Route, method_kind, route_for
 from pagewatch.engine.hostgate import host_of
 from pagewatch.engine.logs import get_logger
 from pagewatch.engine.pipeline.core import PipelineJob, PipelineResult, VersionRef, process_check
+from pagewatch.engine.pipeline.merge import merge_documents, next_link
 from pagewatch.engine.pipeline.sources import resolve_kind
+from pagewatch.engine.plugins import EngineSession
 from pagewatch.engine.scheduler import RunResult
 from pagewatch.engine.store import repo
+from pagewatch.engine.store.blobs import sha256_hex
+from pagewatch.engine.urls import normalize_url
 from pagewatch.engine.workers import WorkerTimeout
-from pagewatch.models import BookmarkStatus, CheckKind, FetchErrorKind, Outcome, Trigger
+from pagewatch.models import BookmarkStatus, CheckKind, FetchErrorKind, Outcome, Trigger, loads
+from pagewatch.plugin_api import ChangeInfo, CheckRequest, FetchedPage, RunInfo
 
 if TYPE_CHECKING:
     from pagewatch.engine.core import Engine
@@ -44,6 +50,12 @@ class _Context:
     row: sqlite3.Row
     latest: sqlite3.Row | None
     anchor: sqlite3.Row | None
+    plugin: EngineSession | None = None  # the bookmark's plugin for this check, if it has one
+
+
+def _htmlish(content_type: str, body: bytes) -> bool:
+    ct = content_type.split(";")[0].strip().lower()
+    return "html" in ct or (not ct and b"<" in body[:2048])
 
 
 def _ref(row: sqlite3.Row | None) -> VersionRef | None:
@@ -100,13 +112,21 @@ class CheckRunner:
             return await self._fail(ctx, resolved, run_id, trigger, 0, FetchError(
                 FetchErrorKind.PARSE, "a records source needs a 'records' configuration"
             ))  # fmt: skip
-        route = route_for(row["url"], row["source_type"], row["check_method"], resolved.fetch)
+        url: str = row["url"]
+        if row["plugin"]:
+            ctx.plugin = await e.plugins.open(row)
+            if ctx.plugin is not None and ctx.plugin.active:
+                request = CheckRequest(url, dict(resolved.fetch.headers), resolved.fetch.body)
+                if not await ctx.plugin.before_check(request):
+                    return await self._commit_skipped(ctx, resolved, run_id)
+                resolved, url = self._apply_request(resolved, request, url)
+        route = route_for(url, row["source_type"], row["check_method"], resolved.fetch)
         if route is None:
             return await self._fail(ctx, resolved, run_id, trigger, 0, FetchError(
-                FetchErrorKind.PARSE, f"unsupported url scheme: {row['url'][:40]}"
+                FetchErrorKind.PARSE, f"unsupported url scheme: {url[:40]}"
             ))  # fmt: skip
 
-        fetch = await self._fetch(ctx, resolved, force, route)
+        fetch = await self._fetch(ctx, resolved, force, route, url)
         if fetch.error is not None:
             return await self._fail(
                 ctx, resolved, run_id, trigger, fetch.elapsed_ms, fetch.error, route
@@ -129,6 +149,13 @@ class CheckRunner:
         )
         switched: str | None = None
         while True:
+            source_cfg = e.source_cfg(row, resolved)
+            if ctx.plugin is not None:  # the live state, and hooks that run in the worker
+                spec = ctx.plugin.spec_for_worker()
+                if spec is not None:
+                    source_cfg["plugin"] = spec
+                else:
+                    source_cfg.pop("plugin", None)
             job = PipelineJob(
                 blob_root=str(e.data_dir.blobs_dir),
                 body=fetch.body,
@@ -140,7 +167,7 @@ class CheckRunner:
                 highlight_mode=row["highlight_mode"],
                 latest=_ref(ctx.latest),
                 anchor=_ref(ctx.anchor),
-                source_cfg=source_options(resolved.fetch),
+                source_cfg=source_cfg,
                 screenshot_png=fetch.screenshot_png,
                 detect_js=detect,
             )
@@ -152,18 +179,24 @@ class CheckRunner:
                         bookmark_id, exc
                     ), route,
                 )  # fmt: skip
+            if ctx.plugin is not None:
+                await ctx.plugin.after_pipeline(res.plugin)
             if not res.needs_browser:
                 break
             switched, detect, route = res.reason or "app_shell", False, BROWSER
             log.info("method_switched", bookmark_id=bookmark_id, to="browser", reason=switched)
             static_ms = fetch.elapsed_ms
-            fetch = await self._fetch(ctx, resolved, True, route)
+            fetch = await self._fetch(ctx, resolved, True, route, url)
             fetch.elapsed_ms += static_ms
             if fetch.error is not None:  # it needs a browser and none works: say so, loudly
                 return await self._fail(
                     ctx, resolved, run_id, trigger, fetch.elapsed_ms, fetch.error, route
                 )
-        return await self._commit_result(ctx, resolved, run_id, fetch, res, route, switched)
+        out = await self._commit_result(ctx, resolved, run_id, fetch, res, route, switched)
+        if res.kind in ("first", "stored") and route.name in ("static", "browser"):
+            # a new version of a page: Follow-Links may find new links on it
+            e.follow.after_check(bookmark_id, fetch.body, fetch.content_type, fetch.final_url)
+        return out
 
     @staticmethod
     def _processing_error(bookmark_id: int, exc: Exception) -> FetchError:
@@ -184,20 +217,109 @@ class CheckRunner:
 
     # -- fetch --------------------------------------------------------------------------
 
+    @staticmethod
+    def _apply_request(resolved: Resolved, request: CheckRequest, url: str) -> tuple[Resolved, str]:
+        """The check with whatever ``before_check`` changed in the request."""
+        fetch = resolved.fetch
+        if request.headers == fetch.headers and request.body == fetch.body:
+            return resolved, request.url or url
+        update: dict[str, Any] = {"headers": dict(request.headers), "body": request.body}
+        if request.body is not None:
+            update["method"] = "POST"
+        return replace(resolved, fetch=fetch.model_copy(update=update)), request.url or url
+
+    def _merging(self, ctx: _Context, resolved: Resolved) -> bool:
+        cfg = resolved.fetch.merge
+        plugin = ctx.plugin.session if ctx.plugin is not None else None
+        return bool(cfg and cfg.enabled) or bool(plugin and plugin.has("merge_pages"))
+
     async def _fetch(
-        self, ctx: _Context, resolved: Resolved, force: bool, route: Route
+        self,
+        ctx: _Context,
+        resolved: Resolved,
+        force: bool,
+        route: Route,
+        url: str | None = None,
     ) -> FetchResult:
-        url: str = ctx.row["url"]
-        use_cache = route.name in ("static", "feed", "file", "ftp")
+        url = url or ctx.row["url"]
+        merging = self._merging(ctx, resolved)
+        # With several pages one page's ETag says nothing about the others: always fetch them.
+        use_cache = route.name in ("static", "feed", "file", "ftp") and not merging
         req = FetchRequest(
             url=url,
             resolved=resolved,
             settings=self.e.settings,
             etag=ctx.latest["etag"] if ctx.latest and use_cache else None,
             last_modified=ctx.latest["last_modified"] if ctx.latest and use_cache else None,
-            force=force,
+            force=force or merging,
         )
-        return await self.e.fetchers.get(route).fetch(req)
+        result = await self.e.fetchers.get(route).fetch(req)
+        if merging and result.error is None and not result.not_modified:
+            result = await self._merge(ctx, resolved, req, result, route)
+        return result
+
+    async def _merge(
+        self, ctx: _Context, resolved: Resolved, req: FetchRequest, first: FetchResult, route: Route
+    ) -> FetchResult:
+        """Merge pages: follow the next-page link (or the URL pattern) and let the plugin add
+        more, then concatenate before extraction (spec: Multi-page sources)."""
+        e = self.e
+        fetcher = e.fetchers.get(route)
+        cfg = resolved.fetch.merge
+        parts: list[tuple[bytes, str]] = [(first.body, first.content_type)]
+        elapsed = first.elapsed_ms
+        if cfg is not None and cfg.enabled and _htmlish(first.content_type, first.body):
+            seen = {normalize_url(first.final_url)}
+            seen_bodies = {sha256_hex(first.body)}
+            last, number, total = first, cfg.first_n, len(first.body)
+            for _ in range(cfg.max_pages - 1):
+                if cfg.next_selector:
+                    nxt = await e.pool.run(
+                        next_link, last.body, last.content_type, last.final_url, cfg.next_selector
+                    )
+                else:
+                    assert cfg.url_pattern
+                    nxt = urljoin(last.final_url, cfg.url_pattern.replace("{n}", str(number)))
+                    number += 1
+                if not nxt or normalize_url(nxt) in seen:
+                    break
+                seen.add(normalize_url(nxt))
+                if e.settings.per_host_min_gap_s > 0:
+                    await e.clock.sleep(e.settings.per_host_min_gap_s)  # stay polite to the host
+                page = await fetcher.fetch(replace(req, url=nxt, etag=None, last_modified=None,
+                                                   force=True))  # fmt: skip
+                elapsed += page.elapsed_ms
+                if page.error is not None:
+                    gone = page.error.status in (404, 410) and not cfg.next_selector
+                    if gone:  # a URL pattern ran past the last page
+                        break
+                    return replace(page, elapsed_ms=elapsed)  # a partial merge must not be stored
+                digest = sha256_hex(page.body)
+                if digest in seen_bodies:  # the site repeats its last page
+                    break
+                seen_bodies.add(digest)
+                total += len(page.body)
+                if total > resolved.fetch.max_bytes:
+                    err = FetchError(
+                        FetchErrorKind.TOO_LARGE,
+                        f"merged pages exceed {resolved.fetch.max_bytes} bytes",
+                    )
+                    return replace(first, error=err, elapsed_ms=elapsed)
+                parts.append((page.body, page.content_type))
+                last = page
+        if ctx.plugin is not None and ctx.plugin.active:
+            page_view = FetchedPage(
+                first.final_url, first.status, dict(first.headers), first.content_type, first.body
+            )
+            parts += [(extra, "text/html; charset=utf-8") for extra in
+                      await ctx.plugin.merge_pages(page_view)]  # fmt: skip
+        if len(parts) == 1:
+            return first
+        body, content_type = await e.pool.run(merge_documents, parts)
+        merged = replace(first, body=body, content_type=content_type, elapsed_ms=elapsed)
+        merged.extra = {**first.extra, "merged_pages": str(len(parts))}
+        merged.headers = {**first.headers, "content-type": content_type}
+        return merged
 
     # -- scheduling ---------------------------------------------------------------------
 
@@ -349,6 +471,24 @@ class CheckRunner:
         await self._write(ctx, commit)
         return RunResult(due, browser=True if switched else None)
 
+    async def _commit_skipped(self, ctx: _Context, resolved: Resolved, run_id: int) -> RunResult:
+        """A plugin's ``before_check`` asked to skip this check: nothing is fetched or counted."""
+        due, interval = self._next(ctx, resolved, changed=None)
+        commit = repo.CheckCommit(
+            bookmark_id=ctx.row["id"],
+            run_id=run_id,
+            finished_at=iso(self.e.clock.now()),
+            outcome=Outcome.SKIPPED,
+            reason="plugin_skip",
+            duration_ms=0,
+            byte_count=None,
+            next_due_at=iso(due) if due else None,
+            current_interval_s=interval,
+            consecutive_errors=int(ctx.row["consecutive_errors"]),
+        )
+        await self._write(ctx, commit)
+        return RunResult(due)
+
     async def _fail(
         self,
         ctx: _Context,
@@ -441,6 +581,8 @@ class CheckRunner:
         self, ctx: _Context, commit: repo.CheckCommit, error: FetchError | None = None
     ) -> repo.CommitResult:
         e = self.e
+        if ctx.plugin is not None:  # a plugin's warning (it raised, it was slow) reaches the log
+            commit.reason = ctx.plugin.reason(commit.reason)
         result = await e.db.write(lambda c: repo.commit_check(c, commit))
         row = ctx.row
         log.info(
@@ -468,4 +610,39 @@ class CheckRunner:
             e.events.publish("bookmark_updated", {"bookmark_id": row["id"]})
         if result.job_ids:
             e.actions.kick()
+        if ctx.plugin is not None:
+            await self._plugin_finished(ctx, commit, result, error)
         return result
+
+    async def _plugin_finished(
+        self,
+        ctx: _Context,
+        commit: repo.CheckCommit,
+        result: repo.CommitResult,
+        error: FetchError | None,
+    ) -> None:
+        """``on_change`` and ``after_check``; a plugin can never fail a check that was stored."""
+        plugin = ctx.plugin
+        assert plugin is not None
+        change: ChangeInfo | None = None
+        if result.change_id is not None:
+            change_id = result.change_id
+            row = await self.e.db.read(lambda c: repo.change_get(c, change_id))
+            if row is not None:
+                change = ChangeInfo(
+                    id=row["id"], bookmark_id=row["bookmark_id"], detected_at=row["detected_at"],
+                    summary=row["summary"], added_words=row["added_words"],
+                    removed_words=row["removed_words"], changed_blocks=row["changed_blocks"],
+                    checks_accumulated=row["checks_accumulated"],
+                    keyword_hits=list(loads(row["keyword_hits_json"], []) or []),
+                )  # fmt: skip
+        run = RunInfo(
+            bookmark_id=ctx.row["id"], outcome=commit.outcome.value, reason=commit.reason,
+            method=commit.method, duration_ms=commit.duration_ms,
+            changed=commit.new_version is not None and not commit.is_first,
+            alerted=change is not None, error=error.message if error is not None else None,
+        )  # fmt: skip
+        try:
+            await plugin.finish(run, change)
+        except Exception:
+            log.warning("plugin_finish_failed", bookmark_id=ctx.row["id"], exc_info=True)

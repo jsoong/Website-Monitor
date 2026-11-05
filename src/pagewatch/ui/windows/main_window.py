@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 
 from pagewatch.engine.instance import read_lockfile
 from pagewatch.engine.paths import DataDir
-from pagewatch.models import BookmarkOut, BookmarkSummary, FolderOut, Settings
+from pagewatch.models import BookmarkOut, BookmarkSummary, FolderOut, PluginInfo, Settings
 from pagewatch.ui.client import ApiClient
 from pagewatch.ui.events import EventStream
 from pagewatch.ui.models import (
@@ -47,7 +47,10 @@ from pagewatch.ui.windows.action_tools import ActionTools
 from pagewatch.ui.windows.add_assistant import AddBookmarkDialog
 from pagewatch.ui.windows.bookmark_editor import BookmarkEditor
 from pagewatch.ui.windows.false_positive import FalsePositiveDialog
+from pagewatch.ui.windows.filter_assistant import FilterAssistantDialog
+from pagewatch.ui.windows.import_export import ImportExportDialog
 from pagewatch.ui.windows.problems import ProblemsWindow
+from pagewatch.ui.windows.saved_search import SavedSearchDialog
 from pagewatch.ui.windows.settings import SettingsDialog
 from pagewatch.ui.windows.viewer import TABS, ViewerPanel
 from pagewatch.ui.workers import run_async
@@ -79,6 +82,7 @@ class MainWindow(QMainWindow):
         self._reveal: int | None = None  # a bookmark id the list should select once it has loaded
         self.problems_window: ProblemsWindow | None = None
         self._paused = False
+        self._assist_open = False  # one filter assistant at a time
         self.setWindowTitle("PageWatch")
         self.resize(1360, 820)
 
@@ -189,6 +193,23 @@ class MainWindow(QMainWindow):
         self.act_problems = self._action(
             "Problems", ["Ctrl+Shift+P"], self.open_problems, "Failing bookmarks and failed actions"
         )
+        self.act_assist = self._action(
+            "Filter assistant", ["Ctrl+Shift+F"], self.viewer.request_selection,
+            "Create a filter from the text selected in the page (also Alt+select or right-click)",
+        )  # fmt: skip
+        self.act_import = self._action(
+            "Import / Export...", ["Ctrl+Shift+I"], self.import_export, "Import or export bookmarks"
+        )
+        self.act_saved = self._action(
+            "New saved search...", [], self.new_saved_search, "Save a search as a virtual folder"
+        )
+        menu = self.menuBar().addMenu("&File")
+        menu.addAction(self.act_add)
+        menu.addAction(self.act_import)
+        menu.addAction(self.act_saved)
+        tools = self.menuBar().addMenu("&Tools")
+        tools.addAction(self.act_assist)
+        tools.addAction(self.act_fp)
         for i, name in enumerate(TABS):  # keyboard access to every viewer tab
             self._action(
                 f"Show {name}",
@@ -245,6 +266,7 @@ class MainWindow(QMainWindow):
         self.model.page_loaded.connect(self._page_loaded)
         self.model.load_failed.connect(lambda m: self.say(f"Could not load bookmarks: {m}"))
         self.viewer.status_text.connect(self.lbl_view.setText)
+        self.viewer.selection_made.connect(self._open_assistant)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._folder_menu)
         if self.events is not None:
@@ -560,11 +582,16 @@ class MainWindow(QMainWindow):
         if not targets:
             return
 
-        def load() -> list[BookmarkOut]:
-            return [self.client.bookmark(b.id) for b in targets]
+        def load() -> tuple[list[BookmarkOut], list[PluginInfo]]:
+            try:
+                plugins = [p for p in self.client.plugins() if p.installed]
+            except Exception:  # the editor works without the list
+                plugins = []
+            return [self.client.bookmark(b.id) for b in targets], plugins
 
-        def done(outs: list[BookmarkOut]) -> None:
-            dialog = BookmarkEditor(self.client, outs, self._folders, self)
+        def done(res: tuple[list[BookmarkOut], list[PluginInfo]]) -> None:
+            outs, plugins = res
+            dialog = BookmarkEditor(self.client, outs, self._folders, self, plugins=plugins)
             dialog.saved.connect(lambda: [self.model.refresh_bookmark(o.id) for o in outs])
             self._exec(dialog)
 
@@ -602,25 +629,130 @@ class MainWindow(QMainWindow):
     def _folder_menu(self, pos: Any) -> None:
         menu = QMenu(self)
         new = menu.addAction("New folder...")
+        saved_new = menu.addAction("New saved search...")
         item = self.tree.itemAt(pos)
         fid = self.tree.selected_folder_id() if item is not None else None
+        sid = self.tree.selected_saved_id() if item is not None else None
         rm = menu.addAction("Delete folder") if fid is not None else None
+        saved_edit = menu.addAction("Edit saved search...") if sid is not None else None
+        saved_rm = menu.addAction("Delete saved search") if sid is not None else None
         chosen = menu.exec(self.tree.viewport().mapToGlobal(pos))
+        if chosen is None:
+            return
         if chosen is new:
             name, ok = QInputDialog.getText(self, "New folder", "Name")
             if ok and name.strip():
                 body = {"name": name.strip(), "parent_id": fid}
                 run_async(
-                    lambda: self.client._call("POST", "/folders", json=body),
+                    lambda: self.client.create_folder(body),
                     lambda _o: self._refresh_side(),
                     lambda e: self.say(str(e)),
                 )
-        elif rm is not None and chosen is rm:
+        elif chosen is saved_new:
+            self.new_saved_search()
+        elif saved_edit is not None and chosen is saved_edit and sid is not None:
+            self.edit_saved_search(sid)
+        elif (rm is not None and chosen is rm) or (saved_rm is not None and chosen is saved_rm):
+            target = fid if (rm is not None and chosen is rm) else sid
+            assert target is not None
             run_async(
-                lambda: self.client._call("DELETE", f"/folders/{fid}"),
+                lambda: self.client.delete_folder(target),
                 lambda _o: (self._refresh_side(), self.model.reload()),
                 lambda e: self.say(str(e)),
             )
+
+    # -- saved searches (virtual folders) -----------------------------------------------
+
+    def _current_search(self) -> dict[str, Any]:
+        """The list as it is now, as the criteria of a saved search."""
+        q: dict[str, Any] = {}
+        for key in ("status", "unread", "keyword_hits"):
+            if key in self._query:
+                q[key] = self._query[key]
+        folder = self._query.get("folder")
+        if isinstance(folder, int) and self.tree.selected_folder_id() == folder:
+            q["folder"] = folder
+        text = self.search.text().strip()
+        if text:
+            q["q"] = text
+        return q
+
+    def new_saved_search(self) -> None:
+        dialog = SavedSearchDialog(self._folders, query=self._current_search(), parent=self)
+        if not self._exec(dialog):
+            return
+        body = {"name": dialog.name(), "is_virtual": True, "query": dialog.query()}
+        run_async(
+            lambda: self.client.create_folder(body),
+            lambda f: (
+                self._refresh_side(),
+                self.say(f"Saved search \u201c{f.name}\u201d created"),
+            ),
+            lambda e: self.say(str(e).split(": ", 1)[-1]),
+        )
+
+    def edit_saved_search(self, folder_id: int) -> None:
+        current = next((f for f in self._folders if f.id == folder_id), None)
+        if current is None:
+            return
+        dialog = SavedSearchDialog(
+            self._folders, name=current.name, query=current.query or {}, parent=self
+        )
+        if not self._exec(dialog):
+            return
+        body = {"name": dialog.name(), "query": dialog.query()}
+        run_async(
+            lambda: self.client.patch_folder(folder_id, body),
+            lambda _f: (self._refresh_side(), self.model.reload()),
+            lambda e: self.say(str(e).split(": ", 1)[-1]),
+        )
+
+    # -- import / export ----------------------------------------------------------------
+
+    def import_export(self) -> None:
+        dialog = ImportExportDialog(
+            self.client,
+            self._folders,
+            selected_ids=[b.id for b in self.selected_summaries()],
+            folder_id=self.tree.selected_folder_id(),
+            parent=self,
+        )
+        dialog.changed.connect(lambda: (self.model.reload(), self._refresh_side()))
+        self._exec(dialog)
+
+    # -- filter assistant ---------------------------------------------------------------
+
+    def _open_assistant(self, sel: dict[str, Any]) -> None:
+        """Alt+select, right-click or Ctrl+Shift+F in the page: offer filters for the selection,
+        show each one's test result, and save the one the user picks."""
+        bid = sel.get("bookmark_id")
+        if not isinstance(bid, int) or self._assist_open:
+            return
+        body: dict[str, Any] = {"path": sel["path"], "text": sel.get("text", "")}
+        for key in ("end_path", "version_id"):
+            if sel.get(key) is not None:
+                body[key] = sel[key]
+        self._assist_open = True
+
+        def done(out: Any) -> None:
+            try:
+                dialog = FilterAssistantDialog(self.client, bid, body, out, self)
+                if self._exec(dialog):
+                    patch = dialog.patch()
+                    if patch:
+                        run_async(
+                            lambda: self.client.patch_bookmark(bid, patch),
+                            lambda _o: self.say("Filter saved: the next check will use it"),
+                            lambda e: self.say(str(e).split(": ", 1)[-1]),
+                        )
+            finally:
+                self._assist_open = False
+
+        def failed(exc: Exception) -> None:
+            self._assist_open = False
+            self.say(str(exc).split(": ", 1)[-1])
+
+        run_async(lambda: self.client.filter_assist(bid, body), done, failed)
 
     # -- persistence / lifecycle --------------------------------------------------------
 

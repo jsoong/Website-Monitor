@@ -16,6 +16,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from pagewatch.engine.pipeline import documents, feeds
+from pagewatch.engine.pipeline.extract import decode_body
+from pagewatch.engine.plugin_runtime import session_of
 from pagewatch.models import FeedOptions
 
 Warn = Callable[[str], None]
@@ -158,14 +160,28 @@ def view_bytes(
     """The stored bytes as the viewer should read them: converted documents and feeds become
     HTML (with the same conversion the extractor used), everything else is returned unchanged.
     ``plain`` (the New / Old tabs) also turns a records source into a list of its records; the
-    highlight view keeps it as data so it falls back to the text diff."""
+    highlight view keeps it as data so it falls back to the text diff. A plugin's ``preprocess``
+    hook is applied here too, so highlights land on the blocks the extractor saw."""
     kind = resolve_kind(source_type, content_type, url, raw)
     if kind == "records" and plain:
         return records_html(raw, content_type, url, source_cfg).encode(), "text/html; charset=utf-8"
     if kind in CONVERTED_KINDS:
         try:
-            return to_html(kind, raw, source_cfg).encode("utf-8"), "text/html; charset=utf-8"
+            data, ctype = to_html(kind, raw, source_cfg).encode("utf-8"), "text/html; charset=utf-8"
         except documents.DocumentError as exc:
             note = f"<p>This {kind} could not be read: {exc}</p>"
             return f"<html><body>{note}</body></html>".encode(), "text/html; charset=utf-8"
-    return raw, content_type
+    else:
+        data, ctype = raw, content_type
+    if kind in ("html", "json", "text") or kind in CONVERTED_KINDS:
+        plugin = session_of((source_cfg or {}).get("plugin"))
+        if plugin is not None and plugin.has("preprocess"):
+            text = plugin.preprocess(decode_body(data, ctype))
+            return text.encode("utf-8"), _utf8(ctype)
+    return data, ctype
+
+
+def _utf8(content_type: str) -> str:
+    """``content_type`` with its charset replaced by UTF-8 (the bytes were re-encoded)."""
+    base = content_type.split(";")[0].strip() or "text/html"
+    return f"{base}; charset=utf-8"

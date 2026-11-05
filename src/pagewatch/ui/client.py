@@ -26,9 +26,12 @@ from pagewatch.models import (
     ChangeOut,
     CheckRunOut,
     FalsePositiveOut,
+    FilterAssistOut,
     FolderOut,
     HealthOut,
+    ImportResult,
     Page,
+    PluginInfo,
     PreviewOut,
     ProblemsOut,
     RenderOut,
@@ -167,6 +170,15 @@ class ApiClient:
     def folders(self) -> list[FolderOut]:
         return [FolderOut.model_validate(f) for f in self._call("GET", "/folders")]
 
+    def create_folder(self, body: dict[str, Any]) -> FolderOut:
+        return FolderOut.model_validate(self._call("POST", "/folders", json=body))
+
+    def patch_folder(self, folder_id: int, body: dict[str, Any]) -> FolderOut:
+        return FolderOut.model_validate(self._call("PATCH", f"/folders/{folder_id}", json=body))
+
+    def delete_folder(self, folder_id: int) -> None:
+        self._call("DELETE", f"/folders/{folder_id}")
+
     # -- bookmarks ----------------------------------------------------------------------
 
     def bookmarks(self, **params: Any) -> Page[BookmarkSummary]:
@@ -225,10 +237,12 @@ class ApiClient:
         *,
         images: bool = False,
         context: int | None = None,
+        paths: bool = False,
     ) -> RenderOut:
         params = self._clean(
-            {"view": view, "format": "json", "images": images or None, "context": context}
-        )
+            {"view": view, "format": "json", "images": images or None, "context": context,
+             "paths": paths or None}
+        )  # fmt: skip
         return RenderOut.model_validate(
             self._call("GET", f"/bookmarks/{bookmark_id}/diff", params=params)
         )
@@ -240,10 +254,12 @@ class ApiClient:
         *,
         images: bool = False,
         context: int | None = None,
+        paths: bool = False,
     ) -> RenderOut:
         params = self._clean(
-            {"view": view, "format": "json", "images": images or None, "context": context}
-        )
+            {"view": view, "format": "json", "images": images or None, "context": context,
+             "paths": paths or None}
+        )  # fmt: skip
         return RenderOut.model_validate(
             self._call("GET", f"/changes/{change_id}/render", params=params)
         )
@@ -273,6 +289,27 @@ class ApiClient:
         return TestFilterOut.model_validate(
             self._call("POST", f"/bookmarks/{bookmark_id}/test-filter", json=candidate)
         )
+
+    def filter_assist(self, bookmark_id: int, body: dict[str, Any]) -> FilterAssistOut:
+        return FilterAssistOut.model_validate(
+            self._call("POST", f"/bookmarks/{bookmark_id}/filter-assist", json=body)
+        )
+
+    def plugins(self) -> list[PluginInfo]:
+        return [PluginInfo.model_validate(p) for p in self._call("GET", "/plugins")]
+
+    def import_bookmarks(self, body: dict[str, Any]) -> ImportResult:
+        return ImportResult.model_validate(self._call("POST", "/import", json=body, timeout=300))
+
+    def export_bookmarks(
+        self, fmt: str, *, folder: int | None = None, ids: list[int] | None = None
+    ) -> bytes:
+        params: dict[str, Any] = {"format": fmt}
+        if folder is not None:
+            params["folder"] = folder
+        if ids:
+            params["ids"] = ids
+        return self._raw("GET", "/export", params=params, timeout=300).content
 
     def preview(self, url: str, *, samples: int = 2, gap_s: float = 5.0) -> PreviewOut:
         body = {"url": url, "samples": samples, "gap_s": gap_s}

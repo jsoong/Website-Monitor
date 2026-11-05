@@ -68,8 +68,9 @@ _TAGS = {
     "tfoot", "th", "thead", "time", "tr", "u", "ul", "var", "wbr", "body", "html", "head",
     "title", "meta", "style", "link", "base",
 }  # fmt: skip
+PATH_ATTR = "data-pw-path"  # the extractor's DOM path of an element (the filter assistant's anchor)
 _ATTRS = {
-    "*": {"class", "id", "title", "lang", "dir"},
+    "*": {"class", "id", "title", "lang", "dir", PATH_ATTR},
     "a": {"href", "rel"},
     "img": {"src", "alt", "width", "height"},
     "td": {"colspan", "rowspan"},
@@ -119,6 +120,26 @@ def wrap_document(body: str, *, allow_remote: bool = False, base_url: str | None
         f'<meta http-equiv="Content-Security-Policy" content="{_csp(allow_remote)}">'
         f'{base}<style>{CSS}</style></head><body class="{body_class}">{body}</body></html>'
     )
+
+
+def tag_paths(root: Any) -> None:
+    """Put ``data-pw-path`` on every element: the same ``/html[1]/body[1]/div[2]`` path the
+    extractor gives blocks. It is set before any mark is injected, so inserted ``<ins>`` / ``<del>``
+    elements cannot shift a later sibling's index. The viewer's bridge reports it back when the
+    user selects text, and the filter assistant turns it into a selector."""
+    root.set(PATH_ATTR, f"/{root.tag}[1]")
+    stack = [root]
+    while stack:
+        el = stack.pop()
+        base = el.get(PATH_ATTR)
+        counters: dict[str, int] = {}
+        for child in el:
+            tag = child.tag
+            if not isinstance(tag, str):  # a comment or processing instruction
+                continue
+            counters[tag] = counters.get(tag, 0) + 1
+            child.set(PATH_ATTR, f"{base}/{tag}[{counters[tag]}]")
+            stack.append(child)
 
 
 def _strip_remote(root: Any, allow_remote: bool) -> None:
@@ -441,15 +462,18 @@ def render_highlight(
     nfkc: bool = True,
     ignore_options: bool = True,
     allow_remote: bool = False,
+    paths: bool = False,
 ) -> str | None:
     """The new version's HTML with changes marked in place; ``None`` if ``raw`` is not HTML
-    (the caller falls back to the text view)."""
+    (the caller falls back to the text view). ``paths`` tags every element with its DOM path."""
     text = decode_body(raw, content_type)
     if not _looks_like_html(content_type, text):
         return None
     root = parse_html(text)
     if root is None:
         return None
+    if paths:
+        tag_paths(root)
     new_texts = [b.text for b in new_blocks]
     info, removed = _collect_info(diff, old_texts, new_texts)
     recorded = extract_blocks(
@@ -542,12 +566,14 @@ def render_highlight(
 
 
 def render_plain(raw: bytes, content_type: str, url: str, *, allow_remote: bool = False,
-                 nfkc: bool = True) -> str:  # fmt: skip
+                 nfkc: bool = True, paths: bool = False) -> str:  # fmt: skip
     """A stored version, unmarked (the New / Old tabs)."""
     text = decode_body(raw, content_type)
     root = parse_html(text)
     if root is None or not _looks_like_html(content_type, text):
         return f"<pre>{_esc(text)}</pre>"
+    if paths:
+        tag_paths(root)
     _strip_remote(root, allow_remote)
     body = root.find(".//body")
     markup = etree.tostring(body if body is not None else root, encoding="unicode", method="html")

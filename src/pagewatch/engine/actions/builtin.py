@@ -14,6 +14,7 @@ from pagewatch.engine.actions.program import run_program
 from pagewatch.engine.actions.scrape import scrape
 from pagewatch.engine.actions.script import script
 from pagewatch.engine.actions.webhook import webhook
+from pagewatch.engine.actions.report import report
 
 if TYPE_CHECKING:
     from pagewatch.engine.core import Engine
@@ -63,5 +64,6 @@ ACTIONS: dict[str, Action] = {
     "scrape": scrape,
     "script": script,
     "webhook": webhook,
+    "report": report,
     "pushover": _unavailable("pushover", "after v1"),
 }

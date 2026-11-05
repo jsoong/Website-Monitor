@@ -24,7 +24,7 @@ from pagewatch.engine.actions.queue import ActionQueue
 from pagewatch.engine.actions.toast import ToastBackend, ToastService, default_backend
 from pagewatch.engine.api.events import EventBus
 from pagewatch.engine.clock import Clock, SystemClock, iso, parse_iso
-from pagewatch.engine.config import FolderCache, resolve, resolve_schedule, source_options
+from pagewatch.engine.config import FolderCache, Resolved, resolve, resolve_schedule, source_options
 from pagewatch.engine.fetch.browser import BrowserFetcher, BrowserManager, Launcher
 from pagewatch.engine.fetch.feed import FeedFetcher
 from pagewatch.engine.fetch.ftp import FtpFetcher
@@ -32,12 +32,14 @@ from pagewatch.engine.fetch.localfile import FileFetcher
 from pagewatch.engine.fetch.screenshot import ScreenshotFetcher
 from pagewatch.engine.fetch.select import FetcherSet
 from pagewatch.engine.fetch.static import StaticFetcher
+from pagewatch.engine.follow import FollowService
 from pagewatch.engine.guard import ResourceGuard, tree_rss_mb
 from pagewatch.engine.hostgate import HostGate
 from pagewatch.engine.logs import get_logger, set_debug
 from pagewatch.engine.maintenance import Maintenance
 from pagewatch.engine.paths import DataDir
 from pagewatch.engine.pipeline.core import RebuildJob, rebuild_version
+from pagewatch.engine.plugins import PluginHost
 from pagewatch.engine.power import Connectivity, PowerBackend, PowerMonitor, ProbeFn
 from pagewatch.engine.runner import CheckRunner
 from pagewatch.engine.scheduler import Scheduler
@@ -104,6 +106,8 @@ class Engine:
                 "file": FileFetcher(),
             }
         )
+        self.plugins = PluginHost(self)
+        self.follow = FollowService(self)
         self.runner = CheckRunner(self, rng)
         self.scheduler = Scheduler(
             self.clock,
@@ -295,6 +299,16 @@ class Engine:
 
     # -- bookmarks ----------------------------------------------------------------------
 
+    def source_cfg(self, row: sqlite3.Row, resolved: Resolved) -> dict[str, Any]:
+        """What a worker needs to read this bookmark's content: the fetch options that shape the
+        blocks, plus its plugin when that has a ``preprocess`` hook (so every view of the page,
+        the test filter and re-normalising all see the content the way a check does)."""
+        cfg = source_options(resolved.fetch)
+        spec = self.plugins.preprocess_spec(row)
+        if spec is not None:
+            cfg["plugin"] = spec
+        return cfg
+
     def schedule_bookmark(self, row: sqlite3.Row) -> None:
         """(Re)register a bookmark row with the scheduler."""
         due = parse_iso(row["next_due_at"]) if row["next_due_at"] else None
@@ -349,7 +363,7 @@ class Engine:
                 final_url=row["url"],
                 source_type=row["source_type"],
                 filter_cfg=resolved.filter.model_dump(mode="json"),
-                source_cfg=source_options(resolved.fetch),
+                source_cfg=self.source_cfg(row, resolved),
             )
             try:
                 out = await self.pool.run(rebuild_version, job)

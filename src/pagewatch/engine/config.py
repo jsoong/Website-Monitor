@@ -34,11 +34,17 @@ class FolderCache:
 
     def __init__(self) -> None:
         self._folders: dict[int, tuple[int | None, dict[str, Any]]] = {}
+        self._virtual: set[int] = set()
 
     def load(self, rows: list[sqlite3.Row]) -> None:
         self._folders = {
             r["id"]: (r["parent_id"], loads(r["defaults_json"], {}) or {}) for r in rows
         }
+        self._virtual = {r["id"] for r in rows if r["is_virtual"]}
+
+    def is_virtual(self, folder_id: int | None) -> bool:
+        """A virtual folder is a saved search: it holds no bookmarks of its own."""
+        return folder_id is not None and folder_id in self._virtual
 
     def chain_defaults(self, folder_id: int | None) -> dict[str, Any]:
         """Defaults merged root -> leaf (the nearest folder wins)."""

@@ -93,12 +93,13 @@ async def render_change(
     format: Literal["html", "json", "png"] = "html",
     images: bool = False,
     context: Annotated[int | None, Query(ge=0, le=100)] = None,
+    paths: bool = False,
 ) -> Response | RenderOut:
     """One change's own gate diff (the history view), as sanitised HTML (or ``format=json``).
     ``view=screenshot`` is the visual diff: its overlay as ``format=png``, or wrapped in HTML."""
     try:
         res = await ops.render_change_raw(
-            engine, change_id, view, allow_remote=images, context=context
+            engine, change_id, view, allow_remote=images, context=context, paths=paths
         )
     except (svc.NotFoundError, ops.ConflictError, svc.InvalidError) as exc:
         raise _http(exc) from exc
@@ -113,6 +114,7 @@ async def unread_diff(
     format: Literal["html", "json", "png"] = "html",
     images: bool = False,
     context: Annotated[int | None, Query(ge=0, le=100)] = None,
+    paths: bool = False,
 ) -> Response | RenderOut:
     """The viewer's default: everything unread (last-read version -> latest). ``view=new`` and
     ``view=old`` return the stored pages unmarked; ``view=screenshot`` compares the last-read
@@ -121,10 +123,12 @@ async def unread_diff(
         if view in ("new", "old"):
             if format == "png":
                 raise HTTPException(422, "format=png is only available with view=screenshot")
-            out = await ops.render_version(engine, bookmark_id, view, allow_remote=images)
+            out = await ops.render_version(
+                engine, bookmark_id, view, allow_remote=images, paths=paths
+            )
             return _html_or_json(out, format)
         res = await ops.render_unread_raw(
-            engine, bookmark_id, view, allow_remote=images, context=context
+            engine, bookmark_id, view, allow_remote=images, context=context, paths=paths
         )
     except (svc.NotFoundError, ops.ConflictError, svc.InvalidError) as exc:
         raise _http(exc) from exc

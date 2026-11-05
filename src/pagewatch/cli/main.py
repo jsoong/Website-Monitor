@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import re
 import sys
+import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+import psutil
 
 from pagewatch import __version__
 from pagewatch.cli import power, service
@@ -110,6 +114,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="engine health")
 
+    stp = sub.add_parser("stop", help="quit the engine cleanly and wait until it has exited")
+    stp.add_argument("--wait", type=float, default=30.0, metavar="SECONDS",
+                     help="how long to wait for the engine to exit (default 30)")  # fmt: skip
+
     bk = sub.add_parser("backup", help="write a backup zip now")
     bk.add_argument("--blobs", action="store_true",
                     help="include the page snapshots (needed to move to another PC)")  # fmt: skip
@@ -131,6 +139,33 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 # -- helpers ----------------------------------------------------------------------------
+
+
+def _exited(pid: int) -> bool:
+    """Gone, or a zombie (finished but not yet collected by its parent)."""
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
+def stop_engine(client: EngineClient, wait_s: float) -> dict[str, Any]:
+    """Ask the engine to quit (``POST /shutdown``) and wait until its process has gone. Watching
+    the process, not the lockfile: the engine removes the lockfile first and then spends up to
+    10 s finishing in-flight checks, so a vanished lockfile does not mean the files are free."""
+    pid = client.info.pid
+    # unreachable means it may already be on its way out; whether it is gone is decided below
+    with contextlib.suppress(EngineNotRunning):
+        client.post("/shutdown")
+    deadline = time.monotonic() + wait_s
+    while not _exited(pid):
+        if time.monotonic() >= deadline:
+            raise ApiError(
+                1,
+                f"the engine (pid {pid}) is still running {wait_s:g} s after it was asked to quit",
+            )
+        time.sleep(0.1)
+    return {"stopped": True, "pid": pid}
 
 
 def _folder_id(client: EngineClient, ref: str | None) -> int | None:
@@ -269,6 +304,8 @@ def run(args: argparse.Namespace, client: EngineClient) -> Any:
         return {"deleted": fid}
     if cmd == "status":
         return client.get("/health")
+    if cmd == "stop":
+        return stop_engine(client, args.wait)
     if cmd == "backup":
         body = {"include_blobs": True} if args.blobs else {}
         if args.out:
@@ -317,6 +354,8 @@ def render(args: argparse.Namespace, result: Any) -> str:
         return f"backup written to {result['path']} ({result['size_bytes']:,} bytes, {kind})"
     if cmd == "restore":
         return result["message"]
+    if cmd == "stop":
+        return f"the engine (pid {result['pid']}) has stopped"
     if cmd == "status":
         a = result["autowatch"]
         state = [
@@ -369,6 +408,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         with EngineClient(resolve_data_dir(args.data_dir), timeout=timeout) as client:
             result = run(args, client)
     except EngineNotRunning as exc:
+        if args.cmd == "stop":  # nothing to stop is the state "stop" asks for (an installer's goal)
+            print("the engine is not running")
+            return 0
         print(f"error: {exc}", file=sys.stderr)
         return 3
     except ApiError as exc:

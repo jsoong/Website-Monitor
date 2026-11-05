@@ -1641,6 +1641,11 @@ class RestoreOut(PWModel):
     message: str
 
 
+class ShutdownOut(PWModel):
+    stopping: bool
+    message: str
+
+
 ProblemKind = Literal["bookmark_error", "needs_login", "action_failed"]
 
 

@@ -4339,6 +4339,25 @@
     "title": "Settings",
     "type": "object"
    },
+   "ShutdownOut": {
+    "additionalProperties": false,
+    "properties": {
+     "message": {
+      "title": "Message",
+      "type": "string"
+     },
+     "stopping": {
+      "title": "Stopping",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "stopping",
+     "message"
+    ],
+    "title": "ShutdownOut",
+    "type": "object"
+   },
    "SmtpSettings": {
     "additionalProperties": false,
     "description": "Outgoing mail (spec: SMTP over TLS; the password is a secret-store entry).",
@@ -6919,6 +6938,28 @@
     "summary": "Put Settings",
     "tags": [
      "checks"
+    ]
+   }
+  },
+  "/shutdown": {
+   "post": {
+    "description": "Quit cleanly, as on Ctrl+C: dispatch stops, in-flight checks get up to 10 s, the browser is\nclosed and the database checkpointed. The exit code is 0, so a supervising Task Scheduler task\ndoes not start the engine again. Like every route it needs the bearer token. The stop is\nscheduled to run once the response has been sent, so the caller always gets its answer.",
+    "operationId": "shutdown_shutdown_post",
+    "responses": {
+     "202": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ShutdownOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "summary": "Shutdown",
+    "tags": [
+     "maintenance"
     ]
    }
   }

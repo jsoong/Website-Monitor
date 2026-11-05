@@ -1,16 +1,17 @@
-"""Backup and restore (spec: ``POST /backup``, ``POST /restore``)."""
+"""Backup, restore and shutdown (spec: ``POST /backup``, ``POST /restore``; ``POST /shutdown``
+is an addition, see DECISIONS)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from pagewatch.engine.api.app_deps import engine_dep
 from pagewatch.engine.core import Engine
 from pagewatch.engine.store.backup import BackupError
-from pagewatch.models import BackupOut, BackupRequest, RestoreOut, RestoreRequest
+from pagewatch.models import BackupOut, BackupRequest, RestoreOut, RestoreRequest, ShutdownOut
 
 router = APIRouter(tags=["maintenance"])
 
@@ -51,3 +52,15 @@ async def restore(body: RestoreRequest, engine: EngineDep) -> RestoreOut:
         staged=True, restart=True,
         message=f"restoring the backup made {manifest.created_at}; the engine is restarting",
     )  # fmt: skip
+
+
+@router.post("/shutdown", response_model=ShutdownOut, status_code=202)
+async def shutdown(engine: EngineDep, background: BackgroundTasks) -> ShutdownOut:
+    """Quit cleanly, as on Ctrl+C: dispatch stops, in-flight checks get up to 10 s, the browser is
+    closed and the database checkpointed. The exit code is 0, so a supervising Task Scheduler task
+    does not start the engine again. Like every route it needs the bearer token. The stop is
+    scheduled to run once the response has been sent, so the caller always gets its answer."""
+    background.add_task(engine.request_stop)
+    return ShutdownOut(
+        stopping=True, message="the engine is quitting: in-flight checks are given up to 10 s"
+    )

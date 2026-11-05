@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+from pagewatch.engine.frozen import is_frozen, program_path
+
 TASK_NAME = "PageWatch Engine"
 RESTART_INTERVAL = "PT1M"
 RESTART_COUNT = 999  # the most Task Scheduler accepts
@@ -57,7 +59,11 @@ def engine_command(data_dir: Path | None, exe: str | None = None) -> tuple[str, 
     parts: list[str] = []
     if exe:
         program = exe
+    elif is_frozen():
+        # the packaged CLI: the engine is the program next to it (there is no Python to run -m)
+        program = str(program_path("engine"))
     else:
+        # frozen-ok: source only; a packaged build takes the branch above
         python = Path(sys.executable)
         windowless = python.with_name("pythonw.exe")
         program = str(windowless if windowless.exists() else python)

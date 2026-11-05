@@ -24,6 +24,7 @@ from pagewatch.engine.core import (
     EXIT_RESTART,
     Engine,
 )
+from pagewatch.engine.frozen import component_command
 from pagewatch.engine.instance import (
     InstanceGuard,
     read_lockfile,
@@ -111,8 +112,8 @@ def respawn(argv: Sequence[str]) -> bool:
         if sys.platform == "win32"
         else {"start_new_session": True}
     )
-    subprocess.Popen(  # noqa: S603 - this interpreter, this module, the same arguments
-        [sys.executable, "-m", "pagewatch.engine.main", *argv],
+    subprocess.Popen(  # noqa: S603 - this program, the same arguments
+        component_command("engine", *argv),
         env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         close_fds=True, **flags,
     )  # fmt: skip

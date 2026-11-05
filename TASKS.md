@@ -1,4 +1,20 @@
-# TASKS: Unattended operation (milestone M5)
+# TASKS
+
+One checklist per milestone, in the order the milestones were merged. Task ids (`S0`, `S1`, ...) are
+local to their milestone. The M4 checklist is in git at `90ca022`; earlier ones are in the history
+of this file.
+
+| Part | Milestone | State |
+| --- | --- | --- |
+| M5 | Unattended operation, and its Settings and Problems screens | Done |
+| M6 | Actions (email, ntfy, webhook, export, run program, scrape, script) | Done; the logins half of SPEC's M6 is not built |
+| M7 | Power features | Done |
+| M8 | Packaging | Done here; the Windows VM acceptance run is the owner's |
+| Merge | M6, M7 and M8 onto the M5 line, and the seams between them | See the last part |
+
+---
+
+# M5 · Unattended operation
 
 Scope: SPEC.md milestone M5 — *resume detection, connectivity probe, catch-up, battery policy,
 retries, error notifications, durable action queue, retention and GC, automatic backup, RSS guard,
@@ -257,3 +273,454 @@ process (80 MB) and not by the process tree (302 MB). See DECISIONS (M5, Soak).
 - How the Settings and Problems windows look on Windows (they were rendered offscreen on Linux): fonts,
   button order, dark mode.
 - A restore under Task Scheduler (`--supervised`).
+
+
+---
+
+# M6 · Actions
+
+Built on branch `claude/m6-actions` from 90ca022 (M0-M4, 791 tests) in parallel with M5, M7 and M8,
+and merged into the M5 line (see *Merge* at the end). The scope below is what that session was
+asked to build; the logins half of SPEC's M6 is **not built**.
+
+## Scope decision (read this first)
+
+SPEC.md names M6 **"Actions and logins"**. The request for this session described M6 as the
+actions half: notifications, alert delivery channels, webhooks, executing actions when a change
+passes the gate, and the UI wiring for them. This session implements exactly that half.
+
+| SPEC M6 item | This session |
+| --- | --- |
+| Email, ntfy, export, run program, scrape and script actions | **Done** |
+| Webhook action (SPEC: "post-v1"; the request names webhooks explicitly) | **Done**, see DECISIONS.md (M6) |
+| Pushover (SPEC: post-v1; not requested) | Not built; stays "not available" |
+| Keyring-backed secret store (SMTP password, ntfy token, FTP password) | **Done** (actions need it) |
+| Failed jobs in the UI's Problems list; retries then a Problems entry | **Done** (API + dialog) |
+| Alert privacy (`private` sends no page content) | **Done** |
+| Optional semi-attended sign-in, portal experiment | **Not done** (logins half) |
+| Check-Macro recorder and replay | **Not done** (logins half) |
+| Cookie import, Basic/Digest auth in the fetchers, per-bookmark proxies | **Not done** (logins half) |
+| Per-host overrides in the scheduler | **Not done** (logins half; the `Settings.host_overrides` model already exists) |
+
+The logins half needs the fetcher, runner and scheduler (`needs_login` pauses a bookmark). It is
+the natural second M6 session now that M5 and M6 are on one line.
+
+## Audit: SPEC vs repository at 90ca022
+
+| SPEC requirement | State in the repo | Task |
+| --- | --- | --- |
+| `action_job` durable queue, retries at 1/5/30 min, 5 attempts, `problem` event | Done (`actions/queue.py`) | reuse unchanged |
+| `toast`, `sound`, `open`, `mark_read` | Done (`actions/builtin.py`, `toast.py`) | reuse |
+| `email`, `export`, `run_program`, `ntfy`, `scrape`, `script`, `webhook` | Registered as `_unavailable(...)` | S3 |
+| `ActionConfig.params` | Free `dict`, no validation | S1.2 |
+| SMTP / ntfy server settings | Absent | S1.3 |
+| `SecretStore` | Interface plus `NullSecrets`/`MemorySecrets`; no keyring | S2.5 |
+| Jinja2 sandbox templates; `{var}` path/argument templates | Absent | S2.1 |
+| Alert text for a change (added text, changes-only HTML) | Only the 200-char `summary` | S2.2, S2.3 |
+| Alert privacy | `AlertContext.body` for toasts only | S3 (all channels) |
+| Problems list for failed action jobs | `problem` event only; no way to list or retry | S4.1 |
+| Editor Actions tab | Check boxes; `email` etc. labelled "not available", no parameters | S5.1 |
+| Settings screen for email/ntfy | Absent | S5.2 |
+
+## S0 Setup
+
+- [x] S0.1 Branch `claude/m6-actions` from 90ca022.
+- [x] S0.2 Dependencies named by the spec: `aiosmtplib`, `keyring` (`uv add`).
+- [x] S0.3 Baseline: 791 passed + 1 skipped at 90ca022.
+
+## S1 Models and settings (`models.py`)
+
+- [x] S1.1 Parameter models per action (`EmailParams`, `NtfyParams`, `WebhookParams`, `ExportParams`, `RunProgramParams`, `ScrapeParams`, `ScriptParams`) with template syntax checks.
+- [x] S1.2 `ActionConfig` validates `params` for those types (HTTP 422 at create/patch); `run_program` needs `confirmed: true`.
+- [x] S1.3 `Settings.notifications` (`SmtpSettings`, `NtfySettings`); API bodies for action jobs, test notifications and secrets.
+- [x] S1.4 Regenerate `docs/openapi.json`.
+
+## S2 Shared action plumbing (`engine/actions/`)
+
+- [x] S2.1 `templating.py`: `{var}` expander (path/argument templates, `{date:<fmt>}`, safe file names) and the sandboxed Jinja2 environment.
+- [x] S2.2 `content.py`: worker job that builds a change's alert content from blobs (added/removed text, plain diff, email-safe changes HTML, optional full highlighted page).
+- [x] S2.3 `htmlmail.py`: email-safe HTML (inline styles only, table layout, no scripts/remote loads).
+- [x] S2.4 `runtime.py`: per-engine content cache; `ActionConfigError` (final failure, no retries); privacy gate.
+- [x] S2.5 `secrets.py`: `KeyringSecrets` (Windows Credential Manager) with `set`/`delete`; default store chosen by the engine entry point.
+
+## S3 Actions
+
+- [x] S3.1 `email` (`mailer.py`): SMTP over TLS via aiosmtplib, formats full/simple/changes_only, screenshot attachment, template, priority, one message per change (stable Message-ID).
+- [x] S3.2 `ntfy`: server, topic, token from the secret store, priority; JSON publishing; private alerts carry no content.
+- [x] S3.3 `webhook`: URL, method, Jinja2 JSON body, headers, optional bearer token.
+- [x] S3.4 `export`: path template, `html` / `html_assets` / `text` / `diff_json`, atomic write.
+- [x] S3.5 `run_program`: argv (no shell), `{var}` templates, files for new/old/changes, timeout kills, output logged, explicit confirmation.
+- [x] S3.6 `scrape`: named fields (CSS, XPath, regex), one record per change appended to CSV / JSON Lines / XML; idempotent per change.
+- [x] S3.7 `script`: declarative `check_folder(name)` and `pause_bookmark(minutes)`.
+- [x] S3.8 `builtin.py` registers them; `webhook` becomes available, `pushover` stays unavailable.
+
+## S4 Engine API
+
+- [x] S4.1 `GET /action-jobs`, `POST /action-jobs/{id}/retry`, `DELETE /action-jobs/{id}` (the Problems list).
+- [x] S4.2 `POST /notifications/test` (send a test email/ntfy/webhook with the saved settings).
+- [x] S4.3 `GET/PUT/DELETE /secrets/{name}` (write-only values; the database keeps key names only).
+- [x] S4.4 Signed-in bookmarks (auth/cookies/macro) default to `alert_privacy: private`.
+
+## S5 UI wiring
+
+- [x] S5.1 Editor Actions tab: per-action parameters dialog, implemented actions enabled, `run_program` confirmation, content-privacy confirmation for signed-in bookmarks.
+- [x] S5.2 Notifications dialog (SMTP + ntfy, passwords to the secret store, send-test buttons). *Since the merge these controls live in M5's Settings window (Email and Notifications pages); see Merge.*
+- [x] S5.3 Failed actions dialog (Problems) with retry/dismiss; main-window menu entries; status-bar message on a failed action. *Since the merge Retry and Dismiss are buttons in M5's Problems window; see Merge.*
+- [x] S5.4 `ApiClient` support.
+
+## S6 Tests
+
+- [x] S6.1 Unit: param models, templating, content builder, email HTML, mailer (fake SMTP server), ntfy and webhook (HTTP server), export, program, scrape, script, secrets.
+- [x] S6.2 Integration (engine + fixture site + fake SMTP/HTTP servers): each channel delivers exactly once per change; private bookmarks send no content; failing SMTP retries then a Problems entry; retry endpoint; test-notification endpoint; secrets endpoints.
+- [x] S6.3 UI: action parameters dialog, notifications dialog, failed-actions dialog, editor round trip.
+
+## S7 Finish
+
+- [x] S7.1 `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` (M6), `docs/openapi.json`.
+- [x] S7.2 ruff (check and format), mypy `--strict`, schema check, full suite green: **1016 passed + 1 skipped** (default; was 791 + 1), 12 passed (`-m browser`). pytest exit code 0.
+- [x] S7.3 Commit, push to `claude/m6-actions`, stop (no M7).
+
+## M6 acceptance criteria → where they are proved
+
+| Criterion (SPEC M6) | State |
+| --- | --- |
+| A failing SMTP server leads to retries, then a Problems entry | `test_m6_actions.py::test_a_failing_smtp_server_leads_to_retries_then_a_problems_entry_and_retry_works` (5 attempts at 1, 5, 30, 30 minutes, the `problem` event, `GET /action-jobs`, then Retry delivers); the list, retry and dismiss endpoints in `test_m6_api.py`; the dialog in `test_action_dialogs.py` |
+| Private bookmarks send no page content | email, ntfy and webhook each have a test that searches everything sent for the page text, URL and summary (`test_private_email_...`, `test_private_ntfy_alert_...`, `test_webhook_body_template_and_private_alerts`); `test_action_content.py` for the template variables |
+| A changes-only email renders correctly in Gmail and Outlook.com | **Manual check.** Tested: inline styles only, no `<style>`/classes/scripts/remote loads, table layout |
+| An ntfy alert reaches the phone | **Manual check.** The request is tested against a local server |
+| A macro logs into the fixture login site and detects a change behind it | **Not built** (logins half) |
+| The portal experiment is run and recorded in DECISIONS.md | **Not built**; it is a 48-hour experiment on the owner's machine |
+| Semi-attended sign-in checks immediately; an expired session yields one needs-login alert and pauses the bookmark | **Not built** (logins half) |
+| The ACCESS HRA E-Notices bookmark never requests a notice PDF | **Not built** (needs the logins half and a manual check) |
+
+Also covered beyond the criteria: each export format, programs without a shell and with a timeout,
+scrape in three formats and once per change, `script`, screenshot attachments, alerts on a first
+check, TLS arguments, the refusal to send a password in the clear, the secret store, the editor,
+the Notifications dialog and the Problems dialog.
+
+## Manual checks that cannot run in this sandbox
+
+- A changes-only email in Gmail and Outlook.com (rendering).
+- An ntfy alert reaching a phone (needs the real service).
+- Real STARTTLS/implicit-TLS SMTP handshakes (the in-process server speaks plain SMTP; the TLS
+  arguments are asserted on the aiosmtplib call).
+- Windows Credential Manager (the tests use an in-memory keyring backend).
+
+
+---
+
+# M7 · Power features
+
+Built on branch `claude/m7-power-features` from `90ca022` (M0 to M4 complete, 791 tests green) in
+parallel with M5, M6 and M8, and merged into the M5 line (see *Merge* at the end).
+
+Scope, from SPEC.md *Milestones → M7*: Filter assistant in the UI, Follow-Links, merge pages,
+virtual folders, import and export, reports, plugins with shipped examples, complete CLI.
+Acceptance: Follow-Links on the fixture site creates child bookmarks within its depth and page
+limits; each shipped plugin example passes its integration test. DECISIONS.md (M3) deferred the
+Filter Assistant with Alt+select and the QWebChannel bridge to this milestone, and (M4) deferred
+Follow-Links and merge pages.
+
+## Audit: SPEC vs repository at 90ca022
+
+| SPEC requirement | State in the repo | Task |
+| --- | --- | --- |
+| Filter assistant: Alt+select / right-click in Highlighted or New view, QWebChannel bridge reporting selection + DOM path, 5 choices, each with its Test filter result before saving | Missing; the viewer is a plain `QWebEngineView`, rendered HTML carries no DOM paths | F1 to F6 |
+| `ui/web/bridge.js`, `ui/windows/filter_assistant.py` (layout) | Missing | F3, F4 |
+| Follow-Links: include / exclude patterns, depth 1 default, at most 50 pages, child bookmarks in a generated folder that inherits the parent's settings, obeys robots.txt | Missing (`Trigger.FOLLOW` exists, unused) | L1 to L6 |
+| Merge pages: follow a next-page selector or URL pattern up to N pages and concatenate before extraction | Missing | M1 to M3 |
+| Virtual folders: saved queries (`folder.is_virtual`, `query_json`) | Column and API fields exist; the list endpoint ignores them, the UI hides them | V1 to V5 |
+| Import: Netscape bookmarks HTML, URL list, CSV or XLSX (`name, url, folder, interval, keywords`), dedupe by normalised URL | Missing | I1 to I3 |
+| Export: full config as versioned JSON, OPML for feeds, CSV list | Missing | I4 to I6 |
+| Reports: Jinja2 templates to HTML, CSV, JSON, XML; built-ins changed-since-last-report, all-with-status, errors; on demand, CLI, or action | Missing (`jinja2` is a dependency, unused) | R1 to R5 |
+| Plugins: seven hooks, `ctx` (read-only bookmark + `set_property`, rate-limited `http_get`, `log`, persistent `state`, regex / HTML helpers), trusted local code, raising hook = absent, > 5 s warns in the Check log, gate rule 8 | Missing (`plugins/` dir and `bookmark.plugin` column exist) | P1 to P8 |
+| Shipped examples: price-range alert, page-not-changed-for-N-days, alert only when more than one new item, extract PDF links | Missing | P9 |
+| CLI: `report`, `import`, `export` (+ plugin / follow / merge / virtual-folder options) | Missing | C1 to C4 |
+
+## S0 Setup
+
+- [x] S0.1 Branch `claude/m7-power-features` from 90ca022.
+- [x] S0.2 `uv sync --extra ui`; Qt system libraries; baseline 791 passed + 1 skipped, ruff, mypy clean.
+
+## S1 Shared models and helpers
+
+- [x] S1.1 `models.py`: `FollowLinksConfig`, `MergePagesConfig` under `FetchConfig`; `VirtualQuery`; `ActionType.REPORT`; import / export / report / plugin / assistant API bodies.
+- [x] S1.2 `engine/urls.py` (normalised URL key), `engine/kv.py` (namespaced key-value rows in the existing `setting` table; no migration).
+
+## V Virtual folders
+
+- [x] V1 `VirtualQuery` model + validation on folder create / patch (query required, no defaults, parent not virtual).
+- [x] V2 `repo.bookmark_query` new filters (source type, method, plugin, error count, changed-within); list endpoint resolves `folder=<virtual id>`.
+- [x] V3 Counts for virtual folders; bookmarks cannot be moved into a virtual folder; `POST /check` accepts one.
+- [x] V4 UI: saved searches in the folder tree, "Save search as virtual folder", rename / delete.
+- [x] V5 Tests: unit (query → rows), API, UI.
+
+## I Import and export
+
+- [x] I1 Parsers: Netscape HTML, URL list, CSV, XLSX, PageWatch JSON; interval parsing.
+- [x] I2 Importer: folders from paths, dedupe by normalised URL (against the database and within the file), dry run, per-row errors.
+- [x] I3 `POST /import`.
+- [x] I4 Exporters: versioned JSON (no secrets), OPML (feeds), CSV.
+- [x] I5 `GET /export`.
+- [x] I6 UI: Import / Export dialog (File menu).
+- [x] I7 Tests: parsers, round trip (export → import into a fresh engine), dedupe, API, UI.
+
+## R Reports
+
+- [x] R1 Built-in datasets and templates (changed since last report, all with status, errors) in HTML, CSV, JSON, XML.
+- [x] R2 User templates (`<data>/reports/<name>.<fmt>.j2`), sandboxed Jinja2.
+- [x] R3 "Since last report" marker, `POST /reports/{template}`, `GET /reports`.
+- [x] R4 `report` action (writes the file when a change is detected).
+- [x] R5 Tests.
+
+## P Plugins
+
+- [x] P1 `pagewatch/plugin_api.py` (`Verdict`, context types) and `engine/plugins.py` (discovery, loading with reload on change, hook calls with exception isolation and the 5 s warning).
+- [x] P2 `ctx`: read-only bookmark, `set_property`, rate-limited `http_get`, `log`, persistent `state` (kv), `options`, helpers, `notify`.
+- [x] P3 `before_check` (skip / change URL, headers, body), `merge_pages`; a skipped check is recorded as `skipped` / `plugin_skip`.
+- [x] P4 `preprocess` (in `build_blocks` and the viewer so highlights stay aligned).
+- [x] P5 Gate rule 8: `check_keywords` OR-ed with built-in keywords, `compare` force / deny / defer.
+- [x] P6 `on_change`, `after_check`; state and property writes persisted.
+- [x] P7 API: `GET /plugins`, `POST /plugins/install`; bookmark `plugin` validated.
+- [x] P8 Slow / failing hooks recorded in `check_run.reason`.
+- [x] P9 Shipped examples: `price_range`, `stale_page`, `single_new_item`, `pdf_links`, each with an integration test.
+- [x] P10 Tests: loader, every hook, isolation, worker-process round trip.
+
+## M Merge pages
+
+- [x] M1 `MergePagesConfig` (next-page selector or URL pattern, `max_pages`).
+- [x] M2 Worker jobs (next link, concatenation); runner integration; conditional GET off while merging.
+- [x] M3 Tests (selector mode, pattern mode, limits, loop guard, one alert for a change on page 2).
+
+## L Follow-Links
+
+- [x] L1 `FollowLinksConfig` (include / exclude, depth, max pages, same host).
+- [x] L2 `pipeline/links.py` (link extraction in the worker) and `engine/robots.py` (RFC 9309 behaviour, cached).
+- [x] L3 `engine/follow.py`: discovery after a good check, generated folder (settings synced from the parent), children, seen-URL memory, lineage + one page budget per crawl root (per-root lock).
+- [x] L4 Hook in the runner; `Trigger.FOLLOW` for the first check of a child.
+- [x] L5 Tests: depth, page limit, include / exclude, robots, dedupe, deleted child not resurrected.
+- [x] L6 Acceptance: Follow-Links on the fixture site stays within depth and page limits.
+
+## F Filter assistant
+
+- [x] F1 Engine: `data-pw-path` on rendered elements (`paths=true`) for the Highlighted and New views.
+- [x] F2 Engine: `POST /bookmarks/{id}/filter-assist` (five choices, selector from DOM path, markers from the selection, text generalised, widen-to-parent).
+- [x] F3 UI: `ui/web/bridge.js` + QWebChannel bridge (Alt+select, right-click, Ctrl+Shift+F); re-injected after every load (Qt injects `QWebEngineScript`s into the first document only); selected text excludes struck-through removals.
+- [x] F4 UI: `ui/windows/filter_assistant.py` popup with live Test filter result per choice.
+- [x] F5 Wiring: viewer → popup → `PATCH` → refresh.
+- [x] F6 Tests: engine (each choice, markers, nesting, errors), bridge in a real `QWebEngineView`, popup, end to end against a real engine.
+
+## C CLI
+
+- [x] C1 `report <template> --out`, `import <file>`, `export <file>`.
+- [x] C2 `plugin list|install`, `add --plugin / --follow-* / --merge-*`, `folder add --virtual --query`.
+- [x] C3 Spec command list checked by a test (M5's `backup`, `restore`, `service` listed as expected from M5).
+- [x] C4 Tests.
+
+## E Editor and shell
+
+- [x] E1 Bookmark editor: plugin selector, Follow-Links and merge pages (Advanced tab).
+- [x] E2 Main window: Import / Export entry, saved-search actions, filter-assistant wiring.
+
+## Z Finish
+
+- [x] Z1 `docs/DECISIONS.md` (M7) (decisions, deviations, architecture additions, manual checks).
+- [x] Z2 `docs/openapi.json` regenerated.
+- [x] Z3 ruff, mypy `--strict`, full suite green: 1,009 passed + 1 skipped (was 791 + 1), 12 passed with `-m browser`.
+- [x] Z4 Commit, push to `claude/m7-power-features`, stop.
+
+
+---
+
+# M8 · Packaging
+
+Built on branch `claude/m8-packaging` from 90ca022 (M0-M4, 791 tests) in parallel with M5, M6 and
+M7, and merged into the M5 line (see *Merge* at the end).
+
+SPEC milestone M8: *PyInstaller build, Inno Setup installer, upgrade path with pre-migration
+backup, short user guide.* Acceptance: *a clean Windows VM installs, autostarts at logon and
+survives an upgrade with data intact.* Appendix row owned by M8: *portable install, multiple
+instances, via `--data-dir`.*
+
+Rules from the SPEC working agreement: deviations are logged (`docs/DECISIONS.md`, M8), ruff +
+`mypy --strict` + the full suite green, one commit. New dependency: `pyinstaller` only (named in
+the SPEC's technology table) in the `dev` dependency group, so it never reaches the runtime
+install. Inno Setup is a Windows tool, not a Python dependency.
+
+## Audit: SPEC vs repository at 90ca022
+
+| SPEC requirement | State at 90ca022 | Task |
+| --- | --- | --- |
+| `packaging/pagewatch.spec`, `installer.iss` (layout section) | Missing | S2, S4 |
+| Three executables from one package: `pagewatch-engine`, `-ui`, `-cli` | Console scripts only (`pyproject.toml`) | S2.2 |
+| No system Python required | **Three places start a child with `sys.executable -m ...`**: `ui/main.py` (start engine), `engine/tray.py` (open UI), `engine/fetch/browser.py` (`playwright install chromium`). All break in a frozen build | S1 |
+| Worker pool uses the `spawn` start method | Needs `multiprocessing.freeze_support()` first thing in every frozen entry point, or each worker re-runs the whole app | S1.3 |
+| Migrations, `data/*.yaml/.txt`, `ui/web/diff.css` read through `importlib.resources` | Not collected by PyInstaller by default | S2.1 |
+| Playwright drives Edge, so its Node driver must ship (no hook exists) | Missing | S2.1 |
+| Windows without a console for the engine (starts at logon) | `print(..., file=sys.stderr)` and logging to a console assume streams exist | S1.4 |
+| Autostart: Task Scheduler task at logon | M5 builds `pagewatch-cli service install --exe <engine>`; M8 installs/removes it | S4.3 |
+| Upgrade: "install the new build over the old one. Migrations run at startup after an automatic backup" | `migrate()` backs up (`pre-migration-v{n}-{stamp}.db`) but no test proves upgrade, rollback or downgrade refusal | S5 |
+| Installer must stop a running engine, keep user data on uninstall | Missing | S4.4 |
+| Portable install, multiple instances via `--data-dir` | Flag exists on all three entry points; side-by-side behaviour untested; no portable artifact | S3, S5.4 |
+| Short user guide | Missing | S6 |
+| Windows VM acceptance | Cannot run in this sandbox | S7 (script + checklist) |
+
+## S0 Setup
+
+- [x] S0.1 Branch `claude/m8-packaging` from 90ca022.
+- [x] S0.2 Baseline green at 90ca022 (full suite, ruff, `mypy --strict`); Qt system libraries installed in this sandbox.
+- [x] S0.3 `pyinstaller` (6.22.3) in the `dev` dependency group (not a separate group: the packaging tests must always run).
+
+## S1 Frozen-aware startup (`src/pagewatch/engine/frozen.py`)
+
+- [x] S1.1 `frozen.py`: `is_frozen`, `app_dir`, `component_command(engine|ui|cli, *args)`, `playwright_install_command()`.
+- [x] S1.2 Route the three `sys.executable -m` sites through it (one-line changes, away from the hunks M5 edits).
+- [x] S1.3 `launch(component)`: `freeze_support()` first, then the component's `main`.
+- [x] S1.4 `prepare_streams()`: windowed Windows builds have `sys.stdout/stderr = None`; give them a null sink, and attach to a parent console when there is one.
+- [x] S1.5 Unit tests: command lines frozen and not, Windows `.exe` suffix, stream repair, `freeze_support` ordering, entry scripts delegate.
+- [x] S1.6 Audit test: no bare `sys.executable` spawn outside `frozen.py` (fails loudly on the two M5 sites after the merge, with the fix in `DECISIONS.md (M8).md`).
+
+## S2 PyInstaller build
+
+- [x] S2.1 `packaging/bundle.py` (plain Python, no PyInstaller import): package data files, hidden imports, excludes, component table.
+- [x] S2.2 `packaging/pagewatch.spec`: three EXEs (engine and UI windowed, CLI console), one shared one-folder `PageWatch/`, icon, Windows version resource, no UPX.
+- [x] S2.3 `packaging/entry/{engine,ui,cli}.py` (3-line launchers).
+- [x] S2.4 `packaging/build.py`: version, version resource, PyInstaller, optional Inno compile, portable zip, SHA-256 file.
+- [x] S2.5 `packaging/assets/pagewatch.ico` from `tools/make_icon.py` (Pillow; same drawing as the tray).
+- [x] S2.6 Real Linux build of the same spec, run the frozen executables (S3).
+
+## S3 Frozen smoke test (`packaging/smoke.py`, stdlib only)
+
+- [x] S3.1 Run the built `pagewatch-engine` on a temp data folder: `/health` with the token, token required, lockfile.
+- [x] S3.2 Real check through the frozen process pool: add a bookmark on a local page, change it, exactly one change recorded (proves spawn workers, lxml, zstd, sqlite, migrations from bundled resources).
+- [x] S3.3 `pagewatch-cli` against it; graceful stop (exit 0, lockfile gone).
+- [x] S3.4 Layout checks: Playwright driver files, migrations, data files, tzdata.
+- [x] S3.5 Optional stages: browser fetch through the bundled Playwright driver; UI starts offscreen.
+- [x] S3.6 `@pytest.mark.packaging` test runs the build + smoke (opt in: `-m packaging`).
+
+## S4 Installer (`packaging/installer.iss`)
+
+- [x] S4.1 Per-user install by default (`PrivilegesRequired=lowest`, admin selectable), pinned `AppId`, version from `/DAppVersion`.
+- [x] S4.2 Start menu, optional desktop icon, user guide link.
+- [x] S4.3 "Start PageWatch when I sign in" task (default on): `pagewatch-cli service install --exe <engine>`; start the engine after install; uninstall removes the task.
+- [x] S4.4 Upgrade: stop the engine before copying, restart it after; refuse to downgrade a newer install; uninstall keeps `%LOCALAPPDATA%\PageWatch` unless the user opts in.
+- [x] S4.5 Static tests on the script (cannot be compiled here).
+
+## S5 Upgrade path and portable mode (tests)
+
+- [x] S5.1 Upgrade with data: v1 data folder populated through the real engine, then a v2 migration; bookmarks, versions, blobs intact; backup valid and holding the pre-upgrade rows.
+- [x] S5.2 A failing migration leaves the database at v1 (rolled back) and the backup in place.
+- [x] S5.3 Downgrade refused (`SchemaTooNew`), data untouched.
+- [x] S5.4 Portable: two engines side by side on different folders; `--data-dir` accepted by engine, UI, CLI; relative paths; nothing written outside the folder.
+
+## S6 Documentation and assets
+
+- [x] S6.1 `docs/USER_GUIDE.md` (short; shipped in the installer).
+- [x] S6.2 `packaging/README.md`: build, verify, release steps; portable launcher.
+- [x] S6.3 `packaging/portable/` launcher and README.
+- [x] S6.4 `docs/DECISIONS.md` (M8): deviations, merge notes for M5/M6/M7, what could not be run here.
+
+## S7 Windows VM acceptance (manual; script provided, not runnable here)
+
+- [x] S7.1 `packaging/verify-install.ps1` written: silent install, task registered, engine running, data added, upgrade over it, data intact, downgrade refused, uninstall keeps data. **Not run** (no Windows/PowerShell here).
+- [ ] S7.1b Run it on a clean Windows VM (owner).
+- [x] S7.2 Manual checklist written in `packaging/README.md`: sign out/in autostart, Edge and Chromium fallback, toast, tray, Defender/SmartScreen.
+- [ ] S7.2b Work through it on that VM (owner).
+
+## S8 Finish
+
+- [x] S8.1 ruff, `mypy --strict`, full suite: all exit code 0. Default suite **905 passed, 3 skipped** (was 791 + 1); `-m browser` 12 passed; `-m packaging` 3 passed (4 min). The skips: two installer-contract tests that come alive after M5 merges, one pre-existing (non-root POSIX user).
+- [x] S8.2 Commit, push `claude/m8-packaging`, stop.
+
+## Added along the way (not in the first plan)
+
+- [x] `packaging/m5-frozen-seams.patch`: a throwaway merge of this branch into the M5 commit
+  (no conflicts) showed two M5 spots that start the engine from `sys.executable`; the patch fixes
+  both, applies cleanly, and with it ruff, `mypy --strict` and the merged suite pass (1022 passed;
+  one UI timing test failed under CPU load from a concurrent build and passed 3/3 alone).
+  A real build of the merged tree passed the smoke test, and its frozen CLI registers a task that
+  runs the packaged engine. *Applied and deleted when the branches were merged (see Merge).*
+- [x] `tests/fixtures/upgrade/release-0.1.0.zip` + `tools/gen_upgrade_fixture.py`: a frozen data
+  folder from the first release, so every later migration is tried on real released data.
+- [x] Playwright's bundled driver is *executed* by the smoke test (`--version`), not just found.
+- [x] Mutation checks of the tests that matter (each failed as it should, then was restored): no
+  backup, no transaction, missing metadata / migrations / driver, non-executable driver, a bare
+  `sys.executable` spawn, no stream repair.
+
+## M8 acceptance criterion: where it is proved
+
+| Part of "a clean Windows VM installs, autostarts at logon and survives an upgrade with data intact" | Proof here | Still to do on Windows |
+| --- | --- | --- |
+| The programs run without Python | `smoke.py` on a real PyInstaller build (engine, worker pool, CLI, browser, UI, stop, restart); `pytest -m packaging` | Same on Windows (`build.ps1 -Smoke`) |
+| Installs | `installer.iss` (static tests only) | `verify-install.ps1`; compile with ISCC |
+| Autostarts at logon | M5's `service install --exe` called by the installer; the task XML generator is tested (M5) | `verify-install.ps1` checks the task and has Task Scheduler start the engine; a real sign-out/in by hand |
+| Survives an upgrade with data intact | `test_upgrade.py`: rows and blobs intact, backup equals the old state, failed migration rolls back, newer data refused, restarts add no backups, frozen release-0.1.0 data upgrades | `verify-install.ps1 -OldInstaller ... -NewInstaller ...` |
+| Portable install, multiple instances | `test_portable.py` (two real engines, nothing written elsewhere); portable zip unpacked and smoke-tested | `Start PageWatch.cmd` on Windows |
+
+## Cannot be done in this sandbox
+
+Linux, no Windows, no Inno Setup compiler, no PowerShell: the `.exe` build, `ISCC`, Task Scheduler,
+Authenticode signing and the VM acceptance run are written and statically tested but **not executed**.
+`docs/DECISIONS.md` (M8) lists each one.
+
+
+---
+
+# Merge · M6, M7 and M8 onto the M5 line
+
+Branch `claude/focused-mccarthy-2a74te`, from `aadd380` (M5 complete). Scope, as instructed: merge
+`claude/m6-actions` (`775f56c`), `claude/m7-power-features` (`bef0944`) and `claude/m8-packaging`
+(`e7f6a3a`); apply M8's seam patch and delete it; wire the seams the decision logs name (Email
+settings and Problems retry / dismiss into M5's windows, `POST /shutdown`, the scheduler stretching an
+over-limit host *if the spec requires it*, which it does); fold the three decision logs and task lists
+into `docs/DECISIONS.md`, `docs/ARCHITECTURE.md` and this file; `uv lock`, regenerate OpenAPI; ruff,
+`mypy --strict` and pytest all exit 0. Decisions and the full account are in `docs/DECISIONS.md`,
+*Merging M6, M7 and M8 into the M5 line*.
+
+## S1 Merge
+
+- [x] S1.1 Local branch was one commit behind `origin` (`a051864` vs `aadd380`): fast-forwarded.
+- [x] S1.2 Merge M6: three conflicts (`ARCHITECTURE.md`, `ui/client.py`, `openapi.json`).
+- [x] S1.3 Merge M7: eight conflicts, all of the "both sides added something" kind; M7's `_unavailable` stubs for M6's actions dropped.
+- [x] S1.4 Merge M8: `uv.lock` only, regenerated with `uv lock` (adds PyInstaller and its dependencies).
+- [x] S1.5 `git apply packaging/m5-frozen-seams.patch`, then the patch file deleted.
+
+## S2 What the suite found after the merges
+
+- [x] S2.1 Five of M5's action-queue tests used a bare `export` action, which M6 rejects at save time; the fake slot is now `sound`.
+- [x] S2.2 `builtin.py` import order; `ruff format --check` failing on `docs/SPEC.md` at M5's own commit (Markdown excluded from the formatter, one stanza in `pyproject.toml`).
+- [x] S2.3 The sandbox lacked `libEGL.so.1`, so no Qt test could import; installed for the session (see DECISIONS for the setup-script line).
+
+## S3 Seams
+
+- [x] S3.1 Email (SMTP) on Settings' Email page, ntfy on its Notifications page, as one tracked setting; secrets written first; a lone password counts as a change; "Send test" saves only those settings and rebases.
+- [x] S3.2 Retry and Dismiss in the Problems window (failed-action rows only), using the `job_id` `GET /problems` already carries; M6's second toolbar and two dialogs removed, their status message moved to `MainWindow`.
+- [x] S3.3 Tests ported and added (UI against a real engine); three mutations checked.
+- [x] S3.4 `POST /shutdown`: token-gated, 202 then a clean exit 0 (so Task Scheduler does not restart), stop runs after the response is sent.
+- [x] S3.5 `pagewatch-cli stop [--wait S]`: waits for the engine *process* to exit; nothing running is success. Real-process tests; zombie handling mutation-checked.
+- [ ] S3.6 `installer.iss` `StopEngine` calls `pagewatch-cli stop` first and keeps the hard kill as the fallback. **Not done**: Inno Script that cannot be compiled or run here (see DECISIONS for the exact change).
+- [x] S3.7 Scheduler stretches an over-limit host's interval and adaptive gaps by demand ÷ ceiling (one factor for the whole host); the stored adaptive interval is not stretched; manual checks and fixed times are not affected.
+- [x] S3.8 Stretch tests (evenly / quiet host untouched / queue 0 versus 30 without it / falls back / settings change / restart / throttling / failure) and schedule-math unit tests; two mutations checked.
+- [x] S3.9 One rounding tolerance (`capacity.exceeds`) for "over its limit", shared by the Capacity page and the stretch; the page's warning text no longer says checks "fall behind".
+- [ ] S3.10 The editor's per-host warning, from the same spec sentence as S3.7. **Not built** (the request named only the scheduler).
+
+## S4 Documents
+
+- [x] S4.1 `docs/DECISIONS_M6.md`, `_M7.md`, `_M8.md` folded into `docs/DECISIONS.md` as `## M6`, `## M7`, `## M8` (stale statements corrected in place, noted where they changed) plus the merge section; the three files removed.
+- [x] S4.2 `docs/ARCHITECTURE.md`: M7's module table and data flow, M8's packaging paragraph (both left out by their branches on purpose), `frozen.py` and `stretch.py`, the UI section, shutdown and exit codes.
+- [x] S4.3 `TASKS_M6.md`, `_M7.md`, `_M8.md` consolidated into this file (one part per milestone; stale "parallel branch" intros replaced); the three files removed.
+- [x] S4.4 `packaging/README.md`: the hard-kill note now says what exists and what is left.
+
+## S5 Finish
+
+- [x] S5.1 `uv lock`, `python tools/gen_openapi.py`: both stable on a second run.
+- [x] S5.2 `ruff check`, `ruff format --check`, `mypy --strict`: all exit 0.
+- [x] S5.3 `pytest`: exit 0, **1,544 passed, 1 skipped** (the pre-existing non-root skip; the sandbox is root), 17 deselected. Was 1,520 collected on the first merged run, with 6 failures that were fixed (S2.1, openapi).
+- [x] S5.4 `pytest -m "browser or packaging"`: **15 passed**, including a real PyInstaller build of the merged tree (M8 asked for this after merging; it covers M6's `keyring` and M7's plugins in the bundle). Not run: `soak` (24 h) and everything that needs Windows.
+- [x] S5.5 Commit and push to `claude/focused-mccarthy-2a74te`; stop (no pull request).
+
+## Manual checks that cannot run in this sandbox
+
+Those of M5 to M8 above all still apply. New: the Settings Email and Notifications pages and Problems
+Retry / Dismiss on Windows with the real Credential Manager; `installer.iss` calling `pagewatch-cli
+stop` (when S3.6 is done) on a real upgrade.

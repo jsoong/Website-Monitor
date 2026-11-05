@@ -66,14 +66,29 @@ restore, only between a restore request and the next start), `plugins/`, `engine
 | `engine/guard.py` | `ResourceGuard` (RSS of the process tree → recycle browser → exit 3; hourly `metric` samples) and `LoopWatchdog` (stack dump on a stalled loop). |
 | `engine/store/retention.py` | Version pruning, blob mark-and-sweep, disk cap, `check_run`/`metric` purge, WAL checkpoint. |
 | `engine/store/backup.py` | Backup zips, validation, staged restore applied at start-up. |
-| `engine/api/routes_maintenance.py` | `POST /backup`, `POST /restore`. |
+| `engine/api/routes_maintenance.py` | `POST /backup`, `POST /restore`, `POST /shutdown`. |
 | `engine/problems.py` | The Problems list (read-only): bookmarks in `error` / `needs_login` with the last failing check's reason, and action jobs that gave up. `GET /problems`. |
-| `engine/capacity.py` | Demand against capacity (read-only): checks/s each schedule asks for, per pool and per host, against pool size / mean check time and each host's spacing. `GET /capacity`. |
+| `engine/capacity.py` | Demand against capacity (read-only): checks/s each schedule asks for, per pool and per host, against pool size / mean check time and each host's spacing. `GET /capacity`. `engine/stretch.py` reuses its tally. |
 | `cli/service.py` | Task Scheduler task XML and `schtasks` wrapper for `service install\|uninstall\|status`. |
 | `engine/actions/` | `queue` (durable job runner), `builtin` (action registry), `toast` (coalesced); M6: `mailer`, `ntfy`, `webhook`, `export` (+ `assets`), `program`, `scrape`, `script`; shared `content` (alert content from blobs, worker job), `htmlmail` (email-safe HTML), `templating` (`{var}` and sandboxed Jinja2), `common`, `testing` (send-test). |
 | `engine/store/action_jobs.py` | SQL for the Problems list (list, retry, dismiss failed action jobs). |
 | `engine/api/routes_actions.py` | `/action-jobs`, `/notifications/test`, `/secrets/{name}`. |
-| `cli/` | `pagewatch-cli`: a synchronous client of the local API. |
+| `engine/kv.py`, `engine/urls.py` | Namespaced records in the `setting` table; URL identity for de-duplication |
+| `engine/virtual.py` | Saved searches: query model to `bookmark_query` filters, narrowing, counts |
+| `engine/portability.py` | Import parsers and importer; JSON / OPML / CSV exporters |
+| `engine/reports.py`, `data/reports/`, `engine/actions/report.py` | Report data and rendering (sandboxed Jinja2), the `report` action |
+| `plugin_api.py` | What a plugin imports and receives (`Verdict`, context, helpers) |
+| `engine/plugin_runtime.py` | Loading plugin files, `Session` (hook calls), shared with worker processes |
+| `engine/plugins.py` | `PluginHost` (catalogue, install, state) and `EngineSession` (hooks on the engine, effects) |
+| `data/plugins/` | The four shipped example plugins |
+| `engine/pipeline/merge.py`, `pipeline/links.py` | Next-page link and concatenation; link extraction (workers) |
+| `engine/follow.py`, `engine/robots.py` | Follow-Links crawl, folders, budget; robots.txt cache |
+| `engine/pipeline/assist.py`, `engine/assistant.py` | Filter assistant: selection to rules (worker), choices and patches |
+| `ui/web/bridge.js`, `ui/windows/filter_assistant.py` | Selection bridge; the assistant popup |
+| `ui/windows/saved_search.py`, `ui/windows/import_export.py` | Saved-search and import / export dialogs |
+| `engine/frozen.py` | Source versus PyInstaller bundle: `component_command()` starts the engine, UI or CLI (never `sys.executable -m`), `launch()` is what every packaged entry point does first. |
+| `engine/stretch.py` | `HostStretch`: the scheduler's response to a host asked for more than its spacing allows (see *Over-limit hosts*). |
+| `cli/` | `pagewatch-cli`: a synchronous client of the local API (`cli/power.py`: the M7 commands; `stop` waits for the engine process to exit). |
 
 ## Rules that hold everywhere
 
@@ -160,6 +175,8 @@ BrowserFetcher / ScreenshotFetcher ──ensure()──▶ BrowserManager ──
 * The scheduler wakes at least every 30 s; the action queue at least every 60 s, and at the next
   retry when one is nearer.
 * The API list endpoints are keyset-paged (`limit` ≤ 500).
+* A host asked for more checks than its minimum gap allows has its interval and adaptive gaps
+  stretched by one common factor (*Over-limit hosts* below); manual checks are never delayed.
 
 ## Unattended operation (M5)
 
@@ -226,8 +243,13 @@ than a minute ago).
 
 ### Exit codes
 
-0 normal quit · 1 error · 2 another engine owns the data folder · 3 restart me (restore applied,
-memory limit). Task Scheduler restarts on any non-zero code, every minute.
+0 normal quit (Ctrl+C, the tray, or `POST /shutdown` / `pagewatch-cli stop`) · 1 error · 2 another
+engine owns the data folder · 3 restart me (restore applied, memory limit). Task Scheduler restarts on
+any non-zero code, every minute; a clean quit with 0 stays down.
+
+`POST /shutdown` answers 202 and then quits through the same path as Ctrl+C (dispatch stops, in-flight
+checks get up to 10 s). The stop is a background task so it runs after the response is sent. The CLI
+waits on the engine's *process*, not its lockfile, which is removed before the 10 s grace is spent.
 
 A restarted engine has a **new port and a new token**. The UI follows it (see below); the CLI
 reads the lockfile on every call and so always finds the current one.
@@ -261,7 +283,41 @@ content.load_content(engine, change_id) ──▶ WorkerPool ▶ build_content(j
 * **Secrets.** Settings and action parameters hold key names (`smtp.password_key`,
   `token_key`); the engine reads values from `engine.secrets` off the event loop.
 * Action parameters are validated by `models.ACTION_PARAMS` when a bookmark or folder default is
-  saved, and again when the action runs. `docs/DECISIONS_M6.md` lists the choices behind this.
+  saved, and again when the action runs. `docs/DECISIONS.md` (M6) lists the choices behind this.
+
+## Power features (M7, as built)
+
+Virtual folders (saved searches), import / export and reports are self-contained engine modules
+behind their own routers (`routes_portability`, `routes_reports`, folders). Plugins, merge pages and
+Follow-Links sit on the check path, as follows (the filter assistant is a request / response pair
+through `routes_assist`, not part of a check):
+
+```
+runner.run
+  ├─ plugin: open session (state from kv)  → before_check (skip / rewrite the request)
+  ├─ fetch → merge pages (built-in next link / pattern, then the plugin's merge_pages) → one document
+  ├─ worker: process_check  [preprocess] → blocks → diff → gate rules 1–7
+  │                          → check_keywords (OR) → … → compare (last word)      ← plugin state/props/alerts return
+  ├─ commit (check_run.reason ← first plugin note if nothing else)
+  ├─ on_change / after_check → state saved, properties patched, toasts
+  └─ Follow-Links: new version → discover (robots, patterns, budget) → children in the generated folder
+```
+
+Plugins are trusted local code from the data folder's `plugins/`; hooks run on the engine (and, for
+`preprocess` / `compare` / `check_keywords`, in the worker processes, through the shared
+`plugin_runtime`). Follow-Links is a crawl that creates child bookmarks in a generated folder, within
+its depth and page budget and `robots.txt`.
+
+## Over-limit hosts
+
+`engine/capacity.py` measures demand per host (what the schedules ask for) against a ceiling
+(`60 / minimum gap` checks a minute, overrides included). `engine/stretch.py` acts on it: when a
+host is asked for more than its ceiling, every interval and adaptive bookmark of that host gets the
+same factor (demand ÷ ceiling) applied to the *gap before its next check*, through
+`schedule.next_due(stretch=...)`. The stored adaptive interval is not stretched and demand is measured
+from the unstretched schedules, so the factor cannot feed back into itself and falls as soon as demand
+does. Fixed-time schedules and manual checks are not affected. It is measured at start-up, when
+settings change and (at most once a minute) after checks; a failed measurement keeps the old factors.
 
 ## The UI (`pagewatch.ui`, optional `ui` extra)
 
@@ -272,23 +328,29 @@ MainWindow ── FolderTree (built-ins + folders + counts) ─┐
                                   └─ Screenshot diff tab: the overlay PNG from the engine, fitted to the pane
            ── EventStream (QWebSocket /events) ──▶ refresh rows / counts / viewer
 dialogs:   BookmarkEditor · AddBookmarkDialog · FalsePositiveDialog · SettingsDialog
-           ActionParamsDialog (per action) · NotificationSettingsDialog · FailedActionsDialog (Problems)
-           ActionTools: the second toolbar (Notifications..., Problems (n)) and the failed-action status message
+           ActionParamsDialog (per action) · FilterAssistantDialog · SavedSearchDialog · ImportExportDialog
+           NotificationsEditor: the SMTP and ntfy boxes, placed on Settings' Email and Notifications pages
 windows:   ProblemsWindow (not modal; refreshes on `problem` events)
 ```
 
-**Problems** (`windows/problems.py`) reads `GET /problems` only. A problem leaves the list when its
+**Problems** (`windows/problems.py`) reads `GET /problems`. A problem leaves the list when its
 cause does: a bookmark when a check succeeds or it is marked read, a failed action when the user
-reads its change. "Show bookmark" puts the main list back on *All bookmarks*, searches for the
+reads its change. A failed action can also be **retried** (fresh attempts) or **dismissed**, which are
+the window's only writes (`POST /action-jobs/{id}/retry`, `DELETE /action-jobs/{id}`, using the
+`job_id` the list carries); both buttons are enabled for that row type only. "Show bookmark" puts the main list back on *All bookmarks*, searches for the
 address and selects the row once the page with it has loaded. The status bar shows the count.
 
 **Settings** (`windows/settings.py`) loads `GET /settings` once and sends `PUT /settings` with only
 the fields that changed. Each control keeps a baseline read back from the widget itself, so an
 untouched window sends nothing; a save rebases to the values *it sent* (an edit made while the save
 is on its way stays a change) and ignores a second click while one is in flight. Pages: General
-(default schedule), Network (proxy, connectivity probe, pools, per-website exceptions), Notifications,
-Email (placeholder until M6), Power and resources, Retention, Backup (back up now, list, restore),
-Data folder (sizes measured off the GUI thread) and Capacity (`GET /capacity`).
+(default schedule), Network (proxy, connectivity probe, pools, per-website exceptions), Notifications
+(alert behaviour, and the ntfy server and topic), Email (the SMTP server and default recipients), Power
+and resources, Retention, Backup (back up now, list, restore), Data folder (sizes measured off the GUI
+thread) and Capacity (`GET /capacity`). The SMTP and ntfy boxes are one tracked setting
+(`notifications`) of `NotificationsEditor`; their passwords and tokens are not settings and go to the
+engine's secret store first (`PUT /secrets/{name}`), so a save never leaves settings that name a missing
+secret. "Send test" saves just those settings and then sends a sample.
 
 **Following an engine restart.** `MainWindow` knows the data folder. While the event stream is
 disconnected it re-reads `engine.lock` every two seconds; if the engine is back on another
@@ -298,3 +360,14 @@ restart or one done by hand.
 
 Closing the window stops only its own timers and WebSocket; the engine is a separate process and
 keeps checking. Lazy list: the engine pages (`/bookmarks` keyset cursor), the model appends.
+
+## Packaging (M8)
+
+One PyInstaller one-folder build holds three programs
+(`pagewatch-engine`, `-ui`, `-cli`) over a shared `_internal/`. Every program starts through
+`pagewatch.engine.frozen.launch()` (`freeze_support()` first, then the component's `main()`), and
+starts its siblings through `component_command()`, never `sys.executable -m`. `bundle.py` says
+what goes in; `build.py` builds, `smoke.py` runs the result, `installer.iss` wraps it (per-user,
+`service install --exe`, stop-engine/upgrade/restart, data kept). Upgrades are install-over; the
+engine migrates its data at start-up after `pre-migration-v<N>` backup, rolls back a failed
+migration and refuses newer data. Portable mode is `--data-dir`.

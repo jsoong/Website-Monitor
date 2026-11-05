@@ -116,10 +116,15 @@ version resources and the portable zip.
 
 ## Known limits
 
-- Never run on Windows by the author of this folder: see `docs/DECISIONS_M8.md` for exactly what
+- Never run on Windows by the author of this folder: see `docs/DECISIONS.md` (M8) for exactly what
   was and was not executed.
-- The installer stops the engine with a hard kill (the engine has no window to close and no API
-  to ask it to quit). That is safe by design (WAL, one transaction per check, interrupted checks
-  re-queued) but a clean stop would be better; see the open question in `docs/DECISIONS_M8.md`.
+- The installer still stops the engine with a hard kill (`schtasks /End`, `taskkill /F /T`). The
+  engine can now be asked to quit cleanly (`POST /shutdown`, or `pagewatch-cli stop`, which waits
+  until the process has exited and succeeds if none is running), but `StopEngine` in `installer.iss`
+  has not been changed to use it: that is Inno Script and could not be compiled or run where this
+  was written. To finish it, call `RunCli('stop --wait 30')` there before the hard kill and keep the
+  hard kill as the fallback (the old CLI in an upgrade may not have `stop`). The hard kill is safe by
+  design (WAL, one transaction per check, interrupted checks re-queued). See `docs/DECISIONS.md`,
+  *Merging M6, M7 and M8*.
 - Size: roughly 0.3 GB without the UI and 0.9 GB with it, on disk. Playwright's Node driver
   (about 0.13 GB) and QtWebEngine are most of it.

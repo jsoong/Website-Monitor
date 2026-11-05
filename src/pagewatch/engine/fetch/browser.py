@@ -67,6 +67,7 @@ BrowserState = Literal["stopped", "running", "unavailable"]
 # keep their login in exactly such a cookie. So the cookies of a profile are saved beside it
 # when its browser closes and put back when the next one starts (found by a real-browser test).
 SESSION_COOKIES = "pagewatch-session.json"
+MAX_LOGIN_PAGE = 2_000_000
 
 
 class BrowserUnavailable(RuntimeError):
@@ -789,11 +790,17 @@ class BrowserFetcher:
         )
 
     @staticmethod
-    def _login_result(
+    async def _login_result(
         page: Any, status: int | None, reason: str, macro_error: str | None = None
     ) -> FetchResult:
+        """The check ends on a login page. When a macro failed, the page it ended on is kept in
+        ``body`` (for the portal experiment, which looks for one-time-code and CAPTCHA pages)."""
+        body = b""
+        if macro_error is not None:
+            with suppress(Exception):
+                body = (await page.content()).encode("utf-8")[:MAX_LOGIN_PAGE]
         return FetchResult(
-            page.url, status, {}, "", b"", login_required=True, login_reason=reason,
+            page.url, status, {}, "", body, login_required=True, login_reason=reason,
             macro_error=macro_error,
         )  # fmt: skip
 
@@ -810,11 +817,11 @@ class BrowserFetcher:
         if await signal_in_page(page, plan.signal) is None:
             return None, False, response  # still signed in: the macro is skipped
         if plan.macro is None:
-            return self._login_result(page, status, "login_signal"), False, response
+            return await self._login_result(page, status, "login_signal"), False, response
         permit = await plan.permit_macro() if plan.permit_macro else MacroPermit(True)
         if not permit.allowed:
             return (
-                self._login_result(page, status, permit.reason or "login_blocked"),
+                await self._login_result(page, status, permit.reason or "login_blocked"),
                 False,
                 response,
             )
@@ -831,7 +838,7 @@ class BrowserFetcher:
         if plan.macro_finished is not None:
             await plan.macro_finished(error is None)
         if error is not None:
-            return self._login_result(page, status, "macro_failed", error), False, response
+            return await self._login_result(page, status, "macro_failed", error), False, response
         return None, True, response
 
     async def _fetch(self, request: FetchRequest, session: SessionSpec | None) -> FetchResult:

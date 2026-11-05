@@ -10,7 +10,9 @@ from pydantic import ValidationError
 
 from pagewatch.engine.api.app_deps import engine_dep
 from pagewatch.engine.core import Engine
-from pagewatch.engine.logins.service import LoginError, LoginNotFound, macro_out
+from pagewatch.engine.logins.common import macro_out
+from pagewatch.engine.logins.experiment import ExperimentError
+from pagewatch.engine.logins.service import LoginError, LoginNotFound
 from pagewatch.engine.logins.signin import SignInError
 from pagewatch.engine.secrets import SecretsUnavailable
 from pagewatch.engine.store import repo
@@ -18,6 +20,9 @@ from pagewatch.models import (
     SECRET_NAME,
     CookieImportIn,
     CookieStatusOut,
+    ExperimentIn,
+    ExperimentOut,
+    ExperimentReport,
     LoginStatusOut,
     MacroDef,
     MacroOut,
@@ -235,3 +240,46 @@ async def delete_secret(name: SecretName, engine: EngineDep) -> SecretOut:
     except SecretsUnavailable as exc:
         raise HTTPException(501, str(exc)) from exc
     return SecretOut(name=name, exists=False, available=engine.secrets.writable)
+
+
+# -- the portal experiment --------------------------------------------------------------
+
+
+@router.get("/experiments", response_model=list[ExperimentOut])
+async def list_experiments(engine: EngineDep) -> list[ExperimentOut]:
+    return engine.logins.experiments.all()
+
+
+@router.post("/experiments", response_model=ExperimentOut, status_code=201)
+async def start_experiment(body: ExperimentIn, engine: EngineDep) -> ExperimentOut:
+    """Start the spec's portal experiment on a semi-attended bookmark. It waits for the hand
+    sign-in, which is time zero."""
+    try:
+        return await engine.logins.experiments.create(body)
+    except ExperimentError as exc:
+        raise HTTPException(404 if "not found" in str(exc) else 422, str(exc)) from exc
+
+
+@router.get("/experiments/{exp_id}", response_model=ExperimentOut)
+async def get_experiment(exp_id: str, engine: EngineDep) -> ExperimentOut:
+    exp = engine.logins.experiments.get(exp_id)
+    if exp is None:
+        raise HTTPException(404, "no such experiment")
+    return exp
+
+
+@router.get("/experiments/{exp_id}/report", response_model=ExperimentReport)
+async def experiment_report(exp_id: str, engine: EngineDep) -> ExperimentReport:
+    """The findings so far, as text to paste into DECISIONS.md."""
+    exp = engine.logins.experiments.get(exp_id)
+    if exp is None:
+        raise HTTPException(404, "no such experiment")
+    return engine.logins.experiments.report(exp)
+
+
+@router.delete("/experiments/{exp_id}", response_model=ExperimentOut)
+async def cancel_experiment(exp_id: str, engine: EngineDep) -> ExperimentOut:
+    exp = await engine.logins.experiments.cancel(exp_id)
+    if exp is None:
+        raise HTTPException(404, "no such experiment")
+    return exp

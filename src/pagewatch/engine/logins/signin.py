@@ -56,9 +56,17 @@ class _Window:
         self._profile = profile_dir
         self._closed = asyncio.Event()
         ctx.on("close", lambda *_: self._closed.set())
+        # A page that closes is the last moment the browser may still answer for its cookies.
+        page.on("close", lambda *_: self._snapshot_soon())
+        self._background: set[asyncio.Task[Any]] = set()
         # Closing the window ends the browser, and a closed browser cannot hand over its session
         # cookies; so they are copied out while it is open. At most a second of them is at risk.
         self._snapshots = asyncio.create_task(self._snapshot_loop(), name="signin-cookies")
+
+    def _snapshot_soon(self) -> None:
+        task = asyncio.create_task(save_session_cookies(self.ctx, self._profile))
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
 
     async def _snapshot_loop(self) -> None:
         while not self._closed.is_set():
@@ -169,6 +177,7 @@ class SignInService:
             )
             self.e.events.publish("signin", {"bookmark_id": bookmark_id, "state": "finished"})
             # The session is fresh: leave needs_login and check now (spec: checks immediately).
+            await self.e.logins.experiments.note_signin(bookmark_id)  # time zero, if one waits
             await self.e.logins.resume(bookmark_id, reset_macro_block=False)
         finally:
             self._closing.discard(bookmark_id)

@@ -420,7 +420,7 @@ def demand_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """What the capacity page needs of every enabled bookmark."""
     return conn.execute(
         "SELECT id, url, check_method, schedule_json, folder_id, current_interval_s "
-        "FROM bookmark WHERE enabled=1"
+        "FROM bookmark WHERE enabled=1 AND status != 'needs_login'"  # a paused one asks for nothing
     ).fetchall()
 
 

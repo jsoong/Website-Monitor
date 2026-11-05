@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from pagewatch.engine.logins.common import is_signed_in
 from pagewatch.models import FetchConfig, MacroDef
 
 
@@ -14,8 +15,6 @@ def default_private_when_signed_in(
     """Spec (Actions, alert privacy): signed-in bookmarks default to ``private``. "Signed in"
     means credentials, a cookie file, a macro or a semi-attended session. An explicit choice on
     the bookmark or on a folder it inherits from is left alone. Returns True when it set one."""
-    from pagewatch.engine.logins.service import is_signed_in
-
     if not is_signed_in(fetch, macro_id):
         return False
     chosen = sections.get("actions")

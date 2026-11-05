@@ -141,11 +141,17 @@ def next_due(
     on_battery: bool = False,
     zone: Zone | None = None,
     rng: random.Random | None = None,
+    stretch: float = 1.0,
 ) -> tuple[datetime | None, int | None]:
     """When the next check is due and the adaptive state to store.
 
     ``changed`` is only meaningful for adaptive schedules: ``True`` after a real change,
     ``False`` after an unchanged check, ``None`` after an error.
+
+    ``stretch`` (>= 1) multiplies the wait for interval and adaptive schedules: a website whose
+    bookmarks ask for more than its spacing allows has them all slowed by the same factor
+    (spec: Capacity). The adaptive state stored is *not* stretched, so the factor never feeds
+    back into itself. Fixed clock times are never stretched.
     """
     zone = zone or SystemZone()
     rng = rng or random.Random()
@@ -158,5 +164,6 @@ def next_due(
     if cfg.mode is ScheduleMode.ADAPTIVE:
         state = adaptive_next_interval(cfg, current_interval_s, changed=changed)
     interval = effective_interval_s(cfg, state, on_battery=on_battery)
-    due = now + timedelta(seconds=jittered(interval, cfg.jitter_pct, rng))
+    wait = jittered(interval, cfg.jitter_pct, rng) * max(1.0, stretch)
+    due = now + timedelta(seconds=wait)
     return apply_limits(cfg, due, zone), state

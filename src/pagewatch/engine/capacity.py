@@ -58,7 +58,7 @@ def checks_per_second(sched: dict[str, Any], current_interval_s: int | None) -> 
     return 1.0 / max(float(interval), 1.0)
 
 
-def _tally(
+def tally(
     engine: Engine, rows: list[sqlite3.Row]
 ) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
     """pool -> [bookmarks, checks/s]; host -> [bookmarks, checks/s]. Runs off the event loop:
@@ -87,7 +87,7 @@ async def compute(engine: Engine, *, hosts_shown: int = HOSTS_SHOWN) -> Capacity
         return repo.demand_rows(conn), repo.check_time_stats(conn, since)
 
     rows, stats = await engine.db.read(read)
-    pools_raw, hosts_raw = await asyncio.to_thread(_tally, engine, rows)
+    pools_raw, hosts_raw = await asyncio.to_thread(tally, engine, rows)
     s = engine.settings
 
     pools: list[PoolDemand] = []
@@ -124,6 +124,7 @@ async def compute(engine: Engine, *, hosts_shown: int = HOSTS_SHOWN) -> Capacity
                 ceiling_per_min=ceiling,
                 utilisation=util,
                 over_limit=util is not None and util > 1.0,
+                stretch=engine.host_load.factor(host),
             )
         )
     hosts.sort(key=lambda h: (h.utilisation or 0.0, h.demand_per_min, h.host), reverse=True)

@@ -1308,6 +1308,7 @@ class HostDemand(PWModel):
     ceiling_per_min: float | None = None  # 60 / minimum spacing; None = no spacing configured
     utilisation: float | None = None
     over_limit: bool = False  # demand above the ceiling
+    stretch: float = 1.0  # how many times longer this host's checks wait because of it
 
 
 class CapacityOut(PWModel):
@@ -1409,6 +1410,64 @@ class RecordOut(PWModel):
     steps: list[MacroStep] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     error: str | None = None
+
+
+# --- The portal experiment (spec: Portal strategy -> Portal experiment) -----------------------
+
+ChallengeKind = Literal["otp", "captcha", "other"]
+DEFAULT_PROBE_MINUTES = (10, 20, 30, 60, 120)  # spec: check at 10, 20, 30, 60 and 120 minutes
+
+
+class ExperimentIn(PWModel):
+    """Run the spec's experiment on one semi-attended bookmark (with a macro for the logins)."""
+
+    bookmark_id: int
+    probe_minutes: list[int] = Field(
+        default_factory=lambda: list(DEFAULT_PROBE_MINUTES), min_length=1, max_length=12
+    )
+    logins_per_day: int = Field(3, ge=2, le=4)  # spec: two to four spaced password logins a day
+    duration_h: float = Field(48.0, gt=0.0, le=14 * 24.0)
+
+    @field_validator("probe_minutes")
+    @classmethod
+    def _sorted(cls, v: list[int]) -> list[int]:
+        if any(m <= 0 for m in v) or sorted(set(v)) != v:
+            raise ValueError("probe times are positive minutes, strictly increasing")
+        return v
+
+
+class Observation(PWModel):
+    at: str
+    kind: Literal["signin", "probe", "login"]
+    minutes_since_signin: float | None = None
+    outcome: Literal["session_alive", "session_expired", "logged_in", "challenge", "failed"] | None
+    challenge: ChallengeKind | None = None
+    snapshot: str | None = None  # file name of a saved challenge page, in the experiment's folder
+    note: str | None = None
+
+
+class ExperimentOut(PWModel):
+    id: str
+    bookmark_id: int
+    state: Literal["waiting_for_signin", "running", "done", "stopped", "cancelled"]
+    started_at: str
+    probe_minutes: list[int]
+    logins_per_day: int
+    duration_h: float
+    signin_at: str | None = None
+    ends_at: str | None = None
+    observations: list[Observation] = Field(default_factory=list)
+    stopped_because: str | None = None  # a login failed or met a challenge: no more attempts
+
+
+class ExperimentReport(PWModel):
+    id: str
+    markdown: str  # paste into DECISIONS.md
+    idle_timeout: str
+    challenges: int
+    login_attempts: int
+    logins_succeeded: int
+    stored_password_verdict: Literal["looks_safe", "not_safe", "not_enough_data"]
 
 
 class LockInfo(PWModel):

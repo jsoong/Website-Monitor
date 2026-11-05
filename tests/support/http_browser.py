@@ -203,6 +203,9 @@ class HttpBrowser:
     ) -> AsyncIterator[HttpPage]:
         jar = httpx.Cookies()
         if session is not None and session.profile_dir is not None:
+            if not session.profile_dir.exists():  # wiped (or never used): the profile starts empty
+                self.profiles.pop(session.profile_dir, None)
+            session.profile_dir.mkdir(parents=True, exist_ok=True)
             jar = httpx.Cookies(self.profile_cookies(session.profile_dir))
         client = httpx.AsyncClient(cookies=jar, follow_redirects=True, timeout=10)
         page = HttpPage(client)

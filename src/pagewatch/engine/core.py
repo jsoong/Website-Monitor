@@ -34,6 +34,7 @@ from pagewatch.engine.fetch.select import FetcherSet
 from pagewatch.engine.fetch.static import StaticFetcher
 from pagewatch.engine.guard import ResourceGuard, tree_rss_mb
 from pagewatch.engine.hostgate import HostGate
+from pagewatch.engine.hostload import HostLoad
 from pagewatch.engine.logins.service import Logins
 from pagewatch.engine.logs import get_logger, set_debug
 from pagewatch.engine.maintenance import Maintenance
@@ -115,6 +116,7 @@ class Engine:
         )
         self.actions = ActionQueue(self)
         self.logins = Logins(self)
+        self.host_load = HostLoad(self)
         self.tray: TrayController | None = (
             TrayController(self, tray_backend) if (enable_tray or tray_backend) else None
         )
@@ -187,6 +189,7 @@ class Engine:
         if interrupted:
             log.warning("interrupted_checks_requeued", bookmarks=interrupted)
         await self._load_scheduler()
+        await self.host_load.start()
         if self.settings.autowatch_state == "paused":
             until = (
                 parse_iso(self.settings.autowatch_paused_until)
@@ -215,6 +218,8 @@ class Engine:
             self.scheduler.release("startup")
         if self.maintenance is not None:
             await self.maintenance.start()
+            await self.logins.prompter.start()  # with the other daily chores
+            await self.logins.experiments.start()
         if self.guard is not None:
             await self.guard.start()
         log.info(
@@ -260,6 +265,7 @@ class Engine:
         if self.connectivity is not None:
             await self.connectivity.stop()
         await self.scheduler.stop(grace_s=10.0)
+        await self.host_load.stop()
         await self.logins.aclose()
         await self.actions.stop()
         await self.toasts.aclose()
@@ -292,6 +298,8 @@ class Engine:
             self.power.apply_keep_awake()
             self.power.poll_battery()  # the battery-saver option may have just been turned on
         self.scheduler.wake()
+        if {"host_overrides", "per_host_min_gap_s", "stretch_hosts"} & set(patch):
+            self.host_load.refresh_soon()  # the ceilings changed
         self.events.publish("engine_state", {"reason": "settings"})
         return new
 

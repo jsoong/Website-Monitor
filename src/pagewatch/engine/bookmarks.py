@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from pagewatch.engine import schedule as sched
 from pagewatch.engine.clock import iso
 from pagewatch.engine.config import FOLDER_SCALAR_DEFAULTS, resolve, validate_sections
-from pagewatch.engine.logins.service import macro_def
+from pagewatch.engine.logins.common import is_signed_in, macro_def
 from pagewatch.engine.logins.validate import check_signed_in, default_private_when_signed_in
 from pagewatch.engine.store import repo
 from pagewatch.models import (
@@ -248,8 +248,6 @@ async def patch(engine: Engine, bookmark_id: int, body: BookmarkPatch) -> sqlite
                 loads(row["fetch_json"], {}) or {},
             )
         )
-        from pagewatch.engine.logins.service import is_signed_in
-
         signed_before = is_signed_in(cfg_before, row["macro_id"])
         if not signed_before and "actions" not in stored:
             current_actions = loads(row["actions_json"], {})

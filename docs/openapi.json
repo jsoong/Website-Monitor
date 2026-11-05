@@ -1715,6 +1715,187 @@
     "title": "CookieStatusOut",
     "type": "object"
    },
+   "ExperimentIn": {
+    "additionalProperties": false,
+    "description": "Run the spec's experiment on one semi-attended bookmark (with a macro for the logins).",
+    "properties": {
+     "bookmark_id": {
+      "title": "Bookmark Id",
+      "type": "integer"
+     },
+     "duration_h": {
+      "default": 48.0,
+      "exclusiveMinimum": 0.0,
+      "maximum": 336.0,
+      "title": "Duration H",
+      "type": "number"
+     },
+     "logins_per_day": {
+      "default": 3,
+      "maximum": 4.0,
+      "minimum": 2.0,
+      "title": "Logins Per Day",
+      "type": "integer"
+     },
+     "probe_minutes": {
+      "items": {
+       "type": "integer"
+      },
+      "maxItems": 12,
+      "minItems": 1,
+      "title": "Probe Minutes",
+      "type": "array"
+     }
+    },
+    "required": [
+     "bookmark_id"
+    ],
+    "title": "ExperimentIn",
+    "type": "object"
+   },
+   "ExperimentOut": {
+    "additionalProperties": false,
+    "properties": {
+     "bookmark_id": {
+      "title": "Bookmark Id",
+      "type": "integer"
+     },
+     "duration_h": {
+      "title": "Duration H",
+      "type": "number"
+     },
+     "ends_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ends At"
+     },
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "logins_per_day": {
+      "title": "Logins Per Day",
+      "type": "integer"
+     },
+     "observations": {
+      "items": {
+       "$ref": "#/components/schemas/Observation"
+      },
+      "title": "Observations",
+      "type": "array"
+     },
+     "probe_minutes": {
+      "items": {
+       "type": "integer"
+      },
+      "title": "Probe Minutes",
+      "type": "array"
+     },
+     "signin_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Signin At"
+     },
+     "started_at": {
+      "title": "Started At",
+      "type": "string"
+     },
+     "state": {
+      "enum": [
+       "waiting_for_signin",
+       "running",
+       "done",
+       "stopped",
+       "cancelled"
+      ],
+      "title": "State",
+      "type": "string"
+     },
+     "stopped_because": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Stopped Because"
+     }
+    },
+    "required": [
+     "id",
+     "bookmark_id",
+     "state",
+     "started_at",
+     "probe_minutes",
+     "logins_per_day",
+     "duration_h"
+    ],
+    "title": "ExperimentOut",
+    "type": "object"
+   },
+   "ExperimentReport": {
+    "additionalProperties": false,
+    "properties": {
+     "challenges": {
+      "title": "Challenges",
+      "type": "integer"
+     },
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "idle_timeout": {
+      "title": "Idle Timeout",
+      "type": "string"
+     },
+     "login_attempts": {
+      "title": "Login Attempts",
+      "type": "integer"
+     },
+     "logins_succeeded": {
+      "title": "Logins Succeeded",
+      "type": "integer"
+     },
+     "markdown": {
+      "title": "Markdown",
+      "type": "string"
+     },
+     "stored_password_verdict": {
+      "enum": [
+       "looks_safe",
+       "not_safe",
+       "not_enough_data"
+      ],
+      "title": "Stored Password Verdict",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "markdown",
+     "idle_timeout",
+     "challenges",
+     "login_attempts",
+     "logins_succeeded",
+     "stored_password_verdict"
+    ],
+    "title": "ExperimentReport",
+    "type": "object"
+   },
    "FalsePositiveOut": {
     "additionalProperties": false,
     "properties": {
@@ -2592,6 +2773,11 @@
       "title": "Over Limit",
       "type": "boolean"
      },
+     "stretch": {
+      "default": 1.0,
+      "title": "Stretch",
+      "type": "number"
+     },
      "utilisation": {
       "anyOf": [
        {
@@ -3031,6 +3217,98 @@
      "id"
     ],
     "title": "MacroOut",
+    "type": "object"
+   },
+   "Observation": {
+    "additionalProperties": false,
+    "properties": {
+     "at": {
+      "title": "At",
+      "type": "string"
+     },
+     "challenge": {
+      "anyOf": [
+       {
+        "enum": [
+         "otp",
+         "captcha",
+         "other"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Challenge"
+     },
+     "kind": {
+      "enum": [
+       "signin",
+       "probe",
+       "login"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "minutes_since_signin": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Minutes Since Signin"
+     },
+     "note": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Note"
+     },
+     "outcome": {
+      "anyOf": [
+       {
+        "enum": [
+         "session_alive",
+         "session_expired",
+         "logged_in",
+         "challenge",
+         "failed"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Outcome"
+     },
+     "snapshot": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Snapshot"
+     }
+    },
+    "required": [
+     "at",
+     "kind",
+     "outcome"
+    ],
+    "title": "Observation",
     "type": "object"
    },
    "OnBattery": {
@@ -6250,6 +6528,196 @@
     "summary": "Check",
     "tags": [
      "checks"
+    ]
+   }
+  },
+  "/experiments": {
+   "get": {
+    "operationId": "list_experiments_experiments_get",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "$ref": "#/components/schemas/ExperimentOut"
+         },
+         "title": "Response List Experiments Experiments Get",
+         "type": "array"
+        }
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "summary": "List Experiments",
+    "tags": [
+     "logins"
+    ]
+   },
+   "post": {
+    "description": "Start the spec's portal experiment on a semi-attended bookmark. It waits for the hand\nsign-in, which is time zero.",
+    "operationId": "start_experiment_experiments_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ExperimentIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "201": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ExperimentOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Start Experiment",
+    "tags": [
+     "logins"
+    ]
+   }
+  },
+  "/experiments/{exp_id}": {
+   "delete": {
+    "operationId": "cancel_experiment_experiments__exp_id__delete",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "exp_id",
+      "required": true,
+      "schema": {
+       "title": "Exp Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ExperimentOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Cancel Experiment",
+    "tags": [
+     "logins"
+    ]
+   },
+   "get": {
+    "operationId": "get_experiment_experiments__exp_id__get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "exp_id",
+      "required": true,
+      "schema": {
+       "title": "Exp Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ExperimentOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Get Experiment",
+    "tags": [
+     "logins"
+    ]
+   }
+  },
+  "/experiments/{exp_id}/report": {
+   "get": {
+    "description": "The findings so far, as text to paste into DECISIONS.md.",
+    "operationId": "experiment_report_experiments__exp_id__report_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "exp_id",
+      "required": true,
+      "schema": {
+       "title": "Exp Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ExperimentReport"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Experiment Report",
+    "tags": [
+     "logins"
     ]
    }
   },

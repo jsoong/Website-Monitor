@@ -23,7 +23,7 @@ from pagewatch.engine.fetch.base import FetchError, FetchRequest, FetchResult
 from pagewatch.engine.fetch.login import signal_in_html
 from pagewatch.engine.fetch.select import BROWSER, Route, method_kind, route_for
 from pagewatch.engine.hostgate import host_of
-from pagewatch.engine.logins.service import needs_browser
+from pagewatch.engine.logins.common import needs_browser
 from pagewatch.engine.logs import get_logger
 from pagewatch.engine.pipeline.core import PipelineJob, PipelineResult, VersionRef, process_check
 from pagewatch.engine.pipeline.sources import resolve_kind
@@ -303,6 +303,7 @@ class CheckRunner:
             on_battery=e.on_battery,
             zone=e.zone,
             rng=self.rng,
+            stretch=e.host_load.factor(host_of(ctx.row["url"])),
         )
 
     # -- commits ------------------------------------------------------------------------

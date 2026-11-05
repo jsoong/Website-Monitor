@@ -52,7 +52,7 @@ from PySide6.QtWidgets import (
 )
 
 from pagewatch.engine.paths import DataDir
-from pagewatch.models import CapacityOut, HealthOut, Settings
+from pagewatch.models import CapacityOut, HealthOut, Settings, normalize_host
 from pagewatch.ui.client import ApiClient
 from pagewatch.ui.windows.bookmark_editor import UNITS, SettingError, best_unit, diff_dict
 from pagewatch.ui.windows.problems import when_text
@@ -370,7 +370,23 @@ class SettingsDialog(QDialog):
         o = self._orig
         form = self._page("How PageWatch reaches the web, and how politely.")
         self._text(form, "global_proxy", "Proxy", nullable=True,
-                   placeholder="none  (http://host:port)")  # fmt: skip
+                   placeholder="none  (http://, https:// or socks5://host:port)")  # fmt: skip
+        self._text(form, "global_proxy_username", "Proxy user name", nullable=True,
+                   placeholder="only if the proxy asks for a login")  # fmt: skip
+        self._text(form, "global_proxy_secret_key", "Proxy password name", nullable=True,
+                   placeholder="the name its password is kept under",
+                   tip="The password itself goes to the credential store, never into the settings")  # fmt: skip
+        self.proxy_password = QLineEdit()
+        self.proxy_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.proxy_password.setPlaceholderText("type to store or replace the proxy password")
+        self.btn_proxy_password = QPushButton("Save password")
+        self.btn_proxy_password.clicked.connect(self.save_proxy_password)
+        self.proxy_note = QLabel("")
+        proxy_row = QHBoxLayout()
+        proxy_row.addWidget(self.proxy_password, 1)
+        proxy_row.addWidget(self.btn_proxy_password)
+        form.addRow("Proxy password", proxy_row)
+        form.addRow("", self.proxy_note)
         self._text(form, "browser_channel", "Browser", nullable=True,
                    placeholder="bundled Chromium only",
                    tip="The installed browser tried first for JavaScript pages: msedge or chrome")  # fmt: skip
@@ -390,6 +406,15 @@ class SettingsDialog(QDialog):
         self._int(form, "worker_processes", "Processing processes", 1, 32)
         self._int(form, "per_host_concurrency", "At once per website", 1, 32)
         self._float(form, "per_host_min_gap_s", "Minimum gap per website", 0, 3600, suffix=" s")
+        self._bool(form, "stretch_hosts", "Slow a website's checks evenly when it is asked for too many",
+                   "When the bookmarks on one website ask for more checks a minute than its minimum "
+                   "gap allows, each waits proportionally longer instead of falling behind")  # fmt: skip
+        self._bool(form, "stored_password_logins", "Allow stored-password logins",
+                   "Off until the portal experiment has been run and its findings recorded. A "
+                   "macro may then fill a saved password on its own, once per window, never "
+                   "after a failure. Each bookmark must opt in too")  # fmt: skip
+        self._bool(form, "signin_prompt_enabled", "Offer to sign in again once a day")
+        self._clock(form, "signin_prompt_time", "Daily sign-in offer at")
 
         note = QLabel("Per-website exceptions. An empty cell uses the default above.")
         note.setWordWrap(True)
@@ -434,11 +459,17 @@ class SettingsDialog(QDialog):
                 item = self.overrides.item(r, c)
                 return item.text().strip() if item else ""
 
-            host = text(0).lower()
-            if not host and not text(1) and not text(2):
+            typed = text(0)
+            if not typed and not text(1) and not text(2):
                 continue  # a blank row the user never filled in
-            if not host:
+            if not typed:
                 raise SettingError(f"Website exceptions, row {r + 1}: the website name is empty")
+            try:  # the engine matches by host name: a pasted address is reduced to it
+                host = normalize_host(typed)
+            except ValueError as exc:
+                raise SettingError(
+                    f"Website exceptions, row {r + 1}: {typed!r} is not a website name"
+                ) from exc
             try:
                 conc = int(text(1)) if text(1) else None
                 gap = float(text(2)) if text(2) else None
@@ -669,9 +700,11 @@ class SettingsDialog(QDialog):
         self.pools = QTableWidget(0, 5)
         self.pools.setObjectName("poolDemand")
         self.pools.setHorizontalHeaderLabels(["Pool", "Bookmarks", "Asked for", "Can do", "Load"])
-        self.hosts = QTableWidget(0, 5)
+        self.hosts = QTableWidget(0, 6)
         self.hosts.setObjectName("hostDemand")
-        self.hosts.setHorizontalHeaderLabels(["Website", "Bookmarks", "Asked for", "Limit", "Load"])
+        self.hosts.setHorizontalHeaderLabels(
+            ["Website", "Bookmarks", "Asked for", "Limit", "Load", "Intervals"]
+        )
         for table, wide in ((self.pools, 3), (self.hosts, 0)):  # the column that gets the room
             table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             table.verticalHeader().hide()
@@ -690,6 +723,20 @@ class SettingsDialog(QDialog):
         form.addRow(self.pools)
         form.addRow(self.hosts)
         form.addRow(refresh)
+
+    def save_proxy_password(self) -> None:
+        key = self.w["global_proxy_secret_key"]
+        name = key.text().strip() if isinstance(key, QLineEdit) else ""
+        password = self.proxy_password.text()
+        if not name or not password:
+            self.proxy_note.setText("Type a password and a name for it first.")
+            return
+        self.proxy_password.clear()  # it leaves the form the moment it is sent
+        run_async(
+            lambda: self._client.put_secret(name, password),
+            lambda _o: self.proxy_note.setText("Proxy password saved to the credential store."),
+            lambda e: self.proxy_note.setText(str(e).split(": ", 1)[-1]),
+        )
 
     def refresh_capacity(self) -> None:
         self.capacity_summary.setText("Measuring...")
@@ -721,12 +768,14 @@ class SettingsDialog(QDialog):
             )
             load = "" if h.utilisation is None else f"{h.utilisation:.0%}"
             self._row(self.hosts, r, [h.host, str(h.bookmarks), f"{h.demand_per_min:.1f}/min",
-                                      ceiling, load + (" over limit" if h.over_limit else "")],
+                                      ceiling, load + (" over limit" if h.over_limit else ""),
+                                      f"x{h.stretch:.1f}" if h.stretch > 1.0 else ""],
                       h.over_limit)  # fmt: skip
         if out.hosts_over_limit:
             warnings.append(
                 f"{out.hosts_over_limit} website(s) are asked for more checks than their minimum gap "
-                "allows, so those checks will fall behind. Lengthen their intervals or shorten the gap."
+                "allows. PageWatch waits proportionally longer between all of that website's "
+                "checks (see Intervals); lengthen their intervals or shorten the gap to avoid it."
             )
         if out.hosts_total > len(out.hosts):
             warnings.append(f"Showing the {len(out.hosts)} busiest of {out.hosts_total} websites.")

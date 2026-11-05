@@ -46,6 +46,7 @@ from pagewatch.ui.models import (
 from pagewatch.ui.windows.add_assistant import AddBookmarkDialog
 from pagewatch.ui.windows.bookmark_editor import BookmarkEditor
 from pagewatch.ui.windows.false_positive import FalsePositiveDialog
+from pagewatch.ui.windows.macros import MacrosDialog
 from pagewatch.ui.windows.problems import ProblemsWindow
 from pagewatch.ui.windows.settings import SettingsDialog
 from pagewatch.ui.windows.viewer import TABS, ViewerPanel
@@ -77,6 +78,7 @@ class MainWindow(QMainWindow):
         self._pending_next: int | None = None
         self._reveal: int | None = None  # a bookmark id the list should select once it has loaded
         self.problems_window: ProblemsWindow | None = None
+        self.signin_offer: list[int] = []
         self._paused = False
         self.setWindowTitle("PageWatch")
         self.resize(1360, 820)
@@ -187,6 +189,13 @@ class MainWindow(QMainWindow):
         self.act_problems = self._action(
             "Problems", ["Ctrl+Shift+P"], self.open_problems, "Failing bookmarks and failed actions"
         )
+        self.act_signin = self._action(
+            "Sign in...", ["Ctrl+L"], self.sign_in_selected,
+            "Open a window to sign in to the selected bookmark's site, then check it at once",
+        )  # fmt: skip
+        self.act_macros = self._action(
+            "Macros", [], self.open_macros, "Record and edit the steps that log in to a site"
+        )
         for i, name in enumerate(TABS):  # keyboard access to every viewer tab
             self._action(
                 f"Show {name}",
@@ -205,6 +214,8 @@ class MainWindow(QMainWindow):
         ):
             bar.addAction(act)
         bar.addSeparator()
+        bar.addAction(self.act_signin)
+        bar.addAction(self.act_macros)
         bar.addAction(self.act_problems)
         bar.addAction(self.act_settings)
         self.addToolBar(bar)
@@ -385,7 +396,11 @@ class MainWindow(QMainWindow):
                 if cur is not None and cur.id == bid:
                     self.viewer.show_bookmark(bid, cur.name)
             self._debounce.start()
+        elif kind == "signin":
+            self._on_signin_event(data)
         elif kind in ("change_detected", "check_finished", "engine_state", "problem"):
+            if kind == "engine_state" and data.get("reason") == "signin_prompt":
+                self.offer_signin(list(data.get("bookmark_ids") or []))
             self._debounce.start()
             if self.problems_window is not None and self.problems_window.isVisible():
                 self.problems_window.schedule_refresh()
@@ -497,6 +512,47 @@ class MainWindow(QMainWindow):
             self.refresh_health()
 
         run_async(lambda: self.client.autowatch(state), done, lambda e: self.say(str(e)))
+
+    # -- logins -------------------------------------------------------------------------
+
+    def sign_in_selected(self) -> None:
+        """Open the sign-in window for the selected bookmark (spec: semi-attended sign-in)."""
+        targets = self.selected_summaries()
+        if len(targets) != 1:
+            self.say("Select one bookmark to sign in to.")
+            return
+        target = targets[0]
+        self.say(f"Opening a sign-in window for {target.name}...")
+        run_async(
+            lambda: self.client.start_signin(target.id),
+            lambda _o: self.say(
+                f"Sign in to {target.name} in the window that opened, then close it: "
+                "PageWatch checks as soon as you do."
+            ),
+            lambda e: self.say(str(e).split(": ", 1)[-1]),
+        )
+
+    def _on_signin_event(self, data: dict[str, Any]) -> None:
+        bid = data.get("bookmark_id")
+        if data.get("state") == "finished":
+            self.say("Signed in. Checking now.")
+        if isinstance(bid, int):
+            self.model.refresh_bookmark(bid)
+        self._debounce.start()
+
+    def offer_signin(self, ids: list[int]) -> None:
+        """The daily prompt (spec: "A daily prompt offers to sign in again"). A line in the
+        status bar and a count on the toolbar button: never a dialog that steals focus."""
+        self.signin_offer = ids
+        self.act_signin.setText(f"Sign in... ({len(ids)})" if ids else "Sign in...")
+        if ids:
+            self.say(
+                f"{len(ids)} bookmark(s) could use a fresh sign-in. Select one and choose "
+                "Sign in..., or ignore this."
+            )
+
+    def open_macros(self) -> None:
+        self._exec(MacrosDialog(self.client, self))
 
     # -- problems -----------------------------------------------------------------------
 

@@ -115,7 +115,7 @@ async def test_a_spacing_override_delays_the_second_check_on_that_host_only(
     t0 = clock.monotonic()
     await client.post("/check", json={"ids": [a, b, elsewhere]})
     await settle(engine, clock)
-    started = {u: t for u, t in starts}
+    started = dict(starts)
     assert started["http://other.test/c"] == t0  # another host is not held back
     first_two = sorted(t for u, t in starts if "127.0.0.1" in u)
     assert first_two == [t0]  # one went at once; the other waits out the 30 s spacing

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 from PySide6.QtCore import Signal
@@ -34,6 +35,7 @@ from pagewatch.models import (
     DAYS,
     ActionType,
     BookmarkOut,
+    CapacityOut,
     FilterRule,
     FolderOut,
     RecordsConfig,
@@ -41,6 +43,7 @@ from pagewatch.models import (
     TestFilterOut,
 )
 from pagewatch.ui.client import ApiClient
+from pagewatch.ui.windows.login_panel import LoginPanel
 from pagewatch.ui.workers import run_async
 
 IMPLEMENTED_ACTIONS = {"toast", "sound", "open", "mark_read"}
@@ -284,6 +287,34 @@ class BookmarkEditor(QDialog):
         form.addRow("Adaptive: factor", self.ad_factor)
         form.addRow("Jitter", self.jitter)
         form.addRow("On battery", self.battery)
+        # Spec (Capacity): "When a host's demand exceeds its limit, the editor warns".
+        self.host_warning = QLabel("")
+        self.host_warning.setWordWrap(True)
+        self.host_warning.setStyleSheet("color: #b26a00")
+        form.addRow(self.host_warning)
+        if not self.bulk:
+            self.check_host_load()
+
+    def check_host_load(self) -> None:
+        """Ask the engine whether this bookmark's website is asked for more checks than its
+        minimum gap allows; if so, say that its intervals are being stretched."""
+        host = (urlsplit(self._orig.url).hostname or "").lower()
+
+        def done(out: CapacityOut) -> None:
+            for h in out.hosts:
+                if h.host == host and h.over_limit:
+                    self.host_warning.setText(
+                        f"{host} is asked for {h.demand_per_min:.1f} checks a minute but its "
+                        f"minimum gap allows {h.ceiling_per_min or 0:.1f}. PageWatch is waiting "
+                        f"{h.stretch:.1f} times as long between checks of every bookmark on it. "
+                        "Lengthen some intervals, or shorten the website's minimum gap in "
+                        "Settings (Network)."
+                    )
+                    return
+            self.host_warning.setText("")
+
+        if host:
+            run_async(self._client.capacity, done, None)
 
     def schedule_dict(self) -> dict[str, Any]:
         days = [d for d, box in self.days.items() if box.isChecked()]
@@ -549,12 +580,17 @@ class BookmarkEditor(QDialog):
         form.addRow("Alert content", self.privacy)
 
     def _build_login(self) -> None:
-        form = self._tab("Login")
-        form.addRow(
-            QLabel(
-                "Signed-in checks (macros, cookies, semi-attended sign-in) are not available yet."
+        if self.bulk:
+            form = self._tab("Login")
+            note = QLabel(
+                "Sign-in settings belong to one bookmark: open a single bookmark to set them."
             )
-        )
+            note.setWordWrap(True)
+            form.addRow(note)
+            self.login: LoginPanel | None = None
+            return
+        self.login = LoginPanel(self._client, self._orig, parent=self)
+        self.tabs.addTab(self.login, "Login")
 
     def _build_advanced(self) -> None:
         f = self._orig.fetch
@@ -567,6 +603,19 @@ class BookmarkEditor(QDialog):
         self.user_agent = QLineEdit(f.user_agent or "")
         self.proxy = QLineEdit(f.proxy or "")
         self.proxy.setPlaceholderText("http://host:port or socks5://host:port")
+        self.proxy_user = QLineEdit(f.proxy_username or "")
+        self.proxy_user.setPlaceholderText("only if the proxy asks for a login")
+        self.proxy_key = QLineEdit(f.proxy_secret_key or f"bookmark-{self._orig.id}-proxy")
+        self.proxy_password = QLineEdit()
+        self.proxy_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.proxy_password.setPlaceholderText("type to store or replace the proxy password")
+        self.btn_proxy_password = QPushButton("Save password")
+        self.btn_proxy_password.clicked.connect(self.save_proxy_password)
+        self.proxy_note = QLabel("")
+        self.proxy_note.setWordWrap(True)
+        proxy_row = QHBoxLayout()
+        proxy_row.addWidget(self.proxy_password, 1)
+        proxy_row.addWidget(self.btn_proxy_password)
         self.timeout = QDoubleSpinBox()
         self.timeout.setRange(1, 300)
         self.timeout.setValue(f.timeout_s)
@@ -600,6 +649,10 @@ class BookmarkEditor(QDialog):
         form.addRow("POST body", self.body)
         form.addRow("User agent", self.user_agent)
         form.addRow("Proxy", self.proxy)
+        form.addRow("Proxy user name", self.proxy_user)
+        form.addRow("Proxy password name", self.proxy_key)
+        form.addRow("Proxy password", proxy_row)
+        form.addRow("", self.proxy_note)
         form.addRow("Timeout (s)", self.timeout)
         form.addRow(self.verify)
         form.addRow("Browser: wait after load (s)", self.b_delay)
@@ -616,6 +669,21 @@ class BookmarkEditor(QDialog):
         for i, edit in enumerate(self.info, 1):
             form.addRow(f"Info {i}", edit)
         form.addRow("Note", self.note)
+
+    def save_proxy_password(self) -> None:
+        key, password = self.proxy_key.text().strip(), self.proxy_password.text()
+        if not key or not password:
+            self.proxy_note.setText("Type a password and a name for it first.")
+            return
+        self.proxy_password.clear()  # it leaves the form the moment it is sent
+
+        def done(_o: Any) -> None:
+            self.proxy_note.setText("Proxy password saved to the credential store.")
+
+        run_async(
+            lambda: self._client.put_secret(key, password), done,
+            lambda e: self.proxy_note.setText(str(e).split(": ", 1)[-1]),
+        )  # fmt: skip
 
     # -- patch --------------------------------------------------------------------------
 
@@ -649,7 +717,17 @@ class BookmarkEditor(QDialog):
                 raise SettingError(
                     f"Records configuration: {where + ': ' if where else ''}{first['msg']}"
                 ) from exc
+        proxy_user = self.proxy_user.text().strip() or None
+        sign_in: dict[str, Any] = {}
+        if self.login is not None:
+            try:
+                sign_in = self.login.fetch_part()
+            except ValueError as exc:
+                raise SettingError(str(exc)) from exc
         return {
+            **sign_in,
+            "proxy_username": proxy_user,
+            "proxy_secret_key": (self.proxy_key.text().strip() or None) if proxy_user else None,
             "browser": {
                 "delay_after_load_s": float(self.b_delay.value()),
                 "scroll_count": self.b_scrolls.value(),
@@ -704,6 +782,8 @@ class BookmarkEditor(QDialog):
                     patch["move_to_root"] = True
                 else:
                     patch["folder_id"] = folder
+            if self.login is not None and self.login.macro_id() != o.macro_id:
+                patch["macro_id"] = self.login.macro_id()
             for key, value, before in (
                 ("check_method", self.method.currentData(), o.check_method.value),
                 ("source_type", self.source.currentData(), o.source_type.value),

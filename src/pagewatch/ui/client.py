@@ -24,15 +24,21 @@ from pagewatch.models import (
     CapacityOut,
     ChangeOut,
     CheckRunOut,
+    CookieStatusOut,
     FalsePositiveOut,
     FolderOut,
     HealthOut,
+    LoginStatusOut,
+    MacroOut,
     Page,
     PreviewOut,
     ProblemsOut,
+    RecordOut,
     RenderOut,
     RestoreOut,
+    SecretOut,
     Settings,
+    SignInOut,
     TestFilterOut,
 )
 
@@ -243,6 +249,74 @@ class ApiClient:
     def preview(self, url: str, *, samples: int = 2, gap_s: float = 5.0) -> PreviewOut:
         body = {"url": url, "samples": samples, "gap_s": gap_s}
         return PreviewOut.model_validate(self._call("POST", "/preview", json=body, timeout=60))
+
+    # -- logins -------------------------------------------------------------------------
+
+    def login_status(self, bookmark_id: int) -> LoginStatusOut:
+        return LoginStatusOut.model_validate(self._call("GET", f"/bookmarks/{bookmark_id}/login"))
+
+    def resume_login(self, bookmark_id: int) -> LoginStatusOut:
+        return LoginStatusOut.model_validate(
+            self._call("POST", f"/bookmarks/{bookmark_id}/login/resume")
+        )
+
+    def start_signin(self, bookmark_id: int) -> SignInOut:
+        return SignInOut.model_validate(
+            self._call("POST", f"/bookmarks/{bookmark_id}/signin", timeout=90)
+        )
+
+    def finish_signin(self, bookmark_id: int) -> SignInOut:
+        return SignInOut.model_validate(
+            self._call("POST", f"/bookmarks/{bookmark_id}/signin/finish", timeout=90)
+        )
+
+    def wipe_session(self, bookmark_id: int) -> None:
+        self._call("DELETE", f"/bookmarks/{bookmark_id}/session")
+
+    def import_cookies(
+        self, bookmark_id: int, *, path: str | None = None, text: str | None = None
+    ) -> CookieStatusOut:
+        body = self._clean({"path": path, "text": text})
+        return CookieStatusOut.model_validate(
+            self._call("POST", f"/bookmarks/{bookmark_id}/cookies", json=body)
+        )
+
+    def remove_cookies(self, bookmark_id: int) -> None:
+        self._call("DELETE", f"/bookmarks/{bookmark_id}/cookies")
+
+    def macros(self) -> list[MacroOut]:
+        return [MacroOut.model_validate(m) for m in self._call("GET", "/macros")]
+
+    def create_macro(self, body: dict[str, Any]) -> MacroOut:
+        return MacroOut.model_validate(self._call("POST", "/macros", json=body))
+
+    def replace_macro(self, macro_id: int, body: dict[str, Any]) -> MacroOut:
+        return MacroOut.model_validate(self._call("PUT", f"/macros/{macro_id}", json=body))
+
+    def delete_macro(self, macro_id: int) -> None:
+        self._call("DELETE", f"/macros/{macro_id}")
+
+    def start_recording(self, url: str, password_secret_key: str) -> RecordOut:
+        body = {"url": url, "password_secret_key": password_secret_key}
+        return RecordOut.model_validate(self._call("POST", "/macros/record", json=body))
+
+    def recording(self, rec_id: str) -> RecordOut:
+        return RecordOut.model_validate(self._call("GET", f"/macros/record/{rec_id}"))
+
+    def cancel_recording(self, rec_id: str) -> RecordOut:
+        return RecordOut.model_validate(self._call("DELETE", f"/macros/record/{rec_id}"))
+
+    def secret(self, name: str) -> SecretOut:
+        return SecretOut.model_validate(self._call("GET", f"/secrets/{name}"))
+
+    def put_secret(self, name: str, value: str) -> SecretOut:
+        """Store a password in the engine's credential store; it is never read back."""
+        return SecretOut.model_validate(
+            self._call("PUT", f"/secrets/{name}", json={"value": value})
+        )
+
+    def delete_secret(self, name: str) -> SecretOut:
+        return SecretOut.model_validate(self._call("DELETE", f"/secrets/{name}"))
 
 
 def connect(data_dir: DataDir) -> ApiClient:

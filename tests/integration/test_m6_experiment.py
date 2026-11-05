@@ -118,7 +118,8 @@ async def test_the_spec_protocol_probes_at_the_set_minutes_then_logs_in_spaced_a
     assert exp["state"] == "done" and exp["stopped_because"] is None
     assert len(logins) == 6 and all(o["outcome"] == "logged_in" for o in logins)  # 3 a day, 2 days
     gaps = [
-        b["minutes_since_signin"] - a["minutes_since_signin"] for a, b in zip(logins, logins[1:])
+        b["minutes_since_signin"] - a["minutes_since_signin"]
+        for a, b in zip(logins, logins[1:], strict=False)
     ]
     assert all(abs(g - 8 * 60) < 10 for g in gaps)  # evenly spaced, every 8 hours
     assert portal.logins == ["alice"] * 7  # the hand sign-in plus six password logins

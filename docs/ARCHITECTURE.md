@@ -68,6 +68,8 @@ restore, only between a restore request and the next start), `plugins/`, `engine
 | `engine/store/retention.py` | Version pruning, blob mark-and-sweep, disk cap, `check_run`/`metric` purge, WAL checkpoint. |
 | `engine/store/backup.py` | Backup zips, validation, staged restore applied at start-up. |
 | `engine/api/routes_maintenance.py` | `POST /backup`, `POST /restore`. |
+| `engine/problems.py` | The Problems list (read-only): bookmarks in `error` / `needs_login` with the last failing check's reason, and action jobs that gave up. `GET /problems`. |
+| `engine/capacity.py` | Demand against capacity (read-only): checks/s each schedule asks for, per pool and per host, against pool size / mean check time and each host's spacing. `GET /capacity`. |
 | `cli/service.py` | Task Scheduler task XML and `schtasks` wrapper for `service install\|uninstall\|status`. |
 | `cli/` | `pagewatch-cli`: a synchronous client of the local API. |
 
@@ -225,6 +227,9 @@ than a minute ago).
 0 normal quit · 1 error · 2 another engine owns the data folder · 3 restart me (restore applied,
 memory limit). Task Scheduler restarts on any non-zero code, every minute.
 
+A restarted engine has a **new port and a new token**. The UI follows it (see below); the CLI
+reads the lockfile on every call and so always finds the current one.
+
 ## The UI (`pagewatch.ui`, optional `ui` extra)
 
 ```
@@ -233,8 +238,28 @@ MainWindow ── FolderTree (built-ins + folders + counts) ─┐
            ── ViewerPanel (history list, toggles, tab bar) ── one shared QWebEngineView
                                   └─ Screenshot diff tab: the overlay PNG from the engine, fitted to the pane
            ── EventStream (QWebSocket /events) ──▶ refresh rows / counts / viewer
-dialogs:   BookmarkEditor · AddBookmarkDialog · FalsePositiveDialog
+dialogs:   BookmarkEditor · AddBookmarkDialog · FalsePositiveDialog · SettingsDialog
+windows:   ProblemsWindow (not modal; refreshes on `problem` events)
 ```
+
+**Problems** (`windows/problems.py`) reads `GET /problems` only. A problem leaves the list when its
+cause does: a bookmark when a check succeeds or it is marked read, a failed action when the user
+reads its change. "Show bookmark" puts the main list back on *All bookmarks*, searches for the
+address and selects the row once the page with it has loaded. The status bar shows the count.
+
+**Settings** (`windows/settings.py`) loads `GET /settings` once and sends `PUT /settings` with only
+the fields that changed. Each control keeps a baseline read back from the widget itself, so an
+untouched window sends nothing; a save rebases to the values *it sent* (an edit made while the save
+is on its way stays a change) and ignores a second click while one is in flight. Pages: General
+(default schedule), Network (proxy, connectivity probe, pools, per-website exceptions), Notifications,
+Email (placeholder until M6), Power and resources, Retention, Backup (back up now, list, restore),
+Data folder (sizes measured off the GUI thread) and Capacity (`GET /capacity`).
+
+**Following an engine restart.** `MainWindow` knows the data folder. While the event stream is
+disconnected it re-reads `engine.lock` every two seconds; if the engine is back on another
+port/token it calls `ApiClient.retarget` and `EventStream.retarget`. That is what makes "Restore"
+usable from Settings (the engine exits with code 3 and comes back) and survives a memory-guard
+restart or one done by hand.
 
 Closing the window stops only its own timers and WebSocket; the engine is a separate process and
 keeps checking. Lazy list: the engine pages (`/bookmarks` keyset cursor), the model appends.

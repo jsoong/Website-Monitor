@@ -569,9 +569,10 @@ half rewrite: 10,000 blocks, 50% replaced             5850.5ms /  6485.2ms*(1000
   exist only when the engine is built with `enable_unattended` (the real entry point does), like the
   tray. A unit test therefore never probes a real network or starts a background loop it did not ask
   for. The old tests are unchanged; M5's own tests opt in with fakes.
-* **Outside M5** (their milestones): the Settings and Problems screens (every M5 setting is reachable
-  through `PUT /settings`), email/ntfy/export actions and their Problems entry (M6), plugins (M7),
-  packaging (M8).
+* **Outside M5** (their milestones): email/ntfy/export actions and their Problems entry (M6), plugins
+  (M7), packaging (M8). *The Settings and Problems screens were left out of this first pass (every M5
+  setting was reachable through `PUT /settings`) and added in "M5 part 2" below, on the owner's
+  instruction.*
 
 ### Sleep, resume, catch-up
 
@@ -803,3 +804,143 @@ code, and a **real-time** sample of a real engine process.
 * A real 24-hour soak, the 14-day uptime criterion, and the 10,000-bookmark capacity run.
 * The engine's default connectivity URL on the owner's network (a corporate proxy or captive portal may
   change what "online" means).
+
+## M5 · part 2: the Settings and Problems screens
+
+### Scope and starting point
+
+* **The brief and the repository disagreed, and the repository won.** The session brief said M0-M4 were
+  complete at `90ca022` with 791 tests and asked for M5. The branch actually carried the M5 *engine* half
+  already (`ff4234b`, `a051864`: 905 passed + 1 skipped here, checked first). It was not redone. What it
+  had left out on purpose was the two screens, which M3 had deferred as "(M5/M6)" and which the brief asked
+  for ("any Settings and Problems UI screens deferred to M5"). This part is exactly those, plus the
+  smallest engine and UI support they need.
+* **Not built, deliberately** (each is a judgement call for the owner, not an oversight):
+  * *Email panel*: a placeholder page. The SMTP settings and the email action are M6; inventing the
+    settings now would fix their names and secrets handling early.
+  * *The scheduler stretching an over-limit host's intervals, and the editor's per-host warning* (spec:
+    Scheduler → Capacity). That is Scheduler behaviour with no milestone of its own; Settings only *shows*
+    which hosts are over their limit.
+  * *Retry / dismiss for a failed action.* It needs an API shape nobody asked for. See "Problems" for how
+    a failed action leaves the list without one.
+  * *Engine-level problems* (a backup or clean-up that failed, a memory restart) are `problem` events and
+    are **not persisted**, so a window opened afterwards cannot list them. Persisting them is the open
+    question below.
+
+### Engine additions (all read-only or additive)
+
+* **`GET /problems` and `GET /capacity` are new endpoints.** They are not in the spec's table; there is no
+  way to list failed jobs or measure demand without them. Both are additive and are in `docs/openapi.json`.
+  The spec says to ask before changing a public API shape; adding two reads is the smaller reading of
+  that, and it is flagged here so the owner can object.
+* **`PUT /settings`: `null` removes a `host_overrides` entry.** Merging could add or change a website's
+  exception but never remove one (a bug found while building the editor). The same convention as a
+  bookmark patch; a plain value still merges as before.
+* **`PUT /settings` 422 detail now names the field** (`static_pool: Input should be ...`,
+  `default_schedule.interval_s: ...`). Still a string; before, a form with 30 fields could not say which
+  one was wrong.
+* **No schema change, no new dependency.**
+
+### Problems
+
+* **Two sources, both already persisted**: bookmarks in `error` / `needs_login`, and `action_job` rows
+  that are `failed`. A bookmark's reason is the code of its last failing `check_run` (`http_503`, `dns`,
+  `tls`...), because that is all the engine stores (the message text is only in the log and the one toast);
+  the UI turns the code into a sentence and keeps the raw code in the tooltip. A bookmark whose failing
+  run was purged (30 days) is listed as `unknown error`. `needs_login` is listed for completeness: nothing
+  sets that status until M6.
+* **A problem clears itself when its cause does.** A bookmark leaves the list on the next good check or
+  when it is marked read (the M5 rule for the error counter). **A failed action leaves it when the user
+  reads the change it belongs to** (`change.read_at`), because reading is the acknowledgement and without a
+  dismiss button a failure would otherwise stay until retention pruned its version, weeks later. The cost:
+  an action that failed on a change the user then read stops being listed (the check log still has it).
+  Mutation-tested: dropping the `read_at` condition fails the test that guards it.
+* The window refreshes on `problem` events (debounced) and the status bar carries the count, fetched with
+  `GET /problems?limit=1`.
+* "Show bookmark" works through the existing list API (back to *All bookmarks*, search for the address,
+  select the row when its page has loaded): no new endpoint, and it still works at 10,000 bookmarks.
+
+### Capacity
+
+* **Demand** is what the schedules ask for: `1/interval` (the adaptive interval a bookmark currently has),
+  `times x days / week` for fixed times, nothing for manual or disabled bookmarks. **Windows and day limits
+  are ignored, so it is an upper bound.** The pool is the scheduler's own flag for the bookmark, so an
+  `auto` bookmark that detection moved to the browser counts against the browser pool. The static pool
+  includes non-HTTP sources (files, FTP, feeds).
+* **Capacity** is `pool size / mean check time` over the last 24 hours of timed checks (skipped runs took no
+  pool time and are left out), and **only with at least 5 samples**: with fewer, the page says "not
+  measured yet" rather than guess. The warning is at **80%** (spec), a constant in `capacity.py`.
+* **A host's ceiling** is `60 / minimum gap` checks a minute (the spec's 2 s spacing gives 30), from that
+  host's own limits, overrides included; no gap means no ceiling.
+* Measured (10,000 bookmarks on 400 hosts, one machine): `GET /capacity` **median 188 ms**, worst 224 ms;
+  `GET /problems` with 200 failing bookmarks **52 ms**. The schedule resolution runs off the event loop.
+
+### Settings window
+
+* **Sends only what changed**, as `PUT /settings`. Every control's baseline is *read back from the widget*,
+  so a stored value the control cannot show exactly (a spin box rounds) can never turn an untouched window
+  into a save. A save **rebases to the values it sent**, not to the widgets as they are when the answer
+  arrives, and ignores a second click while it is in flight: the first version re-read the widgets and
+  would have swallowed an edit made during the save (caught by a test written for the race; mutation-tested).
+* **Pages**: General (default schedule, user agent, time zone, DEBUG log level, start-up delay), Network,
+  Notifications, Email (placeholder), Power and resources, Retention, Backup, Data folder, Capacity.
+  The spec names the first six and Backup/Data folder; the other pages are where *Sleep, resume and
+  connectivity*, *Continuous operation* and *Capacity* ask for settings to live.
+* **Offered**: the settings a person would reasonably change. **Not offered** (still reachable with
+  `PUT /settings`): the probe, battery-poll, memory-check and metric intervals, the memory guard's grace
+  period, `blob_grace_h` (a safety margin that has a 1-hour floor for a reason) and `browser_args`.
+* **Three settings are read only at start-up**: `worker_processes`, `startup_delay_s`, `os_power_events`.
+  They are labelled "(needs restart)" and saving one says so. Everything else applies at once, including
+  the DEBUG toggle (the spec asks for that one explicitly).
+* **"Last automatic backup"**, not "last backup": `/health.last_backup_at` records the nightly job, and a
+  manual backup does not update it. A manual backup is shown by its file in the list and by the message
+  after it.
+* **The data folder is the UI's own knowledge** (`--data-dir`, passed to the window), not an API field: the
+  engine does not report it, and the lockfile is already how the UI finds the engine. Disk use is measured
+  off the GUI thread, only when that page opens. Backups are listed by reading the folder, as the M5 entry
+  for `POST /backup` said the UI would.
+* **Restore from Settings**: confirmation first (it says the current data is copied to `pre-restore` and
+  unsaved edits are dropped), `POST /restore`, then the window closes because nothing in it is current.
+  Tested end to end: the dialog stages it, the first engine stops (standing in for exit code 3), a second
+  engine on the same folder applies it, the window follows, and only the backed-up bookmark exists.
+
+### The UI follows a restarted engine
+
+An engine that restarts has a new port and a new token, so the old address never answers again. Before
+this, a restore, a memory-guard exit 3 or a manual restart left the UI disconnected until it was closed and
+reopened. `MainWindow(data_dir=...)` now re-reads `engine.lock` every two seconds while disconnected and
+retargets the client and the event stream when it finds a different engine. Tested with two real engines
+on one data folder; mutation-tested (disabling the retarget times out).
+
+### Environment
+
+* A fresh container needs the Qt libraries before any UI test collects (`libegl1 libgl1 libnss3
+  libxkbcommon0 libxkbcommon-x11-0 libdbus-1-3 libfontconfig1 libxcomposite1 libxdamage1 libxrandr2
+  libxtst6 libxi6 libasound2t64 libxcursor1 libxkbfile1 libxcb-cursor0 libxcb-icccm4 libxcb-image0
+  libxcb-keysyms1 libxcb-render-util0 libxcb-shape0 libglib2.0-0`). Without them `tests/ui` fails at
+  import (`libEGL.so.1`), which looks like a code failure and is not.
+
+### Tests
+
+Default suite 905 -> **956 passed** (+51, 1 skipped as before): 18 engine (`test_m5_problems_capacity.py`),
+8 Problems window, 21 Settings window, 4 reconnect. Every behaviour above that a reviewer might doubt was
+mutation-tested (the change was made to the code and the guarding test seen to fail, then reverted): the
+read-acknowledgement of failed actions, the 80% threshold, host-override removal, send-only-changes, rebase
+to what was sent, the engine-restart retarget, the whole-address (not substring) port comparison, and both
+halves of "Show bookmark". Two of those are bugs found in my own first versions: the settings rebase race and
+the port substring match.
+
+### Not verified here
+
+* The look of the windows on **Windows** (these were rendered offscreen on Linux and inspected as images;
+  button order, fonts and dark mode follow the OS and were not seen). "Open folder" and the file dialog
+  are seams in tests; the real calls are one line each.
+* A restore under **Task Scheduler** (`--supervised`), where the task, not the engine, starts the next
+  process. The in-process test above stands in for the restart.
+
+### Open question for the owner
+
+Should engine-level problems (a failed nightly backup or clean-up, a memory-guard restart) be recorded so
+the Problems window can show them after the fact? Today they are events only: visible if the UI was open,
+otherwise only in `logs\engine.log`. It needs one small table (a migration) or a `_state.` entry, which is
+why it was not done unasked.

@@ -1236,6 +1236,51 @@
     "title": "BulkResult",
     "type": "object"
    },
+   "CapacityOut": {
+    "additionalProperties": false,
+    "properties": {
+     "generated_at": {
+      "title": "Generated At",
+      "type": "string"
+     },
+     "hosts": {
+      "items": {
+       "$ref": "#/components/schemas/HostDemand"
+      },
+      "title": "Hosts",
+      "type": "array"
+     },
+     "hosts_over_limit": {
+      "title": "Hosts Over Limit",
+      "type": "integer"
+     },
+     "hosts_total": {
+      "title": "Hosts Total",
+      "type": "integer"
+     },
+     "pools": {
+      "items": {
+       "$ref": "#/components/schemas/PoolDemand"
+      },
+      "title": "Pools",
+      "type": "array"
+     },
+     "warn_utilisation": {
+      "title": "Warn Utilisation",
+      "type": "number"
+     }
+    },
+    "required": [
+     "pools",
+     "hosts",
+     "hosts_total",
+     "hosts_over_limit",
+     "warn_utilisation",
+     "generated_at"
+    ],
+    "title": "CapacityOut",
+    "type": "object"
+   },
    "ChangeOut": {
     "additionalProperties": false,
     "properties": {
@@ -2261,6 +2306,57 @@
     "title": "HighlightMode",
     "type": "string"
    },
+   "HostDemand": {
+    "additionalProperties": false,
+    "properties": {
+     "bookmarks": {
+      "title": "Bookmarks",
+      "type": "integer"
+     },
+     "ceiling_per_min": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ceiling Per Min"
+     },
+     "demand_per_min": {
+      "title": "Demand Per Min",
+      "type": "number"
+     },
+     "host": {
+      "title": "Host",
+      "type": "string"
+     },
+     "over_limit": {
+      "default": false,
+      "title": "Over Limit",
+      "type": "boolean"
+     },
+     "utilisation": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Utilisation"
+     }
+    },
+    "required": [
+     "host",
+     "bookmarks",
+     "demand_per_min"
+    ],
+    "title": "HostDemand",
+    "type": "object"
+   },
    "HostOverride": {
     "additionalProperties": false,
     "properties": {
@@ -2439,6 +2535,83 @@
     "title": "Page[CheckRunOut]",
     "type": "object"
    },
+   "PoolDemand": {
+    "additionalProperties": false,
+    "description": "Load on one worker pool: checks per second the schedules ask for, against what the pool can\ndo at the recent mean check time (``None`` until enough checks have been timed).",
+    "properties": {
+     "bookmarks": {
+      "title": "Bookmarks",
+      "type": "integer"
+     },
+     "capacity_per_s": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Capacity Per S"
+     },
+     "demand_per_s": {
+      "title": "Demand Per S",
+      "type": "number"
+     },
+     "mean_check_s": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Mean Check S"
+     },
+     "name": {
+      "enum": [
+       "static",
+       "browser"
+      ],
+      "title": "Name",
+      "type": "string"
+     },
+     "samples": {
+      "default": 0,
+      "title": "Samples",
+      "type": "integer"
+     },
+     "size": {
+      "title": "Size",
+      "type": "integer"
+     },
+     "utilisation": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Utilisation"
+     },
+     "warn": {
+      "default": false,
+      "title": "Warn",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "name",
+     "bookmarks",
+     "demand_per_s",
+     "size"
+    ],
+    "title": "PoolDemand",
+    "type": "object"
+   },
    "PreviewOut": {
     "additionalProperties": false,
     "properties": {
@@ -2587,6 +2760,135 @@
      "url"
     ],
     "title": "PreviewRequest",
+    "type": "object"
+   },
+   "ProblemOut": {
+    "additionalProperties": false,
+    "description": "One line of the Problems list: a bookmark that is failing, or an action that gave up.",
+    "properties": {
+     "action_type": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Action Type"
+     },
+     "attempts": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Attempts"
+     },
+     "bookmark_id": {
+      "title": "Bookmark Id",
+      "type": "integer"
+     },
+     "bookmark_name": {
+      "title": "Bookmark Name",
+      "type": "string"
+     },
+     "change_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Change Id"
+     },
+     "consecutive_errors": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Consecutive Errors"
+     },
+     "job_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Job Id"
+     },
+     "kind": {
+      "enum": [
+       "bookmark_error",
+       "needs_login",
+       "action_failed"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "message": {
+      "title": "Message",
+      "type": "string"
+     },
+     "occurred_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Occurred At"
+     },
+     "url": {
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "kind",
+     "bookmark_id",
+     "bookmark_name",
+     "url",
+     "message",
+     "occurred_at"
+    ],
+    "title": "ProblemOut",
+    "type": "object"
+   },
+   "ProblemsOut": {
+    "additionalProperties": false,
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/ProblemOut"
+      },
+      "title": "Items",
+      "type": "array"
+     },
+     "total": {
+      "title": "Total",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "items",
+     "total"
+    ],
+    "title": "ProblemsOut",
     "type": "object"
    },
    "ProposalOut": {
@@ -4406,6 +4708,52 @@
     ]
    }
   },
+  "/capacity": {
+   "get": {
+    "description": "Scheduled demand per worker pool and per host, against what each can do.",
+    "operationId": "get_capacity_capacity_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "hosts",
+      "required": false,
+      "schema": {
+       "default": 50,
+       "maximum": 500,
+       "minimum": 1,
+       "title": "Hosts",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/CapacityOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Get Capacity",
+    "tags": [
+     "problems"
+    ]
+   }
+  },
   "/changes/{change_id}/false-positive": {
    "post": {
     "description": "Flag a change as a false positive; returns proposed automatic filters.",
@@ -4798,6 +5146,52 @@
     "summary": "Preview",
     "tags": [
      "changes"
+    ]
+   }
+  },
+  "/problems": {
+   "get": {
+    "description": "Failing bookmarks (with the last error) and actions that gave up, newest first.",
+    "operationId": "get_problems_problems_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 200,
+       "maximum": 1000,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ProblemsOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Get Problems",
+    "tags": [
+     "problems"
     ]
    }
   },

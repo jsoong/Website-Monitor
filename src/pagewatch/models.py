@@ -972,6 +972,65 @@ class RestoreOut(PWModel):
     message: str
 
 
+ProblemKind = Literal["bookmark_error", "needs_login", "action_failed"]
+
+
+class ProblemOut(PWModel):
+    """One line of the Problems list: a bookmark that is failing, or an action that gave up."""
+
+    kind: ProblemKind
+    bookmark_id: int
+    bookmark_name: str
+    url: str
+    message: str  # the last error: a check's failure code (`http_503`, `dns`) or the action's error
+    occurred_at: (
+        str | None
+    )  # when the last failing check ran; for an action, when its change was found
+    consecutive_errors: int | None = None  # bookmark problems
+    job_id: int | None = None  # action problems
+    change_id: int | None = None
+    action_type: str | None = None
+    attempts: int | None = None
+
+
+class ProblemsOut(PWModel):
+    items: list[ProblemOut]
+    total: int  # all current problems, even when `items` was cut by `limit`
+
+
+class PoolDemand(PWModel):
+    """Load on one worker pool: checks per second the schedules ask for, against what the pool can
+    do at the recent mean check time (``None`` until enough checks have been timed)."""
+
+    name: Literal["static", "browser"]
+    bookmarks: int
+    demand_per_s: float
+    size: int  # the pool's setting (static_pool / browser_pool)
+    mean_check_s: float | None = None
+    samples: int = 0
+    capacity_per_s: float | None = None
+    utilisation: float | None = None  # demand / capacity
+    warn: bool = False  # above WARN_UTILISATION
+
+
+class HostDemand(PWModel):
+    host: str
+    bookmarks: int
+    demand_per_min: float
+    ceiling_per_min: float | None = None  # 60 / minimum spacing; None = no spacing configured
+    utilisation: float | None = None
+    over_limit: bool = False  # demand above the ceiling
+
+
+class CapacityOut(PWModel):
+    pools: list[PoolDemand]
+    hosts: list[HostDemand]  # busiest first, cut to `hosts_shown`
+    hosts_total: int
+    hosts_over_limit: int
+    warn_utilisation: float
+    generated_at: str
+
+
 class LockInfo(PWModel):
     pid: int
     port: int

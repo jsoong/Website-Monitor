@@ -17,9 +17,11 @@ from pagewatch.engine.instance import read_lockfile
 from pagewatch.engine.paths import DataDir
 from pagewatch.models import (
     AutowatchState,
+    BackupOut,
     BookmarkCounts,
     BookmarkOut,
     BookmarkSummary,
+    CapacityOut,
     ChangeOut,
     CheckRunOut,
     FalsePositiveOut,
@@ -27,7 +29,9 @@ from pagewatch.models import (
     HealthOut,
     Page,
     PreviewOut,
+    ProblemsOut,
     RenderOut,
+    RestoreOut,
     Settings,
     TestFilterOut,
 )
@@ -49,9 +53,20 @@ class ApiClient:
     def __init__(self, base_url: str, token: str, *, timeout: float = 30.0) -> None:
         self.base_url = base_url
         self.token = token
-        self._http = httpx.Client(
-            base_url=base_url, headers={"Authorization": f"Bearer {token}"}, timeout=timeout
+        self._timeout = timeout
+        self._http = self._make_http(base_url, token)
+
+    def _make_http(self, base_url: str, token: str) -> httpx.Client:
+        return httpx.Client(
+            base_url=base_url, headers={"Authorization": f"Bearer {token}"}, timeout=self._timeout
         )
+
+    def retarget(self, base_url: str, token: str) -> None:
+        """Point at a restarted engine (a new start means a new port and a new token). Requests
+        already on their way to the old engine finish or fail on their own."""
+        old, self._http = self._http, self._make_http(base_url, token)
+        self.base_url, self.token = base_url, token
+        old.close()
 
     @property
     def ws_url(self) -> str:
@@ -94,6 +109,24 @@ class ApiClient:
 
     def settings(self) -> Settings:
         return Settings.model_validate(self._call("GET", "/settings"))
+
+    def put_settings(self, patch: dict[str, Any]) -> Settings:
+        """Send only the settings that changed; the engine merges them and validates the result."""
+        return Settings.model_validate(self._call("PUT", "/settings", json=patch))
+
+    def problems(self, limit: int = 200) -> ProblemsOut:
+        return ProblemsOut.model_validate(self._call("GET", "/problems", params={"limit": limit}))
+
+    def capacity(self, hosts: int = 50) -> CapacityOut:
+        return CapacityOut.model_validate(self._call("GET", "/capacity", params={"hosts": hosts}))
+
+    def backup(self, *, include_blobs: bool | None = None, path: str | None = None) -> BackupOut:
+        body = self._clean({"include_blobs": include_blobs, "path": path})
+        return BackupOut.model_validate(self._call("POST", "/backup", json=body, timeout=600))
+
+    def restore(self, path: str) -> RestoreOut:
+        """Stage a backup; the engine then restarts itself to apply it (new port, new token)."""
+        return RestoreOut.model_validate(self._call("POST", "/restore", json={"path": path}))
 
     # -- folders ------------------------------------------------------------------------
 

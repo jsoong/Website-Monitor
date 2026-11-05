@@ -390,6 +390,10 @@ class FolderTree(QTreeWidget):
         if target is not None and target is not self.currentItem():
             self.setCurrentItem(target)
 
+    def select_all(self) -> None:
+        """Back to "All bookmarks" (a no-op if it is already selected)."""
+        self.setCurrentItem(self._builtin_items["all"])
+
     def selected_folder_id(self) -> int | None:
         item = self.currentItem()
         key = item.data(0, KeyRole) if item is not None else None

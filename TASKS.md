@@ -9,12 +9,15 @@ operation and reliability*, and the M5 acceptance criteria. Also the two items e
 parked here: heartbeat-lateness resume detection (DECISIONS M0) and the per-job worker timeout
 (DECISIONS M2, M4 "Known limits").
 
-Out of scope (later milestones, not touched): email/ntfy/export/run_program/scrape/script actions,
-the Problems screen and logins/macros/proxies (M6); the Settings screen (its retention and backup
-panels need nothing the API does not already give: `PUT /settings`); Follow-Links, import/export,
-reports, plugins (M7); packaging and the real Windows install check (M8). The spec's M6 criterion
-"a failing SMTP server leads to retries, then a Problems entry" stays M6; M5 only makes sure the
-queue underneath it is durable and ordered.
+Out of scope (later milestones, not touched): email/ntfy/export/run_program/scrape/script actions
+and logins/macros/proxies (M6); Follow-Links, import/export, reports, plugins (M7); packaging and the
+real Windows install check (M8). The spec's M6 criterion "a failing SMTP server leads to retries, then
+a Problems entry" stays M6; M5 only makes sure the queue underneath it is durable and ordered.
+
+**The Settings and Problems screens are in scope for M5** (owner's instruction for the session that
+wrote "Part 2" below; DECISIONS M3 had deferred them as "M5/M6" and the first M5 pass left them out).
+The engine half of M5 was committed first (`ff4234b`, `a051864`); Part 2 adds only the two screens, the
+two small read endpoints they need, and the UI reconnect that makes "Restore" usable from Settings.
 
 Rules from SPEC "Working agreement": one milestone, deviations logged in `docs/DECISIONS.md`,
 ARCHITECTURE.md updated, full suite green, one commit. **No new dependency** (psutil, httpx and
@@ -141,7 +144,76 @@ local remote-tracking ref was stale). The local branch was fast-forwarded to `90
 
 - [x] S11.1 `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` (M5 section), `docs/openapi.json`.
 - [x] S11.2 ruff (lint and format), mypy `--strict`, full default suite green.
-- [ ] S11.3 Commit, push to `claude/focused-mccarthy-2a74te`, stop (no M6).
+- [x] S11.3 Commit and push the engine half (`ff4234b`, `a051864` on `claude/focused-mccarthy-2a74te`).
+
+# M5 Part 2: the Settings and Problems screens
+
+Starting point: HEAD `a051864` (the session brief assumed `90ca022`; the engine half was already
+there). Baseline in this container, after installing the Qt system libraries: **905 passed, 1 skipped** (not the 791 in the brief, which predates the engine half).
+
+Spec text this implements: *Desktop UI → Other screens* ("Settings (defaults, network, email,
+notifications, retention, backup, data folder), Problems (errors and failed actions)"), *Actions →
+Execution rules* ("Failed jobs appear in the UI's Problems list with the last error"), *Scheduler →
+Capacity* ("Settings shows current demand per pool and per host ... browser demand against capacity ...
+warns above 80%"), *Observability* ("The DEBUG level can be toggled in Settings without a restart"),
+*Backup* ("Manual backup and restore: from Settings or the CLI; the engine restarts itself").
+
+Not done on purpose (see DECISIONS, M5 part 2): the Email panel is a placeholder (SMTP settings and the
+email action are M6); the scheduler stretching an over-limit host's intervals and the editor's per-host
+warning (Scheduler work with no milestone of its own; Settings only *shows* the over-limit hosts);
+retry/dismiss buttons for failed actions (an API shape the owner has not asked for).
+
+## S12 Engine: two read endpoints and one settings fix
+
+- [x] S12.0 Baseline green in this container (Qt libraries installed, default suite).
+- [x] S12.1 `models.py`: `ProblemOut` / `ProblemsOut`, `PoolDemand` / `HostDemand` / `CapacityOut` (additive).
+- [x] S12.2 `engine/problems.py` + `GET /problems`: bookmarks in `error` / `needs_login` with the last failing
+  check's reason, and `failed` action jobs with their last error; newest first, `total`, `limit`.
+- [x] S12.3 `engine/capacity.py` + `GET /capacity`: demand = sum of 1/interval per pool (static, browser) and
+  per host; capacity from the pool size and the rolling mean check time; per-host ceiling from the spacing;
+  `warn` above 80%.
+- [x] S12.4 `SettingsStore.update`: `null` removes a `host_overrides` entry (merge could never remove one).
+- [x] S12.5 Tests: problems (error with reason, needs-login, failed action, ordering, cleared by mark-read /
+  success), capacity (known inputs, browser warn, host over ceiling, 10,000-bookmark timing), host-override
+  removal, auth required.
+- [x] S12.6 `docs/openapi.json` regenerated.
+
+## S13 UI: client and reconnect
+
+- [x] S13.1 `ApiClient`: `problems()`, `capacity()`, `put_settings()`, `backup()`, `restore()`, `retarget()`.
+- [x] S13.2 `EventStream.retarget()`; `MainWindow` re-reads the lockfile while disconnected and retargets
+  when the engine came back on a new port/token (restore, memory-guard exit 3, manual restart).
+- [x] S13.3 Tests: retarget against a second engine on the same data folder.
+
+## S14 UI: Problems window (`ui/windows/problems.py`)
+
+- [x] S14.1 Table: kind, bookmark, last error, when, attempts; newest first; refresh on `problem`,
+  `bookmark_updated` and `engine_state` events (debounced) and on demand.
+- [x] S14.2 Actions: Check now (bookmark errors), Show bookmark (selects it in the main list), Open URL, Copy error.
+- [x] S14.3 Main window: Problems toolbar action with a count in the status bar; Ctrl+Shift+P.
+- [x] S14.4 Tests against a real engine: an error bookmark and a failed action appear, clear after a good
+  check / mark-read, Show bookmark selects the row.
+
+## S15 UI: Settings dialog (`ui/windows/settings.py`)
+
+- [x] S15.1 Pages: General (default schedule, user agent, time zone, debug logging), Network (proxy,
+  connectivity, politeness, pools, per-host overrides), Notifications, Email (placeholder), Power & resources,
+  Retention, Backup, Data folder, Capacity.
+- [x] S15.2 Sends only the fields that changed; engine validation errors shown in place; fields that need a
+  restart are labelled.
+- [x] S15.3 Backup page: back up now (with/without blobs), list the folder's backups, restore (confirmed,
+  then the UI reconnects).
+- [x] S15.4 Capacity page: pools and hosts with the 80% warning; Data folder page: sizes off the GUI thread.
+- [x] S15.5 Main window: Settings action (Ctrl+,).
+- [x] S15.6 Tests: untouched dialog sends nothing, a changed field round-trips, bad value shown not sent,
+  host override added and removed, debug logging toggled live, backup now writes a zip, restore through
+  the dialog restarts and the window reconnects.
+
+## S16 Finish (Part 2)
+
+- [x] S16.1 `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` (M5 part 2), `docs/openapi.json`.
+- [x] S16.2 `ruff check`, `ruff format --check`, `mypy --strict`, full default suite: all exit 0 (**956 passed, 1 skipped**: 905 + 51 new).
+- [x] S16.3 Commit, push to `claude/focused-mccarthy-2a74te`, stop (no M6).
 
 ## Added along the way (not in the first plan)
 
@@ -169,3 +241,19 @@ process (80 MB) and not by the process tree (302 MB). See DECISIONS (M5, Soak).
 - `schtasks /Create` with the generated XML on a Windows machine, and the task restarting the engine after exit code 3 (only the XML is checked here).
 - A real 24-hour soak, 14 days of uptime, and the 2-hour 10,000-bookmark capacity run.
 - The default connectivity URL on the owner's network.
+
+## M5 Part 2: what the tests prove
+
+| Requirement | Proof |
+| --- | --- |
+| Problems lists a failing bookmark with its last error and clears when it recovers or is opened | `test_m5_problems_capacity.py` (real engine, fake clock), `tests/ui/test_problems.py` (live update from the engine's `problem` event) |
+| Failed actions are listed after the 5th failure, with attempts, and clear when the change is read | both files above; mutation-tested |
+| Demand per pool and per host, browser warning above 80%, host over its limit | `test_m5_problems_capacity.py` (cases at 150%, 90%, 75%, 50% of capacity; 10,000 bookmarks in < 2 s, measured 188 ms) |
+| Settings sends only changes, shows the engine's refusal, labels restart-only fields | `tests/ui/test_settings.py` (21 tests); mutation-tested (send-all, rebase, host removal) |
+| Back up now, restore from Settings, the window follows the restarted engine | `test_restoring_through_the_window_restarts_into_the_backup_and_the_window_follows` (two real engines on one folder), `tests/ui/test_reconnect.py` |
+
+## Manual checks that cannot run in this sandbox (Part 2)
+
+- How the Settings and Problems windows look on Windows (they were rendered offscreen on Linux): fonts,
+  button order, dark mode.
+- A restore under Task Scheduler (`--supervised`).

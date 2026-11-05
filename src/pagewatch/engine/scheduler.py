@@ -161,6 +161,12 @@ class Scheduler:
     def is_queued(self, bookmark_id: int) -> bool:
         return bookmark_id in self._queued
 
+    def uses_browser_pool(self, bookmark_id: int) -> bool | None:
+        """Which pool the bookmark runs in right now (an ``auto`` bookmark moves to the browser
+        pool once detection finds a JavaScript app); ``None`` when it is not registered."""
+        e = self._entries.get(bookmark_id)
+        return None if e is None else e.browser
+
     # -- membership ---------------------------------------------------------------------
 
     def upsert(

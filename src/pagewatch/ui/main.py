@@ -73,7 +73,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         client = connect(data_dir)
     events = EventStream(client.ws_url, client.token)
-    window = MainWindow(client, events, persist=True)
+    window = MainWindow(client, events, persist=True, data_dir=data_dir)
     events.start()
     window.show()
     code = app.exec()

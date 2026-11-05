@@ -73,4 +73,7 @@ async def put_settings(patch: dict[str, object], engine: EngineDep) -> Settings:
     try:
         return await engine.update_settings(dict(patch))
     except ValidationError as exc:
-        raise HTTPException(422, str(exc.errors()[0]["msg"])) from exc
+        first = exc.errors()[0]
+        where = ".".join(str(part) for part in first["loc"])
+        detail = f"{where}: {first['msg']}" if where else str(first["msg"])
+        raise HTTPException(422, detail) from exc

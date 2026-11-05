@@ -377,6 +377,65 @@ def action_job_earlier_failed(conn: sqlite3.Connection, job: sqlite3.Row) -> boo
     )
 
 
+# -- problems and capacity (read-only; the Problems list and the Settings capacity page) ------
+
+
+def problem_bookmarks(conn: sqlite3.Connection, limit: int) -> list[sqlite3.Row]:
+    """Bookmarks that are failing or need a login, with the reason and time of their last
+    failing check (``check_run`` keeps 30 days; older failures come back with no reason)."""
+    return conn.execute(
+        "SELECT b.id, b.name, b.url, b.status, b.consecutive_errors, "
+        "r.reason AS reason, COALESCE(r.finished_at, r.started_at) AS at "
+        "FROM bookmark b LEFT JOIN check_run r ON r.id = (SELECT MAX(id) FROM check_run "
+        "WHERE bookmark_id=b.id AND outcome='error') "
+        "WHERE b.status IN ('error','needs_login') ORDER BY at DESC, b.id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+
+
+def problem_actions(conn: sqlite3.Connection, limit: int) -> list[sqlite3.Row]:
+    """Action jobs that gave up, for changes the user has not read yet: reading a change is the
+    acknowledgement (the same rule as an error bookmark, which clears when it is opened)."""
+    return conn.execute(
+        "SELECT j.id AS job_id, j.change_id, j.action_type, j.attempts, j.last_error, "
+        "c.detected_at AS at, b.id, b.name, b.url "
+        "FROM action_job j JOIN change c ON c.id=j.change_id JOIN bookmark b ON b.id=c.bookmark_id "
+        "WHERE j.status='failed' AND c.read_at IS NULL ORDER BY j.id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+
+
+def problem_counts(conn: sqlite3.Connection) -> int:
+    marks = conn.execute(
+        "SELECT COUNT(*) FROM bookmark WHERE status IN ('error','needs_login')"
+    ).fetchone()[0]
+    jobs = conn.execute(
+        "SELECT COUNT(*) FROM action_job j JOIN change c ON c.id=j.change_id "
+        "WHERE j.status='failed' AND c.read_at IS NULL"
+    ).fetchone()[0]
+    return int(marks) + int(jobs)
+
+
+def demand_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """What the capacity page needs of every enabled bookmark."""
+    return conn.execute(
+        "SELECT id, url, check_method, schedule_json, folder_id, current_interval_s "
+        "FROM bookmark WHERE enabled=1"
+    ).fetchall()
+
+
+def check_time_stats(conn: sqlite3.Connection, since: str) -> dict[str, tuple[int, float]]:
+    """Per pool (``static`` / ``browser``): how many timed checks since ``since`` and their mean
+    duration in seconds. Skipped runs (offline, held back) took no pool time and are left out."""
+    rows = conn.execute(
+        "SELECT CASE WHEN method IN ('browser','screenshot') THEN 'browser' ELSE 'static' END "
+        "AS pool, COUNT(*) AS n, AVG(duration_ms) AS ms FROM check_run "
+        "WHERE started_at>=? AND duration_ms IS NOT NULL AND outcome!='skipped' GROUP BY pool",
+        (since,),
+    ).fetchall()
+    return {r["pool"]: (int(r["n"]), float(r["ms"]) / 1000.0) for r in rows}
+
+
 # -- the check commit -------------------------------------------------------------------
 
 

@@ -41,6 +41,12 @@ class SettingsStore:
     async def update(self, patch: dict[str, Any]) -> Settings:
         """Validate ``patch`` merged onto the current settings, then persist what changed."""
         merged = deep_merge(self.current.model_dump(mode="json"), patch)
+        if isinstance(patch.get("host_overrides"), dict):
+            # Merging can add or change a host's override but never remove one, so ``null``
+            # means "remove it" (the same convention as a bookmark patch).
+            merged["host_overrides"] = {
+                host: value for host, value in merged["host_overrides"].items() if value is not None
+            }
         new = Settings.model_validate(merged)  # raises ValidationError on bad input
         changed = {key: getattr(new, key) for key in patch if key in Settings.model_fields}
         dumped = new.model_dump(mode="json")

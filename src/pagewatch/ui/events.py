@@ -32,6 +32,14 @@ class EventStream(QObject):
         self._wanted = True
         self._open()
 
+    def retarget(self, ws_url: str, token: str) -> None:
+        """Follow a restarted engine: it has a new port and a new token. Reconnects at once."""
+        self._url, self._token = ws_url, token
+        if self._wanted:
+            self._timer.stop()
+            self._ws.abort()
+            self._open()
+
     def stop(self) -> None:
         self._wanted = False
         self._timer.stop()

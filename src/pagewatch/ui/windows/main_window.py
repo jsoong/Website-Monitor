@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPushButton,
     QSplitter,
     QTableView,
     QToolBar,
@@ -31,7 +32,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from pagewatch.models import BookmarkOut, BookmarkSummary, FolderOut
+from pagewatch.engine.instance import read_lockfile
+from pagewatch.engine.paths import DataDir
+from pagewatch.models import BookmarkOut, BookmarkSummary, FolderOut, Settings
 from pagewatch.ui.client import ApiClient
 from pagewatch.ui.events import EventStream
 from pagewatch.ui.models import (
@@ -43,10 +46,14 @@ from pagewatch.ui.models import (
 from pagewatch.ui.windows.add_assistant import AddBookmarkDialog
 from pagewatch.ui.windows.bookmark_editor import BookmarkEditor
 from pagewatch.ui.windows.false_positive import FalsePositiveDialog
+from pagewatch.ui.windows.problems import ProblemsWindow
+from pagewatch.ui.windows.settings import SettingsDialog
 from pagewatch.ui.windows.viewer import TABS, ViewerPanel
 from pagewatch.ui.workers import run_async
 
 HEALTH_MS = 5000
+REVEAL_TIMEOUT_MS = 4000  # how long "Show bookmark" waits for the list to load the row
+RECONNECT_MS = 2000  # while disconnected: how often to look for a restarted engine
 REFRESH_DEBOUNCE_MS = 250
 SEARCH_DEBOUNCE_MS = 250
 
@@ -58,14 +65,18 @@ class MainWindow(QMainWindow):
         events: EventStream | None = None,
         *,
         persist: bool = False,
+        data_dir: DataDir | None = None,
     ) -> None:
         super().__init__()
         self.client = client
         self.events = events
+        self.data_dir = data_dir  # where the engine's lockfile is; needed to follow a restart
         self._persist = persist
         self._folders: list[FolderOut] = []
         self._query: dict[str, Any] = {}
         self._pending_next: int | None = None
+        self._reveal: int | None = None  # a bookmark id the list should select once it has loaded
+        self.problems_window: ProblemsWindow | None = None
         self._paused = False
         self.setWindowTitle("PageWatch")
         self.resize(1360, 820)
@@ -126,6 +137,9 @@ class MainWindow(QMainWindow):
         self._health_timer.setInterval(HEALTH_MS)
         self._health_timer.timeout.connect(self.refresh_health)
         self._health_timer.start()
+        self._reconnect_timer = QTimer(self)
+        self._reconnect_timer.setInterval(RECONNECT_MS)
+        self._reconnect_timer.timeout.connect(self.follow_restart)
 
         self._refresh_side()
         self.refresh_health()
@@ -167,6 +181,12 @@ class MainWindow(QMainWindow):
             "Search", ["Ctrl+F"], lambda: self.search.setFocus(), "Search"
         )
         self.act_delete = self._action("Delete", ["Delete"], self.delete_selected)
+        self.act_settings = self._action(
+            "Settings", ["Ctrl+,"], self.open_settings, "Settings, backup and capacity"
+        )
+        self.act_problems = self._action(
+            "Problems", ["Ctrl+Shift+P"], self.open_problems, "Failing bookmarks and failed actions"
+        )
         for i, name in enumerate(TABS):  # keyboard access to every viewer tab
             self._action(
                 f"Show {name}",
@@ -184,6 +204,9 @@ class MainWindow(QMainWindow):
             self.act_next,
         ):
             bar.addAction(act)
+        bar.addSeparator()
+        bar.addAction(self.act_problems)
+        bar.addAction(self.act_settings)
         self.addToolBar(bar)
 
     def _build_status_bar(self) -> None:
@@ -193,6 +216,10 @@ class MainWindow(QMainWindow):
         self.lbl_browser = QLabel("browser: -")
         self.lbl_state = QLabel("")
         self.lbl_total = QLabel("")
+        self.btn_problems = QPushButton("Problems: -")
+        self.btn_problems.setFlat(True)
+        self.btn_problems.setToolTip("Failing bookmarks and failed actions (Ctrl+Shift+P)")
+        self.btn_problems.clicked.connect(self.open_problems)
         self.lbl_message = QLabel("")  # feedback for actions ("Queued 3 checks", ...)
         self.lbl_view = QLabel("")  # what the viewer says about what it shows
         bar = self.statusBar()
@@ -204,6 +231,7 @@ class MainWindow(QMainWindow):
             self.lbl_browser,
             self.lbl_state,
             self.lbl_total,
+            self.btn_problems,
         ):
             bar.addPermanentWidget(w)
         bar.addWidget(self.lbl_message, 1)
@@ -261,6 +289,18 @@ class MainWindow(QMainWindow):
 
     def _page_loaded(self) -> None:
         self.lbl_total.setText(f"{self.model.total:,} bookmarks")
+        if self._reveal is not None:
+            row = next(
+                (
+                    r
+                    for r in range(self.model.rowCount())
+                    if self.model.summary(r).id == self._reveal
+                ),
+                None,
+            )
+            if row is not None:
+                self._reveal = None
+                self._select_row(row)
         if self._pending_next is not None:
             start, self._pending_next = self._pending_next, None
             self._advance(start)
@@ -279,12 +319,13 @@ class MainWindow(QMainWindow):
         self.viewer.show_bookmark(b.id, b.name)
 
     def _refresh_side(self) -> None:
-        def load() -> tuple[list[FolderOut], Any]:
-            return self.client.folders(), self.client.counts()
+        def load() -> tuple[list[FolderOut], Any, int]:
+            return self.client.folders(), self.client.counts(), self.client.problems(1).total
 
-        def done(res: tuple[list[FolderOut], Any]) -> None:
+        def done(res: tuple[list[FolderOut], Any, int]) -> None:
             self._folders = res[0]
             self.tree.load(res[0], res[1])
+            self.set_problem_count(res[2])
 
         run_async(load, done, lambda _e: None)
 
@@ -311,8 +352,27 @@ class MainWindow(QMainWindow):
     def _on_connection(self, up: bool) -> None:
         self.lbl_conn.setText("engine: connected" if up else "engine: disconnected")
         if up:
+            self._reconnect_timer.stop()
             self._refresh_side()
             self.model.reload()
+            self.refresh_health()
+        elif self.data_dir is not None:
+            self._reconnect_timer.start()
+
+    def follow_restart(self) -> bool:
+        """Look for an engine that restarted (after a restore, a memory-guard exit or by hand):
+        it comes back on a new port with a new token, so the old address never answers again.
+        Returns True when the window was pointed at a new engine."""
+        if self.data_dir is None or self.events is None:
+            return False
+        info = read_lockfile(self.data_dir)  # None while the engine is down or still starting
+        base_url = f"http://127.0.0.1:{info.port}" if info is not None else ""
+        if info is None or (self.client.token == info.token and self.client.base_url == base_url):
+            return False
+        self.client.retarget(base_url, info.token)
+        self.events.retarget(self.client.ws_url, info.token)
+        self.say("The engine restarted: reconnecting")
+        return True
 
     def _on_event(self, kind: str, data: dict[str, Any]) -> None:
         if kind == "bookmark_updated":
@@ -327,6 +387,8 @@ class MainWindow(QMainWindow):
             self._debounce.start()
         elif kind in ("change_detected", "check_finished", "engine_state", "problem"):
             self._debounce.start()
+            if self.problems_window is not None and self.problems_window.isVisible():
+                self.problems_window.schedule_refresh()
             if kind != "check_finished":
                 self.refresh_health()
 
@@ -436,6 +498,54 @@ class MainWindow(QMainWindow):
 
         run_async(lambda: self.client.autowatch(state), done, lambda e: self.say(str(e)))
 
+    # -- problems -----------------------------------------------------------------------
+
+    def set_problem_count(self, n: int) -> None:
+        self.btn_problems.setText(f"Problems: {n}")
+        self.btn_problems.setStyleSheet("color: #c62828; font-weight: bold" if n else "")
+
+    def open_problems(self) -> None:
+        if self.problems_window is None:
+            win = ProblemsWindow(self.client, self)
+            win.show_bookmark.connect(self.reveal_bookmark)
+            win.count_changed.connect(self.set_problem_count)
+            self.problems_window = win
+        else:
+            self.problems_window.refresh()
+        self.problems_window.show()
+        self.problems_window.raise_()
+        self.problems_window.activateWindow()
+
+    def reveal_bookmark(self, bookmark_id: int, url: str) -> None:
+        """Select a bookmark in the list wherever it is: back to "All bookmarks", search for its
+        address, and select the row when the engine's page with it has loaded."""
+        self._reveal = bookmark_id
+        QTimer.singleShot(REVEAL_TIMEOUT_MS, lambda: self._give_up_reveal(bookmark_id))
+        self.tree.select_all()
+        self.search.blockSignals(True)
+        self.search.setText(url)
+        self.search.blockSignals(False)
+        self._search_timer.stop()
+        self._apply_query()
+        self.raise_()
+        self.activateWindow()
+
+    def _give_up_reveal(self, bookmark_id: int) -> None:
+        if self._reveal == bookmark_id:
+            self._reveal = None
+            self.say("That bookmark is no longer in the list")
+
+    def open_settings(self) -> None:
+        def done(settings: Settings) -> None:
+            dialog = SettingsDialog(self.client, settings, self.data_dir, self)
+            dialog.saved.connect(self.refresh_health)
+            dialog.restore_staged.connect(
+                lambda _p: self.say("Restoring a backup: the engine is restarting")
+            )
+            self._exec(dialog)
+
+        run_async(self.client.settings, done, lambda e: self.say(str(e)))
+
     # -- dialogs ------------------------------------------------------------------------
 
     def add_bookmark(self) -> None:
@@ -529,7 +639,10 @@ class MainWindow(QMainWindow):
             s = self._settings()
             s.setValue("geometry", self.saveGeometry())
             s.setValue("splitter", self.splitter.saveState())
+        if self.problems_window is not None:
+            self.problems_window.close()
         self._health_timer.stop()
+        self._reconnect_timer.stop()
         self._search_timer.stop()
         self._debounce.stop()
         if self.events is not None:

@@ -16,6 +16,7 @@ from pagewatch.engine.core import Engine
 from pagewatch.engine.instance import remove_lockfile, write_lockfile
 from pagewatch.engine.logs import configure_logging
 from pagewatch.engine.paths import DataDir
+from pagewatch.engine.secrets import MemorySecrets
 from pagewatch.models import LockInfo
 from tests.support.fixture_site import FixtureSite
 
@@ -53,11 +54,18 @@ def toasts() -> LogToastBackend:
 
 
 @pytest.fixture
+def secret_store() -> MemorySecrets:
+    """Never the machine's real credential store."""
+    return MemorySecrets()
+
+
+@pytest.fixture
 async def engine(
     data_dir: DataDir,
     clock: FakeClock,
     settings_overrides: dict[str, Any],
     toasts: LogToastBackend,
+    secret_store: MemorySecrets,
 ) -> AsyncIterator[Engine]:
     eng = Engine(
         data_dir,
@@ -66,6 +74,7 @@ async def engine(
         settings_overrides=settings_overrides,
         toast_backend=toasts,
         rng=random.Random(20260105),  # deterministic jitter
+        secret_store=secret_store,
     )
     await eng.start()
     try:

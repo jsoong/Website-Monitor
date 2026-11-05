@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import re
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, overload
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -256,10 +256,28 @@ class ScheduleConfig(PWModel):
 # --------------------------------------------------------------------------------------
 
 
+SECRET_NAME = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")  # a secret-store key; never the secret
+
+
+@overload
+def _secret_name(value: str) -> str: ...
+@overload
+def _secret_name(value: None) -> None: ...
+def _secret_name(value: str | None) -> str | None:
+    if value is not None and not SECRET_NAME.match(value):
+        raise ValueError("a secret name uses letters, digits and _ . : - (at most 64)")
+    return value
+
+
 class AuthConfig(PWModel):
     kind: Literal["basic", "digest"] = "basic"
-    username: str
+    username: str = Field(min_length=1)
     secret_key: str  # keyring entry name; the password itself is never stored here
+
+    @field_validator("secret_key")
+    @classmethod
+    def _key(cls, v: str) -> str:
+        return _secret_name(v)
 
 
 class Rect(PWModel):
@@ -392,23 +410,240 @@ class MergePagesConfig(PWModel):
         return self
 
 
+# --- Logins: proxies, login signals, Check-Macros (spec: Logins and Check-Macros) ---
+
+PROXY_SCHEMES = ("http", "https", "socks5", "socks5h")
+
+
+def check_proxy_url(value: str) -> str:
+    """A proxy address the fetchers can use: http, https or socks5 with a host, and *no* password
+    (the spec keeps passwords out of the database; a proxy login is a user name plus a
+    secret-store key, see ``FetchConfig.proxy_username``)."""
+    from urllib.parse import urlsplit
+
+    value = value.strip()
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError as exc:
+        raise ValueError(f"not a proxy address: {exc}") from exc
+    if parts.scheme.lower() not in PROXY_SCHEMES:
+        raise ValueError("a proxy address starts with http://, https://, socks5:// or socks5h://")
+    if not parts.hostname:
+        raise ValueError("the proxy address has no host")
+    if parts.username is not None or parts.password is not None:
+        raise ValueError(
+            "do not put a user name or password in the proxy address; use the proxy user name "
+            "field and keep the password in the credential store"
+        )
+    if parts.path not in ("", "/") or parts.query or parts.fragment:
+        raise ValueError("a proxy address is scheme://host:port with nothing after it")
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("the proxy port must be between 1 and 65535")
+    return value.rstrip("/")
+
+
+_PASSWORDISH = re.compile(r"password|passwd|passcode|pwd|secret", re.IGNORECASE)
+MAX_MACRO_STEPS = 100
+
+
+class SecretRef(PWModel):
+    """A macro value kept in the credential store: ``{"secret": "<key>"}``, never inline."""
+
+    secret: str
+
+    @field_validator("secret")
+    @classmethod
+    def _key(cls, v: str) -> str:
+        return _secret_name(v)
+
+
+class _StepBase(PWModel):
+    timeout_s: float = Field(15.0, gt=0.0, le=120.0)  # how long the step may wait for its target
+
+
+class GotoStep(_StepBase):
+    op: Literal["goto"]
+    url: str
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, v: str) -> str:
+        v = v.strip()
+        if not re.match(r"^https?://[^/\s]+", v, re.IGNORECASE):
+            raise ValueError("a goto step needs an http:// or https:// address")
+        return v
+
+
+class FillStep(_StepBase):
+    op: Literal["fill"]
+    selector: str = Field(min_length=1)
+    value: str | SecretRef
+
+    @model_validator(mode="after")
+    def _no_inline_passwords(self) -> FillStep:
+        if isinstance(self.value, str) and _PASSWORDISH.search(self.selector):
+            raise ValueError(
+                'this looks like a password field; use {"secret": "<key>"} for the value, '
+                "never the password itself"
+            )
+        return self
+
+
+class ClickStep(_StepBase):
+    op: Literal["click"]
+    selector: str = Field(min_length=1)
+
+
+class SelectStep(_StepBase):
+    op: Literal["select"]
+    selector: str = Field(min_length=1)
+    value: str
+
+
+class PressStep(_StepBase):
+    op: Literal["press"]
+    key: str = Field(min_length=1, max_length=40)
+    selector: str | None = None  # None: the focused element
+
+
+class WaitForStep(_StepBase):
+    op: Literal["wait_for"]
+    selector: str | None = None
+    ms: int | None = Field(None, ge=1, le=60000)
+
+    @model_validator(mode="after")
+    def _one_of(self) -> WaitForStep:
+        if (self.selector is None) == (self.ms is None):
+            raise ValueError("a wait_for step needs either a selector or a number of milliseconds")
+        return self
+
+
+class AssertTextStep(_StepBase):
+    op: Literal["assert_text"]
+    text: str = Field(min_length=1)
+    selector: str | None = None  # None: anywhere on the page
+
+
+MacroStep = Annotated[
+    GotoStep | FillStep | ClickStep | SelectStep | PressStep | WaitForStep | AssertTextStep,
+    Field(discriminator="op"),
+]
+
+
+class LoginSignal(PWModel):
+    """How the engine recognises "you are signed out": any one of these appearing means the
+    check landed on a login page (a selector, or a redirect to the login URL)."""
+
+    selector: str | None = None  # CSS: a login form's field, e.g. ``input[type=password]``
+    url_contains: str | None = None  # the final address contains this (a redirect to /login)
+    text: str | None = None  # the page contains this text, e.g. "Please sign in"
+
+    @field_validator("selector", "url_contains", "text")
+    @classmethod
+    def _blank_is_none(cls, v: str | None) -> str | None:
+        return (v or "").strip() or None
+
+    @field_validator("selector")
+    @classmethod
+    def _css(cls, v: str | None) -> str | None:
+        if v:
+            _check_selector("css", v)
+        return v
+
+    @model_validator(mode="after")
+    def _any(self) -> LoginSignal:
+        if not (self.selector or self.url_contains or self.text):
+            raise ValueError("a login signal needs a selector, an address fragment or some text")
+        return self
+
+
+class MacroDef(PWModel):
+    """The body of a macro (``macro.steps_json`` holds ``steps``)."""
+
+    name: str = Field(min_length=1, max_length=120)
+    steps: list[MacroStep] = Field(min_length=1, max_length=MAX_MACRO_STEPS)
+    login_signal: LoginSignal | None = None
+
+    @property
+    def secret_keys(self) -> list[str]:
+        return sorted({s.value.secret for s in self.steps if isinstance(s, FillStep)
+                       and isinstance(s.value, SecretRef)})  # fmt: skip
+
+    @property
+    def uses_stored_password(self) -> bool:
+        return bool(self.secret_keys)
+
+
+class MacroOut(MacroDef):
+    id: int
+    secret_keys_used: list[str] = Field(default_factory=list)
+    stored_password: bool = False  # a step fills a secret: this macro is a stored-password login
+    bookmarks: int = 0  # how many bookmarks run it
+
+
+MIN_LOGIN_INTERVAL_S = 3600
+DEFAULT_LOGIN_INTERVAL_S = 6 * 3600  # spec: at most one automated login per 6 hours
+
+
+class LoginConfig(PWModel):
+    """A bookmark's sign-in policy (``fetch.login``)."""
+
+    signal: LoginSignal | None = None  # overrides the macro's own signal
+    semi_attended: bool = False  # the owner signs in by hand; checks reuse that profile
+    signin_url: str | None = None  # where "Sign in" opens (default: the bookmark's address)
+    allow_stored_password: bool = False  # opt in: the macro may fill a stored password
+    min_login_interval_s: int = Field(DEFAULT_LOGIN_INTERVAL_S, ge=MIN_LOGIN_INTERVAL_S)
+
+    @field_validator("signin_url")
+    @classmethod
+    def _signin_url(cls, v: str | None) -> str | None:
+        if v is None or not v.strip():
+            return None
+        v = v.strip()
+        if not re.match(r"^https?://[^/\s]+", v, re.IGNORECASE):
+            raise ValueError("the sign-in address must start with http:// or https://")
+        return v
+
+
 class FetchConfig(PWModel):
     method: Literal["GET", "POST"] = "GET"
     headers: dict[str, str] = Field(default_factory=dict)
     body: str | None = None
     user_agent: str | None = None
     proxy: str | None = None
+    proxy_username: str | None = None  # the proxy's login; its password is a secret-store entry
+    proxy_secret_key: str | None = None
     timeout_s: float = Field(30.0, ge=1.0, le=300.0)
     verify_tls: bool = True
     max_bytes: int = Field(20 * 1024 * 1024, ge=1024)
     auth: AuthConfig | None = None
-    cookies_file: str | None = None
+    cookies_file: str | None = None  # a Netscape cookies.txt (the import endpoint fills this in)
+    login: LoginConfig | None = None
     browser: BrowserOptions = Field(default_factory=BrowserOptions)
     feed: FeedOptions = Field(default_factory=FeedOptions)
     listing: ListingOptions = Field(default_factory=ListingOptions)
     records: RecordsConfig | None = None
     follow: FollowLinksConfig | None = None
     merge: MergePagesConfig | None = None
+
+    @field_validator("proxy")
+    @classmethod
+    def _proxy(cls, v: str | None) -> str | None:
+        return check_proxy_url(v) if v and v.strip() else None
+
+    @field_validator("proxy_secret_key")
+    @classmethod
+    def _proxy_key(cls, v: str | None) -> str | None:
+        return _secret_name(v) if v else None
+
+    @model_validator(mode="after")
+    def _proxy_login(self) -> FetchConfig:
+        if (self.proxy_username or self.proxy_secret_key) and not self.proxy:
+            raise ValueError("a proxy user name or password needs a proxy address")
+        if bool(self.proxy_username) != bool(self.proxy_secret_key):
+            raise ValueError("a proxy login needs both a user name and a stored password key")
+        return self
 
 
 # --------------------------------------------------------------------------------------
@@ -596,14 +831,6 @@ class ActionsConfig(PWModel):
 # ``ActionConfig.params`` stays a plain dict in the stored JSON; these models validate it (at
 # create/patch time, and again when the action runs) and fill in the defaults.
 # --------------------------------------------------------------------------------------
-
-SECRET_NAME = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")  # a secret store key; never the secret
-
-
-def _secret_name(value: str | None) -> str | None:
-    if value is not None and not SECRET_NAME.match(value):
-        raise ValueError("a secret name uses letters, digits and _ . : - (at most 64)")
-    return value
 
 
 def _address(value: str) -> str:
@@ -961,7 +1188,32 @@ class NotificationSettings(PWModel):
 # --------------------------------------------------------------------------------------
 
 
+def normalize_host(text: str) -> str:
+    """The key the host limiter uses for a web address: lower-case host name, no scheme, port,
+    path, user info or trailing dot (``https://Example.COM:8443/x`` -> ``example.com``)."""
+    from urllib.parse import urlsplit
+
+    t = text.strip()
+    if "://" in t:
+        try:
+            t = urlsplit(t).hostname or ""
+        except ValueError as exc:
+            raise ValueError(f"not a host name: {text!r}") from exc
+    else:
+        t = t.split("/", 1)[0].rsplit("@", 1)[-1]
+        if t.startswith("["):  # [::1]:8080
+            t = t[1:].split("]", 1)[0]
+        elif t.count(":") == 1:  # host:port (a bare IPv6 address has several colons)
+            t = t.split(":", 1)[0]
+    t = t.strip().lower().rstrip(".")
+    if not t or len(t) > 253 or any(c.isspace() or c in '/\\?#"' for c in t):
+        raise ValueError(f"not a host name: {text!r}")
+    return t
+
+
 class HostOverride(PWModel):
+    """A website's exception to the politeness defaults (spec: Politeness and network)."""
+
     concurrency: int | None = Field(None, ge=1, le=32)
     min_gap_s: float | None = Field(None, ge=0.0)
 
@@ -980,6 +1232,8 @@ class Settings(PWModel):
     default_schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     default_user_agent: str = DEFAULT_USER_AGENT
     global_proxy: str | None = None
+    global_proxy_username: str | None = None  # the proxy's login; its password is a secret
+    global_proxy_secret_key: str | None = None
     notify_on_first_check: bool = False
     toast_coalesce_s: float = Field(30.0, ge=0.0)
     notifications: NotificationSettings = Field(default_factory=NotificationSettings)
@@ -1023,13 +1277,42 @@ class Settings(PWModel):
     loop_lag_limit_s: float = Field(10.0, gt=0.0)  # a stall longer than this logs a stack dump
     worker_job_timeout_s: float = Field(120.0, gt=0.0)  # a pipeline job running longer is killed
     metric_interval_s: float = Field(3600.0, ge=0.05)
+    # -- logins and politeness (M6) -------------------------------------------------------
+    # Off until the portal experiment has been run and its findings recorded in DECISIONS.md
+    # (spec: Stored-password login is opt-in, and only after the experiment).
+    stored_password_logins: bool = False
+    signin_prompt_enabled: bool = True  # the daily offer to sign in again (semi-attended)
+    signin_prompt_time: str = "09:00"  # local clock
+    stretch_hosts: bool = True  # stretch an over-limit host's intervals evenly (spec: Capacity)
 
-    @field_validator("backup_time", "maintenance_time")
+    @field_validator("backup_time", "maintenance_time", "signin_prompt_time")
     @classmethod
     def _clock_time(cls, v: str) -> str:
         if not _HHMM.match(v):
             raise ValueError("expected HH:MM")
         return v
+
+    @field_validator("global_proxy")
+    @classmethod
+    def _global_proxy(cls, v: str | None) -> str | None:
+        return check_proxy_url(v) if v and v.strip() else None
+
+    @field_validator("global_proxy_secret_key")
+    @classmethod
+    def _global_proxy_key(cls, v: str | None) -> str | None:
+        return _secret_name(v) if v else None
+
+    @field_validator("host_overrides", mode="before")
+    @classmethod
+    def _host_keys(cls, v: Any) -> Any:
+        """Override keys are matched against ``host_of(url)``, so ``Example.com:8080`` and
+        ``https://example.com/`` must both land on ``example.com``."""
+        if not isinstance(v, dict):
+            return v
+        out: dict[str, Any] = {}
+        for key, value in v.items():
+            out[normalize_host(str(key))] = value
+        return out
 
     @field_validator("connectivity_url")
     @classmethod
@@ -1694,6 +1977,7 @@ class HostDemand(PWModel):
     ceiling_per_min: float | None = None  # 60 / minimum spacing; None = no spacing configured
     utilisation: float | None = None
     over_limit: bool = False  # demand above the ceiling
+    stretch: float = 1.0  # how many times longer this host's checks wait because of it
 
 
 class CapacityOut(PWModel):
@@ -1705,6 +1989,144 @@ class CapacityOut(PWModel):
     generated_at: str
 
 
+# --- Logins: API bodies ------------------------------------------------------------------
+
+
+class CookieImportIn(PWModel):
+    """A Netscape ``cookies.txt``: its text, or the path of a file the engine can read."""
+
+    text: str | None = Field(None, max_length=2_000_000)
+    path: str | None = None
+
+    @model_validator(mode="after")
+    def _one(self) -> CookieImportIn:
+        if (self.text is None) == (self.path is None):
+            raise ValueError("give either 'text' or 'path'")
+        return self
+
+
+class CookieStatusOut(PWModel):
+    """What a bookmark's imported cookies are, without their values."""
+
+    present: bool = False
+    count: int = 0
+    expired: int = 0
+    domains: list[str] = Field(default_factory=list)
+    earliest_expiry: str | None = None  # of the cookies that have not expired
+    imported_at: str | None = None
+    skipped_lines: int = 0  # lines the parser could not read
+
+
+class LoginStatusOut(PWModel):
+    bookmark_id: int
+    signed_in_mode: Literal["none", "server_auth", "cookies", "macro", "semi_attended"]
+    needs_login: bool = False
+    reason: str | None = None  # why: `login_signal`, `auth_rejected`, `macro_failed`, ...
+    semi_attended: bool = False
+    macro_id: int | None = None
+    stored_password: bool = False  # the macro fills a stored password
+    stored_password_allowed: bool = False  # the global switch AND this bookmark's opt-in
+    last_signin_at: str | None = None
+    last_auto_login_at: str | None = None
+    next_auto_login_at: str | None = None  # earliest time a macro may log in again
+    auto_login_blocked: bool = False  # a macro login failed: none until the owner resets it
+    signing_in: bool = False  # a sign-in window is open right now
+    profile_exists: bool = False
+    cookies: CookieStatusOut = Field(default_factory=CookieStatusOut)
+
+
+class SignInOut(PWModel):
+    bookmark_id: int
+    state: Literal["started", "finished", "idle"]
+    message: str = ""
+
+
+class RecordStartIn(PWModel):
+    """Start Playwright codegen on ``url`` (opens a browser window on the owner's desktop)."""
+
+    url: str
+    password_secret_key: str = "macro-password"  # where recorded password fields will point
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, v: str) -> str:
+        v = v.strip()
+        if not re.match(r"^https?://[^/\s]+", v, re.IGNORECASE):
+            raise ValueError("the address must start with http:// or https://")
+        return v
+
+    @field_validator("password_secret_key")
+    @classmethod
+    def _key(cls, v: str) -> str:
+        return _secret_name(v)
+
+
+class RecordOut(PWModel):
+    id: str
+    state: Literal["running", "done", "failed", "cancelled"]
+    steps: list[MacroStep] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+# --- The portal experiment (spec: Portal strategy -> Portal experiment) -----------------------
+
+ChallengeKind = Literal["otp", "captcha", "other"]
+DEFAULT_PROBE_MINUTES = (10, 20, 30, 60, 120)  # spec: check at 10, 20, 30, 60 and 120 minutes
+
+
+class ExperimentIn(PWModel):
+    """Run the spec's experiment on one semi-attended bookmark (with a macro for the logins)."""
+
+    bookmark_id: int
+    probe_minutes: list[int] = Field(
+        default_factory=lambda: list(DEFAULT_PROBE_MINUTES), min_length=1, max_length=12
+    )
+    logins_per_day: int = Field(3, ge=2, le=4)  # spec: two to four spaced password logins a day
+    duration_h: float = Field(48.0, gt=0.0, le=14 * 24.0)
+
+    @field_validator("probe_minutes")
+    @classmethod
+    def _sorted(cls, v: list[int]) -> list[int]:
+        if any(m <= 0 for m in v) or sorted(set(v)) != v:
+            raise ValueError("probe times are positive minutes, strictly increasing")
+        return v
+
+
+class Observation(PWModel):
+    at: str
+    kind: Literal["signin", "probe", "login"]
+    minutes_since_signin: float | None = None
+    outcome: Literal["session_alive", "session_expired", "logged_in", "challenge", "failed"] | None
+    challenge: ChallengeKind | None = None
+    snapshot: str | None = None  # file name of a saved challenge page, in the experiment's folder
+    note: str | None = None
+
+
+class ExperimentOut(PWModel):
+    id: str
+    bookmark_id: int
+    state: Literal["waiting_for_signin", "running", "done", "stopped", "cancelled"]
+    started_at: str
+    probe_minutes: list[int]
+    logins_per_day: int
+    duration_h: float
+    signin_at: str | None = None
+    ends_at: str | None = None
+    observations: list[Observation] = Field(default_factory=list)
+    stopped_because: str | None = None  # a login failed or met a challenge: no more attempts
+
+
+class ExperimentReport(PWModel):
+    id: str
+    markdown: str  # paste into DECISIONS.md
+    idle_timeout: str
+    challenges: int
+    login_attempts: int
+    logins_succeeded: int
+    stored_password_verdict: Literal["looks_safe", "not_safe", "not_enough_data"]
+
+
 class LockInfo(PWModel):
     pid: int
     port: int
@@ -1714,6 +2136,7 @@ class LockInfo(PWModel):
 
 
 EVENT_TYPES = (
+    "signin",  # a sign-in window opened or closed: {bookmark_id, state}
     "check_started",
     "check_finished",
     "change_detected",

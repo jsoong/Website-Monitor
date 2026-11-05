@@ -965,8 +965,8 @@ UI for them.
 | Editor, Notifications and Problems UI | The "never request an ACCESS HRA notice PDF" manual check |
 
 `pushover` stays registered as "not available" (post-v1; not asked for). The logins half touches
-the fetchers, the runner and the scheduler, so it is the natural next M6 session now that M5 and
-M6 are on one line. `TASKS.md` (M6) has the checklist.
+the fetchers, the runner and the scheduler; it was built on its own branch and is the next section,
+*M6 · Logins and proxies*. `TASKS.md` (M6) has the checklist.
 
 ### Dependencies and schema
 
@@ -1198,6 +1198,311 @@ screenshots attached); API tests; UI tests for the dialogs, the editor and the m
 * Windows Credential Manager (an in-memory `keyring` backend stands in).
 * `run_program` with a real Windows `.exe`, and the console window staying hidden.
 * `html_assets` against a real site's CDN-hosted resources.
+
+## M6 · Logins and proxies
+
+Branch `claude/m6-logins`, built from `aadd380` (M0–M5 including M5 part 2) in parallel with the
+actions half above, and merged into the integrated line at the very end; *Merging M6 · Logins and
+proxies* (last section) records what that merge decided. Statements below describe the branch as it
+was built; where the merge changed one, a **(Merge)** note says so.
+
+### What this is, and what it is not
+
+**Built:** everything the actions branch listed as unbuilt (macros, semi-attended sign-in, cookie
+import, server auth, per-bookmark proxies, per-host overrides, the portal experiment's tooling) plus
+the rules the spec attaches to them.
+
+**Not done, and not claimed:**
+
+* **The portal experiment has not been run.** It is a 48-hour test on the owner's machine against the
+  real ACCESS HRA and Housing Connect sign-ins, with the owner's accounts. Nothing in this session can
+  do that, so **no findings exist and none are recorded below**. What exists is the instrument (next
+  section), tested against a fixture portal on a fake clock, and a gate: `Settings.stored_password_logins`
+  is off by default and a macro that fills a stored password refuses to run without it.
+* **A real `playwright codegen` window** was not opened (no display here). The converter is tested on
+  JSONL shaped like the recorder's output, taken from the installed driver (Playwright 1.63) source.
+* **A visible sign-in window** was not seen. The sign-in code path is the same with `headless=False`;
+  tests run it in new headless mode.
+* **ACCESS HRA and Housing Connect themselves**, and their terms of use, which the spec says to review
+  before any automated check.
+
+### The portal experiment
+
+#### What the instrument does (`engine/logins/experiment.py`)
+
+The spec's protocol, step for step:
+
+1. `pagewatch-cli portal-experiment start <bookmark>` (or `POST /experiments`) on a bookmark that has
+   semi-attended sign-in, a macro, and a **manual** schedule (the engine refuses otherwise: any other
+   check would refresh the session and spoil the measurement).
+2. The owner signs in by hand with the normal *Sign in...* window. That moment is time zero.
+3. **Probes** at 10, 20, 30, 60 and 120 minutes (configurable) open the bookmark's page on the profile
+   *without logging in* and record whether the session is still there.
+4. **Password logins**, `logins_per_day` of them (2 to 4, default 3), evenly spaced, starting 30 minutes
+   after the last probe so a login cannot spoil it, until `duration_h` (default 48) has passed. Each runs
+   the bookmark's macro on a **fresh empty profile**, so a real password login happens, and the page it
+   ends on is checked for a one-time-code or CAPTCHA (selectors and wording), saved to
+   `experiments/<id>-login-<n>.html` when it did not get through.
+5. The first failed or challenged login **stops the attempts** (spec: none after a failure).
+6. `pagewatch-cli portal-experiment report <id>` prints the findings as the text below, for pasting here.
+
+State is kept in `experiments/<id>.json` and survives an engine restart.
+
+#### Reading the result: a caveat the report states itself
+
+Each probe is itself activity, so a session that survives probes 10 minutes apart says little about a
+30-minute idle timeout. The report therefore words an expiry as "an idle timeout shorter than the gap
+**or** an absolute timeout between the two probes" and says so; to separate the two, repeat the run
+with longer gaps (`--probes`). The verdict `looks_safe` needs at least four password logins, all
+successful, none challenged; any failure or challenge is `not_safe`; fewer is `not_enough_data`.
+These thresholds are mine, not the spec's, which asks only for "two to four spaced password logins a day".
+
+#### Findings (to be filled in by whoever runs it)
+
+> **NOT RUN.** Do not enable stored-password login for ACCESS HRA or Housing Connect until this
+> table is filled in from `portal-experiment report` and the verdict is `looks_safe`.
+
+| Portal | Date run | Idle timeout / absolute timeout | Code or CAPTCHA on routine logins | Challenge pages saved | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| ACCESS HRA | not run | | | | |
+| NYC Housing Connect | not run | | | | |
+
+Then turn on **Settings > Network > Allow stored-password logins**, and tick **Let the macro sign in with
+a stored password** on each bookmark that should use it.
+
+#### What the instrument was proved to do
+
+On the fixture portal, with a fake clock (`tests/integration/test_m6_experiment.py`): probes happen at
+the set minutes and never log in; a 45-minute idle timeout is reported as alive at 10/20/30/60 and gone at
+120 (the gaps being 10, 10, 10, 30 and 60 minutes); six logins happen at 8-hour spacing over 48 hours;
+a one-time-code challenge stops the attempts after one, with the page saved and the portal contacted
+no further; the report reads sensibly before, during and after; it survives a restart; it refuses to
+start on a bookmark that would spoil it; 12 challenge/non-challenge pages are classified correctly.
+
+### Scope and base
+
+* **The brief and the checkout disagreed on the base commit.** The task said to start from
+  `claude/focused-mccarthy-2a74te (aadd380)`. The branch of that name (local and on `origin`) is at
+  `a051864`; `aadd380` ("M5 part 2: Settings and Problems screens...") is its child, present in the
+  object store but on no branch. I based `claude/m6-logins` on **`aadd380`**, as named: it is the
+  commit whose Settings window and Problems list this work extends. `a051864` is its parent, so
+  nothing is lost either way. `aadd380` was therefore not on any remote branch before this push.
+* **`claude/m6-actions` was not merged on this branch** (it was merged afterwards, see the last section). The task said to inspect it. It was built from `90ca022`
+  (before M5), so merging means resolving `models.py`, `core.py` and others against M5. Where the two
+  halves must share something (the secret store, private-by-default) this branch uses the actions
+  branch's `engine/secrets.py` **byte for byte**, so git merges that file silently; the rest is
+  listed in the merge notes.
+* **"Per-host overrides" was partly done already.** `Settings.host_overrides`, `HostGate` honouring
+  them, the Settings table and the capacity page came with M5 part 2. Verified by tests, not redone.
+  What M5 part 2 explicitly left out is built here: the scheduler stretching an over-limit host's
+  intervals and the editor's warning, plus normalising the override keys. If "per-host overrides"
+  was meant to include per-host proxy or user agent, that is not built (the spec's only per-host item is
+  the politeness limit).
+
+### Schema, dependencies, API
+
+The working agreement asks before changing the schema outside a migration, adding a dependency the spec
+does not name, or changing a public API shape. This session ran unattended; the choices and how to undo them:
+
+* **Migration `0002_logins.sql`** adds one table, `login_state`. It is a migration (backup first, one
+  transaction), additive, and nothing existing changes. Alternative if unwanted: the same facts in the
+  `setting` table under `_state.` keys, as M5 did, at the cost of cleaning up after deleted bookmarks by hand.
+* **Dependencies:** `keyring` (the spec's Secrets row names it) and httpx's `socks` extra (`socksio`;
+  the spec requires SOCKS5 proxies and httpx cannot do them without it).
+  `aiosmtplib`, which the actions branch adds, is not needed here.
+* **API additions** (all additive; `docs/openapi.json` regenerated):
+  `GET/POST /macros`, `GET/PUT/DELETE /macros/{id}`, `POST /macros/record`, `GET/DELETE /macros/record/{id}`;
+  `GET /bookmarks/{id}/login`, `POST .../login/resume`, `POST .../signin`, `POST .../signin/finish`,
+  `DELETE .../session`, `GET/POST/DELETE .../cookies`; `GET/POST /experiments`, `GET/DELETE /experiments/{id}`,
+  `GET /experiments/{id}/report`; `GET/PUT/DELETE /secrets/{name}` (identical to the actions branch's; **(Merge)** one copy kept, in `routes_actions`).
+  `FetchConfig` gains `login`, `proxy_username`, `proxy_secret_key`; `Settings` gains
+  `global_proxy_username`, `global_proxy_secret_key`, `stored_password_logins`, `signin_prompt_enabled`,
+  `signin_prompt_time`, `stretch_hosts` (**(Merge)** `host_load_refresh_s` was dropped with `HostLoad`); `HostDemand` gains `stretch`;
+  `EVENT_TYPES` gains `signin`. `PUT /settings` now normalises `host_overrides` keys.
+
+### Decisions
+
+#### Sessions
+
+* **Chromium discards session cookies when a persistent profile closes**, and many portals keep their
+  login in exactly such a cookie. The first real-browser test of "the second check reuses the session"
+  failed for this reason. Fix: when a profile's browser closes, its cookies (session ones included) are
+  written next to it (`pagewatch-session.json`, owner-only) and put back at the next launch. The sign-in
+  window copies cookies out every second and when a page closes, because a window the owner closes takes
+  its cookies with it. At most about a second of cookies is at risk. This is the one place where the
+  design in the spec ("a persistent context in `profiles\<id>\`") was not enough by itself.
+* **A persistent context is its own browser process** (Playwright cannot make one inside a running
+  browser), opened for a check and closed after it. Costs about a second per signed-in check; the 3-page
+  pool still bounds it. Checks that only need cookies, a proxy or a server login use a fresh context in
+  the shared browser instead.
+* **While the owner's sign-in window is open, scheduled checks of that bookmark are skipped**
+  (`check_run` outcome `skipped`, reason `signing_in`, retried in 30 s), because a Chromium profile is
+  held by one process.
+* **Static checks keep a client and cookie jar per signed-in bookmark**, so sessions of two bookmarks on
+  the same site never mix. A server-set cookie lives in memory until restart; it is not written back to
+  the imported file. For a session that rotates, use the browser path.
+* **A wiped session** (`DELETE .../session`) removes the profile and the in-memory jar; it refuses while
+  the sign-in window is open.
+
+#### Expiry, alerts, pausing
+
+* **One rule for every kind of login:** a login signal on the page, or HTTP 401 for a bookmark that sent
+  credentials or cookies, moves it to `needs_login`. A 401 with credentials is treated this way rather
+  than as an error because retrying wrong credentials is how accounts get locked.
+* **Alert exactly once:** only the check that moves a bookmark *into* `needs_login` alerts. Manual checks of
+  a paused bookmark stay silent. After `resume` the next failure is a new expiry and alerts again.
+* **Paused means:** `next_due_at` is NULL, the scheduler holds no due time, and the startup loader keeps
+  it that way (otherwise a NULL due time means "due now"). Demand and the capacity page ignore it.
+  Manual "Check now" still works.
+* **Recorded as** a `check_run` with outcome `error` and reason `login_signal` / `auth_rejected` /
+  `macro_failed` / `stored_password_off` / `login_rate_limited` / `login_blocked`, which is what the
+  existing Problems query already reads. It does **not** touch `consecutive_errors` or send the
+  "is failing" alert. The longer explanation (e.g. which macro step failed) is in `login_state.reason`.
+* **Leaving it:** a good check, a sign-in, importing cookies, or `POST .../login/resume`.
+
+#### The stored-password rules (spec: Portal strategy)
+
+* "A macro with a `{"secret": ...}` fill" is what counts as a stored-password login. A macro without one
+  (a consent wall, a public code) is not gated, because the rules exist to protect the account from
+  repeated password logins.
+* **Two switches, both off by default:** the global `stored_password_logins` (to be turned on only after
+  the experiment) and the bookmark's `allow_stored_password`.
+* **At most one automated login per `min_login_interval_s`** (default and spec figure 6 h; I set the
+  floor at 1 h so it cannot be set to something meaningless). The attempt is written *before* the macro
+  runs, so a crash cannot be followed by an immediate second try.
+* **None after a failure** until `POST .../login/resume` (the *Resume checks* button).
+  **`resume` lifts the failure block but not the 6-hour limit**: the failed attempt counts as that
+  window's one login. The consequence is that after fixing a wrong password the owner may wait up to
+  six hours before the macro can run again (the status shows when, `next_auto_login_at`). That is the
+  literal reading of "at most one per 6 hours, and none after a failure"; the alternative (resume
+  resets the clock) would let one button defeat the rule. Easy to change if the owner disagrees.
+* A macro's failure message is built from the *step* ("step 3 (fill #password) timed out"), never from
+  Playwright's exception, whose call log can repeat the typed value. A test makes the exception carry the
+  password and checks it cannot reach the error's message or text, and an engine test checks the wrong
+  password cannot reach the stored status. (The log lines were not checked separately.)
+
+#### Secrets and privacy
+
+* **Passwords go through `PUT /secrets/{name}` once and are never returned.** The database holds key names
+  only. Every password field in the UI empties itself the moment it sends. A password field in a macro
+  step cannot hold an inline value: the model refuses it (a selector containing `password`, `passwd`,
+  `passcode`, `pwd` or `secret`). That is a heuristic; a false positive only means using a secret.
+* **Recording drops typed passwords** and writes `{"secret": "<key>"}`, with a warning to store the
+  password under that name. Selectors are kept as Playwright recorded them, including `internal:`
+  locators, which work with the pinned Playwright but are not a documented, stable syntax.
+* **Signed-in bookmarks default to `alert_privacy: private`** when created and when a login is added
+  later, unless the bookmark or a folder it inherits from chose. (The actions branch applies the default
+  at creation only; its editor also asks for confirmation when switching back to `content`, which is its
+  half to build.)
+* **Imported cookies are copied into `cookies/<id>.txt`, owner-only,** and never included in a backup or
+  export (the spec says secrets are not). After restoring on another machine they must be imported again.
+* **Basic auth over plain http to a non-local host is refused.** Loopback and private addresses are
+  allowed. (The spec does not say; the actions branch refuses cleartext SMTP passwords the same way.)
+* **A proxy address cannot contain a password** (or a user name); a proxy login is a user name plus a
+  secret-store key. Playwright documents that Chromium does not authenticate to a SOCKS5 proxy, so a browser check
+  with a SOCKS5 login fails with a message saying so (not exercised here); static checks can, and that is tested.
+
+#### Per-host
+
+**(Merge)** The scheduler half of this subsection was built a second time, on the integrated line, as
+`engine/stretch.py` (`HostStretch`); the merge kept that one and ported the rest of this subsection
+onto it (the `stretch_hosts` switch, the factor shown per host, key normalisation, the editor warning).
+See *Merging M6 · Logins and proxies*. The figures below are the same in both.
+
+* Stretch factor = `demand / ceiling` per host (demand as the Capacity page measures it, ceiling =
+  `60 / minimum gap` from the host's own limits). It multiplies the *wait* for interval and adaptive
+  schedules when the next due time is computed; the stored adaptive interval is untouched so the factor
+  cannot feed back into the demand it came from. Fixed times and manual schedules are never stretched;
+  days / window limits are still applied after. Re-measured every `host_load_refresh_s` (5 min) and on
+  any settings change that affects it. `stretch_hosts` turns it off.
+* Override keys are normalised in the model, in `PUT /settings` (so `{"EXAMPLE.com.": null}` removes
+  `example.com`) and in the Settings table (a pasted address is reduced to its host name). Without the
+  last one, retyping a host as an address produced an "add and remove" pair that normalised to the same
+  key and removed it.
+
+#### Smaller choices
+
+* The daily sign-in offer is a status-bar line, a toolbar count and one toast; never a dialog that steals
+  focus. Default 09:00 local, "or at the next wake", once a day.
+* In bulk edit the Login tab shows only a note: sign-in belongs to one bookmark.
+* `ruff format --check .` reports `docs/SPEC.md` (a Python snippet inside the spec) as unformatted with this
+  ruff. That is the spec, not code, and was true before this session; the format gate used here is
+  `src tests tools`. Tests may declare `timeout=` parameters on async test doubles (rule `ASYNC109` is off
+  for `tests/**`) because the doubles mirror Playwright's signatures.
+
+### Verified, and how
+
+| Claim | Evidence |
+| --- | --- |
+| A macro logs in through a real browser, and the second check reuses the session | `tests/browser/test_logins_chromium.py`, `tests/browser/test_m6_chromium.py` (Chromium 1243) |
+| The same flows through the engine without a browser | `tests/integration/test_m6_logins.py` (the real `BrowserFetcher`, interpreter and plan over an HTTP-backed page against the fixture portal) |
+| Expiry alerts once, pauses, survives a restart | `test_semi_attended_sign_in_checks_immediately_...`, `test_needs_login_survives_a_restart_...` |
+| HTTP and SOCKS5 proxies, with and without a login; Basic, Digest, cookies | `tests/unit/test_login_fetch.py` (in-process HTTP proxy and SOCKS5 server on virtual host names, so a page arriving proves the proxy was used) |
+| Browser traffic goes through a per-bookmark proxy | `test_a_bookmark_proxy_carries_browser_traffic` |
+| Host stretching | `tests/integration/test_m6_hosts.py` |
+| UI | `tests/ui/test_logins_ui.py` |
+
+**Mutation checks.** Fifteen behaviours were broken one at a time and the guarding tests run; all
+fifteen were caught: alerting on every needs-login check; not pausing after it (the DB `next_due_at`
+was only caught after I added an assertion for it); the stored-password gate; the 6-hour limit; the
+block after a failure; not restoring session cookies; not stretching; a macro error repeating
+Playwright's text; no private default; host-override removal by another spelling; Basic over plain
+http; the experiment continuing after a challenge; keeping a recorded typed password; the daily offer
+firing twice; a deleted bookmark keeping its saved sessions. One was first reported as surviving only because I had selected a single test with `-k`
+(the model's own "no inline password" rule had dropped the step instead); the whole file catches it.
+
+### Bugs found by writing the tests
+
+* Session cookies lost when a persistent profile closes (above), found by the first real-browser reuse test.
+* A fake browser that kept cookies in memory after its profile folder was deleted made the experiment's
+  "fresh profile" login look like a success; the double now starts empty when its folder is gone.
+* Host overrides retyped as addresses silently deleted themselves (above).
+* Deleting a bookmark left its browser profile (live session cookies) and imported cookie file on disk. Found
+  in review, not by a test; `Logins.forget` now removes both, closes an open sign-in window, and drops the
+  in-memory jar, for both delete routes. A test covers it and the fix was mutation-checked.
+* A circular import between the experiment and the service module; the pure helpers moved to
+  `logins/common.py`.
+* `cssselect` has no case-insensitive attribute flag, so the one-time-code selector failed to parse and
+  every OTP page was classified as no challenge; the broad `except` hid it until a test asked.
+
+### A timing test that failed, and what it really was
+
+`tests/ui/test_scale.py::test_ten_thousand_bookmarks_scroll_sort_and_filter_in_under_200ms` has a hard
+200 ms budget. In the first two full runs it failed (worst scroll page 209 ms and 224 ms) while passing alone
+at 92–139 ms. My first explanation, "the machine was busy", was wrong for the second run, which had the
+machine to itself. Measured instead, running the whole `tests/ui` sequence in one process:
+
+| | worst scroll page |
+| --- | --- |
+| base commit `aadd380` | 131 ms |
+| this branch, before the fix | 170 ms (209–224 ms in the full suite) |
+| this branch, after the fix | 132 ms and 139 ms |
+
+The cause was in my tests, not the product: the 27 new UI tests built dialogs (editors, Settings, Macros,
+Problems) and never closed them, so they piled up as live top-level widgets in the one shared
+`QApplication`, and every later test, this one included, paid for them. The fix is an autouse fixture in
+`test_logins_ui.py` that closes and deletes what each test opened after the engine has stopped. The
+engine-side suite was not the cause (base 142 ms vs 133 ms after the whole integration suite). Worth
+knowing for whoever writes the next UI test: the shared `QApplication` makes leaked widgets everyone's problem.
+
+### Tests
+
+Default suite: 956 -> **1116 passed** (+160), 1 skipped as before; `-m browser`: 12 -> **24 passed** (+12). Both exit 0.
+New files: unit `test_cookies`, `test_login_signal`, `test_macro_runner`, `test_macro_recorder`,
+`test_login_fetch`, `test_logins_models`; integration `test_m6_logins`, `test_m6_hosts`,
+`test_m6_prompt_recorder`, `test_m6_experiment`; UI `test_logins_ui`; browser `test_logins_chromium`,
+`test_m6_chromium`. Support: `login_site` (the fixture portal), `http_browser`, `proxy_servers`, `fetching`.
+`ruff check .`, `ruff format --check src tests tools` and `mypy` (strict, 90 files) exit 0, and the committed `docs/openapi.json` is what `tools/gen_openapi.py` produces.
+
+### Known limits
+
+* One recording at a time; it is limited to 30 minutes and cleaned up with the engine.
+* A signed-in browser check opens a browser process each time; at hundreds of signed-in bookmarks on short
+  intervals the browser pool (3) is the limit, as for any browser check.
+* The macro's `assert_text` and the login-signal text match is a case-insensitive substring.
+* The experiment's idle-timeout reading is bounded by the confound described above.
+* Digest and Basic over HTTP are tested against the fixture; NTLM / Kerberos are not supported (the spec
+  names Basic and Digest).
 
 ## M7 · Power features
 
@@ -1582,8 +1887,9 @@ clean stop, a restart with data intact, and the portable zip unpacked and run.
 ### Open questions for the owner
 
 1. **Graceful stop for the installer.** *Answered by the owner at the merge: add it.* `POST
-   /shutdown` and `pagewatch-cli stop` now exist. Still open: making `StopEngine` in
-   `installer.iss` call `pagewatch-cli stop` first (see *Merging M6, M7 and M8*).
+   /shutdown` and `pagewatch-cli stop` now exist, and `StopEngine` in `installer.iss` calls
+   `pagewatch-cli stop --wait 30` before the hard kill (done at the final integration; see
+   *Merging M6 · Logins and proxies*).
 2. **Code signing.** Is there a certificate? Until then SmartScreen warns on every download.
 3. **All-users installs.** Per-user is the default and the right fit for a per-user engine; the
    dialog still offers "for all users". Is that wanted, or should it be removed?
@@ -1704,13 +2010,14 @@ and `/capacity`.
   as exited (mutation-checked: without that it waits the full 30 s on a child process). No engine
   running is success (exit 0, "the engine is not running"), so an installer can always call it; if
   the engine is still there after `--wait`, exit 1.
-* **`installer.iss` was not changed.** It is Inno Setup Pascal Script; there is no Inno compiler
-  here and `RunCli` is defined *after* `StopEngine` in that file, so wiring it in means moving code
-  that cannot be compiled or run in this sandbox, and the existing tests only read the script as
-  text. **To finish it:** in `StopEngine`, before `schtasks /End`, call `RunCli('stop --wait 30')`
-  (move or forward-declare `RunCli`), and keep the two hard-kill calls as the fallback. The fallback
-  matters: during an upgrade `{app}\pagewatch-cli.exe` is the *old* CLI, which has no `stop` on the
-  first upgrade from a release without it.
+* **`installer.iss` was not changed at this merge.** It is Inno Setup Pascal Script; there is no Inno
+  compiler here and `RunCli` was defined *after* `StopEngine` in that file, so wiring it in meant
+  moving code that cannot be compiled or run in this sandbox, and the existing tests only read the
+  script as text. **Done since, at the final integration** (*Merging M6 · Logins and proxies*):
+  `RunCli` moved above `StopEngine`, which calls `RunCli('stop --wait 30')` before `schtasks /End`,
+  with the two hard-kill calls kept as the fallback. The fallback matters: during an upgrade
+  `{app}\pagewatch-cli.exe` is the *old* CLI, which has no `stop` on the first upgrade from a release
+  without it.
 
 ### Seam 3: the scheduler stretches an over-limit host's intervals
 
@@ -1744,8 +2051,9 @@ on the spec requiring it, which it does.
 * The Capacity page's warning said such checks "will fall behind"; it now says they are checked less
   often than scheduled, by one common factor.
 * **Limits, like the Capacity page:** demand ignores windows, days and the battery slow-down, so it
-  is an upper bound and the stretch errs on the long side. **Not built:** the *editor's* per-host
-  warning from the same spec sentence (the request named only the scheduler).
+  is an upper bound and the stretch errs on the long side. **Not built at this merge:** the *editor's*
+  per-host warning from the same spec sentence (the request named only the scheduler); it came with
+  M6 · Logins and proxies (Schedule tab, and the factor on the Capacity page).
 
 ### Environment
 
@@ -1782,3 +2090,179 @@ Manager, toasts, the installer, `verify-install.ps1`), Inno Setup and PowerShell
 server over TLS, an ntfy phone, and Gmail / Outlook rendering. In addition: the Settings and
 Problems wiring has been exercised against a real engine over HTTP/WebSocket on Linux with an
 in-memory credential store, not against Windows Credential Manager.
+
+## Merging M6 · Logins and proxies (the final integration)
+
+`claude/m6-logins` (`c02224f`, built from `aadd380`) was merged into the integrated line
+(`8ab810a`: M0–M8 plus the actions half of M6, 1,544 tests) with one merge commit. The local branch
+was first fast-forwarded: it was 13 commits behind `origin` (`a051864` vs `8ab810a`). This closes
+v1: every milestone is on one line, and `main` is updated to it.
+
+### Conflicts and how they were resolved
+
+Nothing was resolved by choosing a side wholesale. Git reported 17 conflicted files; `secrets.py`,
+`tests/support/engine_thread.py`, `tests/conftest.py` and the default-store line in `core.py` merged
+**silently**, as that branch's task list had promised (the logins branch had copied the actions branch's
+`secrets.py` byte for byte for exactly this reason).
+
+| File | Resolution |
+| --- | --- |
+| `docs/openapi.json`, `uv.lock` | Generated, not merged: taken from one side and regenerated (`tools/gen_openapi.py`, `uv lock`). The lock gains `socksio` (httpx's `socks` extra, for SOCKS5 proxies) and nothing else. OpenAPI gains 13 paths and 22 schemas; no existing path changed, and the only existing schemas that changed are the ones logins extends (`AuthConfig`, `FetchConfig`, `HostDemand`, `HostOverride`, `Settings`). |
+| `pyproject.toml` | Union: `aiosmtplib` (actions) and `keyring` (both) in `dependencies`, `httpx[http2,socks]`, the `ASYNC109` test exemption. |
+| `models.py` | Both blocks kept. **Duplicates git could not see**, because they sat in different places: `SECRET_NAME`, `_secret_name`, `SecretIn`, `SecretOut`. One of each remains. `_secret_name` is now an `@overload` pair (`str -> str`, `None -> None`), because the actions side called it with optional values and the logins side with required ones; with one signature `mypy --strict` rejects one of the two. |
+| `engine/api/routes_logins.py` vs `routes_actions.py` | Both defined `GET/PUT/DELETE /secrets/{name}` with the same behaviour. The copy in `routes_logins` was deleted; `routes_actions` keeps them, since both halves use them. OpenAPI has each operation once, and no duplicate operation ids. |
+| `ui/client.py` | Imports unioned. **Both sides also had a secrets client under different names** (`secret_status` / `set_secret` / `delete_secret` against `secret` / `put_secret` / `delete_secret`; `delete_secret` was defined twice, which `ruff` flagged as F811). The actions names were kept and the logins call sites (`login_panel`, `macros`, `bookmark_editor`, `settings`) were renamed. |
+| `engine/bookmarks.py` | The actions branch's `_default_private_when_signed_in` (creation only; credentials, a cookie file or a macro) was **dropped** in favour of `logins/validate.default_private_when_signed_in`, which also covers a hand sign-in and runs on **patch** as well as create. One signed-in rule remains: `logins.common.is_signed_in`. M7's `_check_plugin` and `_not_virtual` stay. A bookmark delete now runs both `kv.forget_bookmarks` (M7) and `Logins.forget` (saved sessions are secrets). |
+| `ui/windows/bookmark_editor.py` | The actions branch's editor has its own `_signed_in()` for the "switch to content alerts" confirmation; it ignored a hand sign-in. It now calls `is_signed_in`, so the confirmation and the engine's default agree. `ActionParamsDialog` and `LoginPanel` both imported. |
+| `engine/runner.py`, `engine/fetch/browser.py` | The runner's route now takes M7's plugin-rewritten `url` **and** the `signed_in` flag; `_fetch` keeps M7's merge-pages and cache rule **and** the logins request fields (`bookmark_id`, `login`); the `needs_login` check follows the fetch. `browser.py`: imports. |
+| `engine/core.py`, `capacity.py`, `schedule.py`, `settings.py` (UI), `cli/main.py`, `api/app.py`, `main_window.py`, `problems.py`, `client.py` | Both sides kept (see the stretch row for the scheduler). `Retry` / `Dismiss` (actions) and `Sign in...` / `Resume checks` (logins) sit side by side in Problems; M7's menus and the logins toolbar entries both exist; the CLI has `stop` and `portal-experiment`. |
+| `docs/ARCHITECTURE.md` | The module table, the *Logins* section (after *Actions*) and the logins UI paragraph kept; `engine/hostload.py` removed from it; the `/secrets` route is attributed to `routes_actions`. |
+
+### One host stretch, not two
+
+The integrated line already had the scheduler half of SPEC's "stretches that host's intervals evenly"
+(`engine/stretch.py`, `HostStretch`, from the previous merge); `m6-logins` had built the same thing
+again as `engine/hostload.py` (`HostLoad`) plus the editor warning and key normalisation. Both
+compute demand ÷ ceiling and apply it as `schedule.next_due(stretch=...)` to the gap before the next
+check only. **`HostStretch` was kept** as the one mechanism, because it was already wired into the
+runner, the settings change path and the start-up reschedule, and because it shares the Capacity
+page's rounding tolerance (`capacity.exceeds`: 60 bookmarks at 1/60 s summed to
+`60.00000000000008` a minute and read as "over the limit"). `HostLoad` computed the same ratio
+without it. What `m6-logins` had that the line lacked was ported onto it:
+
+* **`Settings.stretch_hosts`** (on by default; Settings > Network). `HostStretch.factor()` and
+  `.factors` return 1.0 / empty while it is off. The factors are still measured, so turning it back
+  on needs no wait; it also re-measures at once (a settings change forces a refresh).
+* **`HostDemand.stretch`** on `GET /capacity` and the Intervals column of Settings > Capacity now
+  come from `HostStretch.factor(host)`. `over_limit` keeps the shared `exceeds()` test (not the
+  logins branch's bare `util > 1.0`).
+* **Key normalisation** (`models.normalize_host`: `https://Example.COM:8443/x` and `Example.COM.` are
+  `example.com`, the spelling `hostgate.host_of` produces), in the model, in `PUT /settings` (so
+  removal works under any spelling) and in the Settings table. This is what makes an override typed
+  as an address reach the gate and the stretch.
+* **The editor warning** on the Schedule tab: it names the website and the factor
+  (`bookmark_editor.check_host_load`, from `GET /capacity`). This closes the "editor warns" half of
+  the spec sentence that the previous merge logged as *not built*.
+* **A flaw found while porting the UI, fixed:** with `stretch_hosts` off a host is still `over_limit` but
+  its factor reads 1.0, so the editor warning would have said PageWatch was "waiting 1.0 times as
+  long" and the Capacity summary would have claimed a slowdown that is not happening. Both now say
+  that stretching is switched off and the checks will queue instead (two UI tests). It was already
+  true of the wording on `m6-logins`, where `HostLoad.factor()` also returned 1.0 with the switch off.
+* **Removed:** `engine/hostload.py`, `Settings.host_load_refresh_s` (it timed `HostLoad`'s own
+  loop; `HostStretch` re-measures after checks, at most once a minute, and on settings changes) and
+  `Engine.host_load`. The one wording that two tests asserted differently was merged into one
+  sentence in the Settings warning ("waits proportionally longer ... every interval is stretched by
+  the same factor").
+* **Tests:** `tests/integration/test_m6_hosts.py` was repointed from `engine.host_load` to
+  `engine.host_stretch` (`.stretched` is `.factors`); `test_host_stretch.py` (the line's own) is
+  unchanged. Both pass, so the two descriptions of the behaviour agree on the numbers (2.0 for 60
+  against 30, 2.5 for 5 against 2, paused bookmarks not counted).
+
+### The packaged build and the recorder
+
+`m6-logins` started Playwright's recorder with `[sys.executable, "-m", "playwright", "codegen", ...]`.
+From source that works; **in the PyInstaller bundle `sys.executable` is the engine itself**, so
+"Record macro" would have started a second engine. I noticed it by reading `recorder.py` while
+resolving `browser.py` (it was in no conflict hunk), and M8's guard
+(`test_nothing_in_the_package_spawns_python_dash_m`) forbids exactly that line: any
+`sys.executable` outside `frozen.py` without a `frozen-ok` note. I fixed it before running the
+guard, so I did not watch it fail. `frozen.playwright_command(*args)` (the generalisation of
+`playwright_install_command`, which now calls it) runs Playwright's bundled Node driver directly,
+the same way the Chromium installer does, and the recorder uses it with the
+driver's environment. A unit test pins the command line (node + `cli.js`, no `-m`).
+**Not verified:** a real `codegen` window from the bundle, and on Windows whether that console-subsystem
+`node.exe` flashes a console window when started by the windowless engine (`install_bundled_chromium`
+has the same property).
+
+### The migration
+
+`0002_logins.sql` adds `login_state` and nothing else. The packaging suite had been written so a
+second migration would not need edits, and it did not: `package_data_files` walks the package, so the
+file ships; `test_upgrade.py` applies it on top of release 0.1.0's frozen folder (the
+`pre-migration-v1` backup, the data, and the v2 schema). Two assertions were added anyway, because a
+bundle missing the *newest* migration would pass every older check: `0002_logins.sql` is in
+`package_data_files()`, and (in the real-build test) the migrations inside the built bundle are
+exactly the ones in the source tree. `tools/gen_upgrade_fixture.py` still refuses to run at schema
+v2, by design: release 0.1.0's fixture must come from a v1 schema and is committed.
+
+### The installer's graceful stop (open since the previous merge)
+
+`StopEngine` in `packaging/installer.iss` now calls `RunCli('stop --wait 30')` before `schtasks /End`
+and `taskkill /F /T`, and **keeps both as the fallback**. Three details:
+
+* `RunCli` was defined after `StopEngine`; Pascal Script reads top to bottom, so it was moved above
+  it (code unchanged).
+* It is called only when an engine is running (`EngineIsRunning()`, already computed there), so a
+  first install does not start a CLI that is not installed yet.
+* Its failure is ignored on purpose: during an upgrade `{app}\pagewatch-cli.exe` is the *old* CLI,
+  which for the first upgrade from a release without `stop` exits non-zero ("unknown command"); the
+  hard kill then does what it always did.
+
+Two tests read the script: the order (`stop --wait 30` < `/End /TN` < `/F /T /IM`, `RunCli` defined
+first), and that the CLI parser accepts `stop --wait 30`. **Not verified:** the Inno Script itself
+was never compiled and never run (no Inno compiler, no Windows here); `verify-install.ps1` on a
+Windows VM is the real check, and "an upgrade stops a running engine cleanly" is now worth adding to
+it. `packaging/README.md`'s *Known limits* note was rewritten to say so.
+
+### Results
+
+Final gates, all exit code 0:
+
+| Check | Result |
+| --- | --- |
+| `uv lock` | 106 packages (was 105: `socksio`); `uv lock --check` clean |
+| `python tools/gen_openapi.py` | `docs/openapi.json` unchanged by a second run: 49 paths (was 36), 110 schemas (was 88) |
+| `ruff check` | all checks passed |
+| `ruff format --check src tests tools` | 300 files already formatted |
+| `mypy --strict` | no issues in 124 source files |
+| `pytest` (default) | **1,709 passed, 1 skipped**, 30 deselected, 7 min 26 s |
+| `pytest -m browser` | **24 passed** (real Chromium), 1 min 5 s |
+| `pytest -m packaging` | **4 passed** (real PyInstaller builds of the merged tree, run and smoke-tested; the three from before and the migration check added here), 3 min 48 s |
+
+The default suite was 1,544 before this merge and is 1,709 now: +160 from the logins branch (956 to
+1,116 on its own base) and +5 written here (two installer-script tests, one recorder command-line
+test, two "stretching is off" UI tests). The one skip is the pre-existing non-root POSIX test (the
+sandbox runs as root). The 30 deselected are the opt-in `browser` (24), `packaging` (4) and `soak`
+(2) markers; the soak tests (hours long) were not run.
+
+### How green it was, honestly
+
+The default suite **did not pass on the first attempts, and one run was not clean for reasons I
+could not trace to the code.** In order:
+
+1. **First full run, in one process:** died at 33 % with `Fatal Python error: Bus error` in the
+   teardown of `tests/ui/test_logins_ui.py` (inside `QCoreApplication.processEvents`). **Not
+   reproduced**: `tests/ui` alone, 144 passed, and a later full run was clean. I was rewriting
+   `test_logins_ui.py` and two UI modules while that run was alive; I cannot show that caused it
+   and do not claim it did.
+2. **Run by directory:** integration 401 passed; UI 144 passed; unit + packaging 1,163 passed and
+   **1 failed**: `test_nothing_in_the_package_spawns_python_dash_m`, on a *docstring* in my own
+   recorder fix that contained the text `sys.executable` (the guard is line-based and cannot tell a
+   mention from a use). Reworded; the guard passes. This is the failure the first run's `F` was.
+3. **Next full run:** 1,708 passed, **1 failed**: `tests/ui/test_scale.py` missed its hard 200 ms
+   budget on *first page* (269 ms), with every other figure far inside it (worst scroll page 52 ms,
+   sort 44 ms, filter 56 ms). Alone the same test measures 44 to 60 ms for first page (three runs).
+   *M6 · Logins and proxies* has a section on this test being load-sensitive. Not repeated.
+4. **A further full run with `-s`** (to print those timings) **hung for 17 minutes at 90 % CPU**
+   inside `Engine.drain_background`, in `test_an_os_resume_message_and_the_drift_check_are_one_resume`
+   (the engine's background-task list never emptied). I aborted it with SIGABRT to get the stacks.
+   It did not reproduce: that test 25 times alone, its whole file 12 times with `-s` and 12 without,
+   and the whole integration directory once more with `-s` (401 passed). `drain_background` is
+   used only by tests; **what kept spawning background tasks I did not find.** This is the one I
+   would not close: it appeared once in about six runs of the integration directory.
+5. **Final full run**, hands-off, calling the venv's `pytest` directly and touching nothing else:
+   **1,709 passed**, exit 0. The browser and packaging suites ran after it and passed.
+
+So the gates are green on a clean run, and three earlier attempts on the same code were not.
+If the hang in item 4 comes back, the stack dump in this paragraph is the place to start:
+`core.py:164` in `drain_background`, called from `test_m5_unattended.py:248`.
+
+### Not verified here
+
+Unchanged from the sections above, which is to say: Windows (Task Scheduler, Credential Manager,
+toasts, the installer and `verify-install.ps1`, Inno Setup), a real SMTP server over TLS, an ntfy
+phone, Gmail / Outlook rendering, a real `playwright codegen` window, a visible sign-in window, an
+HTTPS proxy, and **the portal experiment, which has not been run**: `Settings.stored_password_logins`
+stays off, and the findings table in *M6 · Logins and proxies* is still empty. Do not enable
+stored-password login for ACCESS HRA or Housing Connect until it is filled in. The ACCESS HRA
+"never request a notice PDF" check against the real portal is also still manual.

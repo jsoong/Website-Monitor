@@ -154,8 +154,12 @@ def next_due(
     """When the next check is due and the adaptive state to store.
 
     ``changed`` is only meaningful for adaptive schedules: ``True`` after a real change,
-    ``False`` after an unchanged check, ``None`` after an error. ``stretch`` lengthens the gap of
-    interval and adaptive schedules (not fixed times, which are clock times, not gaps).
+    ``False`` after an unchanged check, ``None`` after an error.
+
+    ``stretch`` (>= 1) multiplies the wait for interval and adaptive schedules: a website whose
+    bookmarks ask for more than its spacing allows has them all slowed by the same factor
+    (spec: Capacity). The adaptive state stored is *not* stretched, so the factor never feeds
+    back into itself. Fixed clock times (which are clock times, not gaps) are never stretched.
     """
     zone = zone or SystemZone()
     rng = rng or random.Random()

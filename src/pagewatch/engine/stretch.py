@@ -17,7 +17,10 @@ letting the queue grow."
   upper bound and the stretch errs on the long side.
 
 The factors are refreshed at start-up, when settings change and, after a check, at most once a
-minute; a bookmark added in between is accounted for within that minute.
+minute; a bookmark added in between is accounted for within that minute. ``Settings.stretch_hosts``
+(on by default) turns the stretching off: the factors are still measured, but nothing uses them.
+Host-limit override keys are normalised to the host name (``models.normalize_host``), the same
+spelling ``hostgate.host_of`` produces, so an override typed as an address still applies here.
 """
 
 from __future__ import annotations
@@ -48,10 +51,14 @@ class HostStretch:
 
     @property
     def factors(self) -> dict[str, float]:
-        """Host -> factor, for hosts that are over their limit only."""
-        return dict(self._factors)
+        """Host -> factor, for hosts over their limit only (empty while the option is off)."""
+        return dict(self._factors) if self._e.settings.stretch_hosts else {}
 
     def factor(self, host: str) -> float:
+        """How many times longer than asked this host's checks wait (1.0: not stretched, or the
+        option ``Settings.stretch_hosts`` is off)."""
+        if not self._e.settings.stretch_hosts:
+            return 1.0
         return self._factors.get(host, 1.0)
 
     def for_url(self, url: str) -> float:

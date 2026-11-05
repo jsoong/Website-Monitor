@@ -11,7 +11,8 @@ Everything that differs between the two worlds lives here so the rest of the cod
 ``sys.frozen``:
 
 * :func:`component_command` - the command line that starts the engine, the UI or the CLI;
-* :func:`playwright_install_command` - how to run Playwright's installer;
+* :func:`playwright_command` / :func:`playwright_install_command` - how to run Playwright's own
+  CLI (its browser installer, and ``codegen`` for the macro recorder);
 * :func:`launch` - what every packaged entry point does first (``freeze_support``, streams);
 * :func:`prepare_streams` - ``sys.stdout``/``sys.stderr`` are ``None`` in a windowed Windows build.
 """
@@ -70,13 +71,16 @@ def component_command(component: Component, *args: str) -> list[str]:
     return [sys.executable, "-m", MODULES[component], *args]
 
 
-class InstallCommand(NamedTuple):
+class DriverCommand(NamedTuple):
     argv: list[str]
     env: dict[str, str]
 
 
-def playwright_install_command(browser: str = "chromium") -> InstallCommand:
-    """``playwright install <browser>`` without needing ``python -m playwright``.
+InstallCommand = DriverCommand  # the name the installer helper has always returned
+
+
+def playwright_command(*args: str) -> DriverCommand:
+    """``playwright <args>`` (``install``, ``codegen``, ...) without ``python -m playwright``.
 
     Playwright for Python is a thin client of a Node program it ships (``playwright/driver``);
     ``python -m playwright`` only forwards its arguments to that program. Calling the program
@@ -86,7 +90,12 @@ def playwright_install_command(browser: str = "chromium") -> InstallCommand:
     from playwright._impl._driver import compute_driver_executable, get_driver_env
 
     node, cli = compute_driver_executable()
-    return InstallCommand([node, cli, "install", browser], dict(get_driver_env()))
+    return DriverCommand([node, cli, *args], dict(get_driver_env()))
+
+
+def playwright_install_command(browser: str = "chromium") -> DriverCommand:
+    """How to run ``playwright install <browser>`` (see :func:`playwright_command`)."""
+    return playwright_command("install", browser)
 
 
 def _attach_parent_console() -> bool:

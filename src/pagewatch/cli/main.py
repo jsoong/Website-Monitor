@@ -126,6 +126,22 @@ def build_parser() -> argparse.ArgumentParser:
     rs = sub.add_parser("restore", help="restore a backup zip (the engine restarts to apply it)")
     rs.add_argument("zip", help="a backup made by 'pagewatch-cli backup'")
 
+    px = sub.add_parser(
+        "portal-experiment",
+        help="measure a portal's session timeout and whether logins meet a code or CAPTCHA",
+    )
+    pxs = px.add_subparsers(dest="px_cmd", required=True)
+    pxa = pxs.add_parser("start", help="start (then sign in by hand: that is time zero)")
+    pxa.add_argument("bookmark", type=int, help="a semi-attended bookmark with a macro")
+    pxa.add_argument("--probes", default="10,20,30,60,120", help="minutes after sign-in")
+    pxa.add_argument("--logins-per-day", type=int, default=3, choices=[2, 3, 4])
+    pxa.add_argument("--hours", type=float, default=48.0)
+    pxs.add_parser("list", help="experiments and their state")
+    pxr = pxs.add_parser("report", help="the findings, as text for DECISIONS.md")
+    pxr.add_argument("id")
+    pxc = pxs.add_parser("cancel")
+    pxc.add_argument("id")
+
     sv = sub.add_parser("service", help="start the engine at logon (Windows Task Scheduler)")
     svs = sv.add_subparsers(dest="service_cmd", required=True)
     inst = svs.add_parser("install", help="register the task")
@@ -313,6 +329,21 @@ def run(args: argparse.Namespace, client: EngineClient) -> Any:
         return client.post("/backup", body)
     if cmd == "restore":
         return client.post("/restore", {"path": str(Path(args.zip).expanduser().resolve())})
+    if cmd == "portal-experiment":
+        if args.px_cmd == "start":
+            try:
+                probes = [int(x) for x in args.probes.split(",") if x.strip()]
+            except ValueError as exc:
+                raise ApiError(2, "--probes is a comma-separated list of minutes") from exc
+            return client.post("/experiments", {
+                "bookmark_id": args.bookmark, "probe_minutes": probes,
+                "logins_per_day": args.logins_per_day, "duration_h": args.hours,
+            })  # fmt: skip
+        if args.px_cmd == "list":
+            return client.get("/experiments")
+        if args.px_cmd == "report":
+            return client.get(f"/experiments/{args.id}/report")
+        return client.delete(f"/experiments/{args.id}")
     raise ApiError(2, f"unknown command {cmd}")
 
 
@@ -356,6 +387,24 @@ def render(args: argparse.Namespace, result: Any) -> str:
         return result["message"]
     if cmd == "stop":
         return f"the engine (pid {result['pid']}) has stopped"
+    if cmd == "portal-experiment":
+        if args.px_cmd == "report":
+            return str(result["markdown"])
+        if args.px_cmd == "list":
+            return (
+                "\n".join(
+                    f"{x['id']}  bookmark {x['bookmark_id']}  {x['state']}  "
+                    f"{len(x['observations'])} observation(s)"
+                    for x in result
+                )
+                or "(no experiments)"
+            )
+        if args.px_cmd == "start":
+            return (
+                f"experiment {result['id']} started on bookmark {result['bookmark_id']}.\n"
+                "Now sign in by hand (Sign in... in the editor): that moment is time zero."
+            )
+        return f"experiment {result['id']} {result['state']}"
     if cmd == "status":
         a = result["autowatch"]
         state = [

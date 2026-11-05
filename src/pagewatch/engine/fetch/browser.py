@@ -19,18 +19,26 @@ logic is tested with a fake browser and the page logic with a real Chromium (mar
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from pagewatch.engine.clock import Clock
+from pagewatch.engine.fetch import cookies as cookie_files
 from pagewatch.engine.fetch.base import FetchError, FetchRequest, FetchResult
-from pagewatch.engine.fetch.static import parse_retry_after
+from pagewatch.engine.fetch.login import MacroPermit, signal_in_page
+from pagewatch.engine.fetch.macro import MacroError, run_macro
+from pagewatch.engine.fetch.proxy import ProxyError, resolve_proxy
+from pagewatch.engine.fetch.static import is_local_host, parse_retry_after
 from pagewatch.engine.frozen import playwright_install_command
 from pagewatch.engine.logs import get_logger
+from pagewatch.engine.secrets import NullSecrets, SecretStore
 from pagewatch.models import BrowserOptions, FetchErrorKind, Settings
 
 log = get_logger("pagewatch.browser")
@@ -55,6 +63,12 @@ NO_MOTION_CSS = (
 
 BrowserState = Literal["stopped", "running", "unavailable"]
 
+# Chromium drops session cookies (no expiry) when a persistent profile closes, and many portals
+# keep their login in exactly such a cookie. So the cookies of a profile are saved beside it
+# when its browser closes and put back when the next one starts (found by a real-browser test).
+SESSION_COOKIES = "pagewatch-session.json"
+MAX_LOGIN_PAGE = 2_000_000
+
 
 class BrowserUnavailable(RuntimeError):
     """No browser could be started (Edge and the bundled Chromium both failed)."""
@@ -69,6 +83,20 @@ class LaunchPlan:
 
 Launcher = Callable[[LaunchPlan], Awaitable[Any]]
 Installer = Callable[[], Awaitable[bool]]
+
+
+@dataclass(frozen=True, slots=True)
+class SessionSpec:
+    """A check that must not share the browser's ephemeral context: it has a profile of its own
+    (a sign-in kept between checks), cookies, a proxy or a server login that belong to one
+    bookmark. With ``profile_dir`` the context is persistent and is its own browser process
+    (Playwright cannot make a persistent context inside a running browser); without it, the
+    context is a fresh one in the shared browser, closed with the page."""
+
+    profile_dir: Path | None = None
+    proxy: dict[str, str] | None = None
+    http_credentials: dict[str, str] | None = None
+    cookies: tuple[dict[str, Any], ...] = ()
 
 
 class PlaywrightLauncher:
@@ -88,6 +116,24 @@ class PlaywrightLauncher:
         elif plan.source == "channel":
             kwargs["channel"] = plan.value
         return await self._pw.chromium.launch(**kwargs)
+
+    async def launch_persistent(
+        self, plan: LaunchPlan, user_data_dir: str, *, headless: bool, **options: Any
+    ) -> Any:
+        """A browser that keeps its cookies and storage in ``user_data_dir`` (a sign-in profile).
+        The sign-in window (``headless=False``) and the checks (new headless mode) use the same
+        browser, so the checking browser looks like the one that signed in."""
+        from playwright.async_api import async_playwright
+
+        if self._pw is None:
+            self._pw = await async_playwright().start()
+        args = [a for a in plan.args if headless or not a.startswith("--headless")]
+        kwargs: dict[str, Any] = {"headless": headless, "args": args, **options}
+        if plan.source == "executable":
+            kwargs["executable_path"] = plan.value
+        elif plan.source == "channel":
+            kwargs["channel"] = plan.value
+        return await self._pw.chromium.launch_persistent_context(user_data_dir, **kwargs)
 
     async def aclose(self) -> None:
         pw, self._pw = self._pw, None
@@ -117,6 +163,51 @@ async def install_bundled_chromium() -> bool:
 def _missing_executable(exc: BaseException) -> bool:
     text = str(exc)
     return "Executable doesn't exist" in text or "playwright install" in text
+
+
+async def save_session_cookies(ctx: Any, profile_dir: Path) -> bool:
+    """Write the context's cookies, session ones included, to the profile. Best effort: a
+    browser that is already gone has nothing to give."""
+    try:
+        cookies = await asyncio.wait_for(ctx.cookies(), 5.0)
+    except Exception:
+        return False
+    target = profile_dir / SESSION_COOKIES
+
+    def write() -> None:
+        tmp = target.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(cookies, fh)
+        os.replace(tmp, target)
+
+    try:
+        await asyncio.to_thread(write)
+    except OSError:
+        return False
+    return True
+
+
+async def restore_session_cookies(ctx: Any, profile_dir: Path) -> int:
+    """Put the saved cookies back into a freshly started profile. Returns how many."""
+    source = profile_dir / SESSION_COOKIES
+
+    def read() -> list[dict[str, Any]]:
+        try:
+            data = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        return [c for c in data if isinstance(c, dict)] if isinstance(data, list) else []
+
+    cookies = await asyncio.to_thread(read)
+    if not cookies:
+        return 0
+    try:
+        await ctx.add_cookies(cookies)
+    except Exception:
+        log.warning("session_cookies_not_restored", profile=profile_dir.name)
+        return 0
+    return len(cookies)
 
 
 class _Generation:
@@ -168,6 +259,7 @@ class BrowserManager:
         self._state: BrowserState = "stopped"
         self._closed = False
         self._tasks: set[asyncio.Task[None]] = set()
+        self._persistent: dict[Any, Path] = {}  # sign-in profiles open right now -> their folder
         self.stats = BrowserStats()
 
     # -- introspection ------------------------------------------------------------------
@@ -193,18 +285,22 @@ class BrowserManager:
         plans.append(LaunchPlan("bundled", None, args))
         return plans
 
-    async def _launch(self) -> tuple[Any, LaunchPlan]:
+    async def _launch(
+        self, launch: Callable[[LaunchPlan], Awaitable[Any]] | None = None
+    ) -> tuple[Any, LaunchPlan]:
+        """Start the first browser that works: Edge, else the bundled Chromium."""
+        start = launch or self._launcher
         errors: list[str] = []
         for n, plan in enumerate(self._plans()):
             label = f"{plan.source}:{plan.value or 'chromium'}"
             try:
                 try:
-                    browser = await self._launcher(plan)
+                    browser = await start(plan)
                 except Exception as exc:
                     if plan.source == "bundled" and _missing_executable(exc):
                         if not await self._installer():
                             raise
-                        browser = await self._launcher(plan)
+                        browser = await start(plan)
                     else:
                         raise
             except Exception as exc:
@@ -251,20 +347,24 @@ class BrowserManager:
             self._ensure_idle_task()
             return gen
 
+    def _context_options(self, verify_tls: bool) -> dict[str, Any]:
+        s = self._settings()
+        return {
+            "viewport": dict(VIEWPORT),
+            "device_scale_factor": 1,
+            "user_agent": s.default_user_agent,
+            "ignore_https_errors": not verify_tls,
+            "accept_downloads": False,
+            "service_workers": "block",
+            "locale": "en-US",
+        }
+
     async def _context(self, gen: _Generation, verify_tls: bool) -> Any:
         async with gen.lock:
             ctx = gen.contexts.get(verify_tls)
             if ctx is None:
+                opts = self._context_options(verify_tls)
                 s = self._settings()
-                opts: dict[str, Any] = {
-                    "viewport": dict(VIEWPORT),
-                    "device_scale_factor": 1,
-                    "user_agent": s.default_user_agent,
-                    "ignore_https_errors": not verify_tls,
-                    "accept_downloads": False,
-                    "service_workers": "block",
-                    "locale": "en-US",
-                }
                 if s.global_proxy:
                     opts["proxy"] = {"server": s.global_proxy}
                 ctx = await gen.browser.new_context(**opts)
@@ -290,8 +390,14 @@ class BrowserManager:
         verify_tls: bool = True,
         headers: dict[str, str] | None = None,
         block_media: bool = True,
+        session: SessionSpec | None = None,
     ) -> AsyncIterator[Any]:
-        """A fresh page in the shared context, closed afterwards. At most 3 at once."""
+        """A fresh page in the shared context, closed afterwards. At most 3 at once. With a
+        ``session`` the page lives in a context of its own (see ``SessionSpec``)."""
+        if session is not None:
+            async with self._session_page(session, verify_tls, headers, block_media) as own:
+                yield own
+            return
         async with self._semaphore():
             gen = await self._current()
             gen.active += 1
@@ -313,6 +419,84 @@ class BrowserManager:
                 gen.active -= 1
                 self._last_used = self._clock.monotonic()
                 await self._after_page(gen)
+
+    async def launch_profile(
+        self, profile_dir: Path, *, headless: bool, verify_tls: bool = True,
+        extra: dict[str, Any] | None = None,
+    ) -> tuple[Any, LaunchPlan]:  # fmt: skip
+        """A persistent browser context on ``profile_dir``. Used for checks (headless) and for the
+        owner's sign-in window (visible). The caller closes the context."""
+        fn = getattr(self._launcher, "launch_persistent", None)
+        if fn is None:
+            raise BrowserUnavailable("this browser launcher cannot keep a sign-in profile")
+        if self._closed:
+            raise BrowserUnavailable("the engine is shutting down")
+        await asyncio.to_thread(profile_dir.mkdir, parents=True, exist_ok=True)
+        opts = {**self._context_options(verify_tls), **(extra or {})}
+        ctx, plan = await self._launch(
+            lambda plan: fn(plan, str(profile_dir), headless=headless, **opts)
+        )
+        self._persistent[ctx] = profile_dir
+        await restore_session_cookies(ctx, profile_dir)
+        return ctx, plan
+
+    async def release_profile(self, ctx: Any) -> None:
+        """Save the profile's cookies, then close its browser."""
+        profile_dir = self._persistent.pop(ctx, None)
+        if profile_dir is not None:
+            await save_session_cookies(ctx, profile_dir)
+        with suppress(Exception):
+            await asyncio.wait_for(ctx.close(), 10.0)
+
+    @asynccontextmanager
+    async def _session_page(
+        self, session: SessionSpec, verify_tls: bool, headers: dict[str, str] | None,
+        block_media: bool,
+    ) -> AsyncIterator[Any]:  # fmt: skip
+        async with self._semaphore():
+            extra: dict[str, Any] = {}
+            if session.proxy:
+                extra["proxy"] = session.proxy
+            if session.http_credentials:
+                extra["http_credentials"] = session.http_credentials
+            ctx: Any = None
+            page: Any = None
+            gen: _Generation | None = None
+            persistent = session.profile_dir is not None
+            try:
+                if session.profile_dir is not None:
+                    ctx, _ = await self.launch_profile(
+                        session.profile_dir, headless=True, verify_tls=verify_tls, extra=extra
+                    )
+                else:
+                    gen = await self._current()
+                    gen.active += 1
+                    gen.pages += 1
+                    opts = {**self._context_options(verify_tls), **extra}
+                    ctx = await gen.browser.new_context(**opts)
+                self.stats.pages_served += 1
+                if session.cookies:
+                    await ctx.add_cookies(list(session.cookies))
+                page = await ctx.new_page()
+                if headers:
+                    await page.set_extra_http_headers(headers)
+                if block_media:
+                    await page.route("**/*", _block_media)
+                yield page
+            finally:
+                if page is not None:
+                    with suppress(Exception):
+                        await asyncio.wait_for(page.close(), 5.0)
+                if ctx is not None:
+                    if persistent:
+                        await self.release_profile(ctx)
+                    else:
+                        with suppress(Exception):
+                            await asyncio.wait_for(ctx.close(), 5.0)
+                if gen is not None:
+                    gen.active -= 1
+                    self._last_used = self._clock.monotonic()
+                    await self._after_page(gen)
 
     async def _after_page(self, gen: _Generation) -> None:
         async with self._lock:
@@ -411,6 +595,8 @@ class BrowserManager:
         await asyncio.gather(*pending, return_exceptions=True)
         for gen in list(self._gens):
             await self._close_gen(gen)
+        for ctx in list(self._persistent):
+            await self.release_profile(ctx)
         self._current_gen = None
         self._state = "stopped"
         closer = getattr(self._launcher, "aclose", None)
@@ -511,13 +697,21 @@ async def interact(page: Any, opts: BrowserOptions) -> None:
         await asyncio.sleep(SCROLL_GAP_S)
 
 
+class _ConfigProblem(Exception):
+    """The bookmark's own settings cannot be used (a missing secret, a refused password)."""
+
+
 class BrowserFetcher:
     """Renders the page and returns its serialised DOM (``body``)."""
 
     screenshot = False
 
-    def __init__(self, manager: BrowserManager) -> None:
+    def __init__(self, manager: BrowserManager, secrets: SecretStore | None = None) -> None:
         self._manager = manager
+        self._secrets: SecretStore = secrets or NullSecrets()
+
+    def use_secrets(self, secrets: SecretStore) -> None:
+        self._secrets = secrets
 
     async def aclose(self) -> None:
         return None  # the manager is owned (and closed) by the engine
@@ -525,9 +719,12 @@ class BrowserFetcher:
     async def fetch(self, request: FetchRequest) -> FetchResult:
         started = time.perf_counter()
         try:
+            session = await self._session(request)
             await self._manager.ensure()
             async with asyncio.timeout(PAGE_TIMEOUT_S + HARD_GRACE_S):
-                result = await self._fetch(request)
+                result = await self._fetch(request, session)
+        except _ConfigProblem as exc:
+            return self._fail(request, started, FetchError(FetchErrorKind.PARSE, str(exc)[:300]))
         except BrowserUnavailable as exc:
             return self._fail(request, started, FetchError(FetchErrorKind.BROWSER, str(exc)[:300]))
         except Exception as exc:
@@ -544,18 +741,123 @@ class BrowserFetcher:
         elapsed = int((time.perf_counter() - started) * 1000)
         return FetchResult(request.url, None, {}, "", b"", elapsed_ms=elapsed, error=err)
 
-    async def _fetch(self, request: FetchRequest) -> FetchResult:
+    async def _session(self, request: FetchRequest) -> SessionSpec | None:
+        """What this bookmark needs beyond the shared context: its own profile, cookies, proxy
+        or server login. ``None`` for an ordinary page (the shared context serves it)."""
+        cfg = request.resolved.fetch
+        plan = request.login
+        try:
+            proxy = await resolve_proxy(cfg, request.settings, self._secrets)
+        except ProxyError as exc:
+            raise _ConfigProblem(str(exc)) from None
+        own_proxy = proxy is not None and (cfg.proxy is not None or proxy.username is not None)
+        profile = plan.profile_dir if plan is not None else None
+        if not (profile or cfg.cookies_file or cfg.auth or own_proxy):
+            return None
+        if proxy is not None and proxy.is_socks and proxy.username:
+            raise _ConfigProblem(
+                "the browser cannot sign in to a SOCKS5 proxy; use an http:// proxy for browser "
+                "checks, or a SOCKS5 proxy without a login"
+            )
+        credentials: dict[str, str] | None = None
+        if cfg.auth is not None:
+            password = await asyncio.to_thread(self._secrets.get, cfg.auth.secret_key)
+            if password is None:
+                raise _ConfigProblem(
+                    f"no stored secret named {cfg.auth.secret_key!r} for the login"
+                )
+            parts = urlsplit(request.url)
+            if (
+                cfg.auth.kind == "basic"
+                and parts.scheme == "http"
+                and not is_local_host(parts.hostname)
+            ):
+                raise _ConfigProblem(
+                    "refusing to send a Basic password over plain http; use https:// or Digest"
+                )
+            credentials = {"username": cfg.auth.username, "password": password}
+        cookies: tuple[dict[str, Any], ...] = ()
+        if cfg.cookies_file:
+            try:
+                parsed = await asyncio.to_thread(cookie_files.load_cookie_file, cfg.cookies_file)
+            except cookie_files.CookieFileError as exc:
+                raise _ConfigProblem(f"{exc}; import it again") from None
+            cookies = tuple(cookie_files.to_playwright(parsed.cookies, time.time()))
+        return SessionSpec(
+            profile_dir=profile,
+            proxy=proxy.playwright() if (proxy is not None and own_proxy) else None,
+            http_credentials=credentials,
+            cookies=cookies,
+        )
+
+    @staticmethod
+    async def _login_result(
+        page: Any, status: int | None, reason: str, macro_error: str | None = None
+    ) -> FetchResult:
+        """The check ends on a login page. When a macro failed, the page it ended on is kept in
+        ``body`` (for the portal experiment, which looks for one-time-code and CAPTCHA pages)."""
+        body = b""
+        if macro_error is not None:
+            with suppress(Exception):
+                body = (await page.content()).encode("utf-8")[:MAX_LOGIN_PAGE]
+        return FetchResult(
+            page.url, status, {}, "", body, login_required=True, login_reason=reason,
+            macro_error=macro_error,
+        )  # fmt: skip
+
+    async def _log_in(
+        self, page: Any, request: FetchRequest, response: Any
+    ) -> tuple[FetchResult | None, bool, Any]:
+        """The sign-out check (spec: Session reuse). Returns ``(result, macro_ran, response)``.
+        A result means the check ends here: the page is a login page nobody could get past.
+        After a macro the bookmark's address is loaded again and *that* response is returned."""
+        plan = request.login
+        status = response.status if response is not None else None
+        if plan is None or plan.signal is None:
+            return None, False, response
+        if await signal_in_page(page, plan.signal) is None:
+            return None, False, response  # still signed in: the macro is skipped
+        if plan.macro is None:
+            return await self._login_result(page, status, "login_signal"), False, response
+        permit = await plan.permit_macro() if plan.permit_macro else MacroPermit(True)
+        if not permit.allowed:
+            return (
+                await self._login_result(page, status, permit.reason or "login_blocked"),
+                False,
+                response,
+            )
+        error: str | None
+        try:
+            await run_macro(page, plan.macro.steps, plan.resolve_secret)
+            response = await page.goto(
+                request.url, wait_until="load", timeout=PAGE_TIMEOUT_S * 1000
+            )
+            still = await signal_in_page(page, plan.signal)
+            error = "still on the login page after the macro" if still else None
+        except MacroError as exc:
+            error = exc.message
+        if plan.macro_finished is not None:
+            await plan.macro_finished(error is None)
+        if error is not None:
+            return await self._login_result(page, status, "macro_failed", error), False, response
+        return None, True, response
+
+    async def _fetch(self, request: FetchRequest, session: SessionSpec | None) -> FetchResult:
         cfg = request.resolved.fetch
         opts = cfg.browser
         headers = dict(cfg.headers)
         if cfg.user_agent:
             headers["User-Agent"] = cfg.user_agent
         async with self._manager.page(
-            verify_tls=cfg.verify_tls, headers=headers or None, block_media=not self.screenshot
-        ) as page:
+            verify_tls=cfg.verify_tls, headers=headers or None, block_media=not self.screenshot,
+            session=session,
+        ) as page:  # fmt: skip
             response = await page.goto(
                 request.url, wait_until="load", timeout=PAGE_TIMEOUT_S * 1000
             )
+            gone, macro_ran, response = await self._log_in(page, request, response)
+            if gone is not None:
+                return gone
             status = response.status if response is not None else None
             rheaders = (
                 {k.lower(): v for k, v in (await response.all_headers()).items()}
@@ -584,6 +886,7 @@ class BrowserFetcher:
                 content_type="text/html; charset=utf-8",
                 body=body,
                 screenshot_png=png,
+                macro_ran=macro_ran,
             )
 
     async def _capture(self, page: Any, opts: BrowserOptions) -> bytes:

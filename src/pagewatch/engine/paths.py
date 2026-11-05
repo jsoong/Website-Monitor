@@ -25,6 +25,15 @@ class DataDir:
         return self.root / "profiles"
 
     @property
+    def cookies_dir(self) -> Path:
+        """Imported cookies.txt files, one per bookmark (secrets: never in backups)."""
+        return self.root / "cookies"
+
+    @property
+    def experiments_dir(self) -> Path:
+        return self.root / "experiments"
+
+    @property
     def logs_dir(self) -> Path:
         return self.root / "logs"
 
@@ -49,6 +58,8 @@ class DataDir:
             self.root,
             self.blobs_dir,
             self.profiles_dir,
+            self.cookies_dir,
+            self.experiments_dir,
             self.logs_dir,
             self.backups_dir,
             self.plugins_dir,

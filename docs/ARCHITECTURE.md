@@ -20,6 +20,9 @@ Data folder (`%LOCALAPPDATA%\PageWatch`, or `--data-dir`):
 `pagewatch.db` (WAL), `blobs/ab/cd/<sha256>.zst`, `profiles/`, `logs/engine.log`,
 `backups/` (automatic and manual zips, pre-migration and pre-restore copies), `restore/` (a staged
 restore, only between a restore request and the next start), `plugins/`, `engine.lock`, `engine.mutex`.
+Sign-in state (M6): `profiles/<bookmark id>/` (a browser profile and `pagewatch-session.json`, the
+session cookies Chromium would drop), `cookies/<bookmark id>.txt` (imported cookies, owner-only),
+`experiments/` (portal-experiment logs and saved challenge pages). None of it is in a backup.
 
 ## Layers (as built)
 
@@ -29,7 +32,7 @@ restore, only between a restore request and the next start), `plugins/`, `engine
 | `engine/clock.py` | `Clock` protocol, `SystemClock`, `FakeClock`. No other module reads time directly. |
 | `engine/paths.py` | `DataDir` layout and `--data-dir` / env / platform default resolution. |
 | `engine/logs.py` | structlog JSON logs, rotating file (10 MB × 5), secret redaction, runtime DEBUG toggle. |
-| `engine/store/db.py` | Migrations (one transaction, backup first); `Database` = writer thread + reader pool; `backup_sync` (online backup on a connection of its own). |
+| `engine/store/db.py` | Migrations (one transaction, backup first; `migrations/0001_init.sql`, `0002_logins.sql` = `login_state`); `Database` = writer thread + reader pool; `backup_sync` (online backup on a connection of its own). |
 | `engine/store/blobs.py` | Content-addressed, zstd-compressed, atomic blob store; safe across processes. |
 | `engine/workers.py` | Process pool (spawn) with a thread-mode twin for tests; rebuilds after a crash; a job past `worker_job_timeout_s` is killed and raises `WorkerTimeout`. |
 | `engine/settings.py` | Global settings: one row per changed key in `setting`; plus engine *state* (`_state.*` rows, e.g. last backup) that is never a setting. |
@@ -69,6 +72,10 @@ restore, only between a restore request and the next start), `plugins/`, `engine
 | `engine/api/routes_maintenance.py` | `POST /backup`, `POST /restore`, `POST /shutdown`. |
 | `engine/problems.py` | The Problems list (read-only): bookmarks in `error` / `needs_login` with the last failing check's reason, and action jobs that gave up. `GET /problems`. |
 | `engine/capacity.py` | Demand against capacity (read-only): checks/s each schedule asks for, per pool and per host, against pool size / mean check time and each host's spacing. `GET /capacity`. `engine/stretch.py` reuses its tally. |
+| `engine/fetch/proxy.py`, `cookies.py` | Which proxy a check uses (bookmark's, else global) with its password from the secret store; Netscape `cookies.txt` -> httpx jar / Playwright cookies. |
+| `engine/fetch/login.py`, `macro.py` | `LoginPlan` and login-signal detection (live page and serialised HTML); the macro interpreter (errors never repeat a typed value). |
+| `engine/logins/` | `service.py` (`Logins`: the stored-password rules, `needs_login`, resume, wipe, cookie import, status), `signin.py` (semi-attended window), `prompt.py` (the daily offer), `recorder.py` (Playwright codegen -> steps), `experiment.py` (the portal experiment), `validate.py`, `common.py`. |
+| `engine/api/routes_logins.py` | `/macros`, `/macros/record`, `/bookmarks/{id}/login`, `/signin`, `/session`, `/cookies`, `/experiments` (`/secrets/{name}` is in `routes_actions`, shared by both halves of M6). |
 | `cli/service.py` | Task Scheduler task XML and `schtasks` wrapper for `service install\|uninstall\|status`. |
 | `engine/actions/` | `queue` (durable job runner), `builtin` (action registry), `toast` (coalesced); M6: `mailer`, `ntfy`, `webhook`, `export` (+ `assets`), `program`, `scrape`, `script`; shared `content` (alert content from blobs, worker job), `htmlmail` (email-safe HTML), `templating` (`{var}` and sandboxed Jinja2), `common`, `testing` (send-test). |
 | `engine/store/action_jobs.py` | SQL for the Problems list (list, retry, dismiss failed action jobs). |
@@ -86,8 +93,8 @@ restore, only between a restore request and the next start), `plugins/`, `engine
 | `engine/pipeline/assist.py`, `engine/assistant.py` | Filter assistant: selection to rules (worker), choices and patches |
 | `ui/web/bridge.js`, `ui/windows/filter_assistant.py` | Selection bridge; the assistant popup |
 | `ui/windows/saved_search.py`, `ui/windows/import_export.py` | Saved-search and import / export dialogs |
-| `engine/frozen.py` | Source versus PyInstaller bundle: `component_command()` starts the engine, UI or CLI (never `sys.executable -m`), `launch()` is what every packaged entry point does first. |
-| `engine/stretch.py` | `HostStretch`: the scheduler's response to a host asked for more than its spacing allows (see *Over-limit hosts*). |
+| `engine/frozen.py` | Source versus PyInstaller bundle: `component_command()` starts the engine, UI or CLI (never `sys.executable -m`), `playwright_command()` runs Playwright's bundled Node driver (browser install, the macro recorder's `codegen`), `launch()` is what every packaged entry point does first. |
+| `engine/stretch.py` | `HostStretch`: the scheduler's response to a host asked for more than its spacing allows (see *Over-limit hosts*); `Settings.stretch_hosts` switches it off. |
 | `cli/` | `pagewatch-cli`: a synchronous client of the local API (`cli/power.py`: the M7 commands; `stop` waits for the engine process to exit). |
 
 ## Rules that hold everywhere
@@ -285,6 +292,43 @@ content.load_content(engine, change_id) ──▶ WorkerPool ▶ build_content(j
 * Action parameters are validated by `models.ACTION_PARAMS` when a bookmark or folder default is
   saved, and again when the action runs. `docs/DECISIONS.md` (M6) lists the choices behind this.
 
+## Logins (M6, as built)
+
+```
+check ─▶ runner ─ route_for(signed_in) ─▶ static fetcher  (Basic/Digest from the secret store, imported cookies,
+   │                                          proxy; one client + cookie jar per signed-in bookmark)
+   │                              └────▶ browser fetcher ─ SessionSpec ─▶ BrowserManager
+   │                                         profile_dir  → persistent context = its own browser process
+   │                                                        (session cookies saved beside it, restored on launch)
+   │                                         else         → a fresh context in the shared browser, closed with the page
+   │                                      goto ▶ login signal?  no  ▶ read the page (the macro is skipped)
+   │                                                            yes ▶ plan.permit_macro() ▶ run_macro ▶ goto again ▶ signal gone?
+   └─ fetch.login_required ▶ _needs_login: status needs_login · one alert · next_due NULL (paused, restart-safe)
+```
+
+* **Signed in** means credentials, a cookie file, a macro, or a semi-attended session
+  (`logins.common.is_signed_in`). Such bookmarks default to `alert_privacy: private`, also when the
+  login is added later.
+* **A macro or a hand sign-in always uses the browser** (`route_for(signed_in=True)`), on the
+  bookmark's own profile. Chromium keeps one process per profile, so a profile is open for one thing
+  at a time: while the owner's sign-in window is open, scheduled checks of that bookmark are skipped
+  (`signing_in`), not failed.
+* **Stored-password login** (a macro with a `{"secret": ...}` fill) needs `Settings.stored_password_logins`
+  *and* the bookmark's `fetch.login.allow_stored_password`; then at most one per
+  `min_login_interval_s` (6 h) and none after a failure until `POST .../login/resume`. The attempt is
+  written to `login_state` before the macro runs.
+* **Session expiry** is one rule for every kind of login: a login signal on the page (or a 401 for a
+  bookmark that sent credentials or cookies) moves the bookmark to `needs_login`. Only that
+  transition alerts; manual checks of a paused bookmark stay quiet. Signing in, importing cookies
+  or `resume` clears it and checks at once.
+* **Per-host politeness.** `HostGate` (concurrency, spacing, `Retry-After`) was already there;
+  `Settings.host_overrides` keys are normalised to the host name (`models.normalize_host`), so the
+  override an owner typed as an address is the one the gate and `HostStretch` look up (see
+  *Over-limit hosts*).
+* **Schema:** migration `0002_logins.sql` adds `login_state` (per-bookmark sign-in memory). Macros
+  use the `macro` table that has existed since v1.
+* `docs/DECISIONS.md` (*M6 · Logins and proxies*) has the reasoning, what was verified, and what could not be.
+
 ## Power features (M7, as built)
 
 Virtual folders (saved searches), import / export and reports are self-contained engine modules
@@ -318,6 +362,10 @@ same factor (demand ÷ ceiling) applied to the *gap before its next check*, thro
 from the unstretched schedules, so the factor cannot feed back into itself and falls as soon as demand
 does. Fixed-time schedules and manual checks are not affected. It is measured at start-up, when
 settings change and (at most once a minute) after checks; a failed measurement keeps the old factors.
+`Settings.stretch_hosts` (on by default) turns the stretching off: the factors are still measured, but
+nothing uses them. Host override keys are normalised to the bare host name, so an override typed as
+`https://Example.COM:8443/x` is the `example.com` the scheduler and the host gate look up. The
+Capacity page and the bookmark editor's Schedule tab show the factor for a bookmark's website.
 
 ## The UI (`pagewatch.ui`, optional `ui` extra)
 
@@ -360,6 +408,14 @@ restart or one done by hand.
 
 Closing the window stops only its own timers and WebSocket; the engine is a separate process and
 keeps checking. Lazy list: the engine pages (`/bookmarks` keyset cursor), the model appends.
+
+**Logins in the UI (M6).** The editor's Login tab is `windows/login_panel.py` (server login, cookie
+import, macro, "sign in by hand", wipe session, resume); the Advanced tab gained the proxy login.
+`windows/macros.py` is the Macros dialog (JSON steps validated with the engine's own models, a table
+of the passwords a macro needs, "Record..." which runs Playwright codegen through the engine).
+The main window has *Sign in...* and *Macros* on the toolbar and shows the daily sign-in offer in the
+status bar; Problems offers *Sign in...* and *Resume checks* for a bookmark that needs one.
+Passwords typed anywhere are sent once to `PUT /secrets/{name}` and the field is emptied.
 
 ## Packaging (M8)
 

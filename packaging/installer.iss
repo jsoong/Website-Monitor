@@ -101,23 +101,10 @@ begin
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
 end;
 
-{ Stops every engine of this user: the scheduled one and one the UI started. The engine has no
-  window to close, so this is a hard stop; its design covers that (WAL, one transaction per
-  check, an interrupted check is re-queued at start-up). }
-procedure StopEngine();
-var
-  ResultCode: Integer;
-begin
-  EngineWasRunning := EngineIsRunning();
-  Exec(ExpandConstant('{sys}\schtasks.exe'), '/End /TN "' + TaskName + '"', '',
-    SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM pagewatch-engine.exe', '',
-    SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(1000);  { let Windows release the files }
-end;
-
 { Runs pagewatch-cli as the user who started Setup, not as the administrator account a
-  "for all users" install may have elevated to: the task must belong to that user. }
+  "for all users" install may have elevated to: the task must belong to that user, and so must the
+  engine that `stop` talks to. Defined before StopEngine, which uses it (Pascal Script reads top
+  to bottom). }
 function RunCli(const Params: String): Integer;
 var
   ResultCode: Integer;
@@ -127,6 +114,30 @@ begin
     ResultCode := -1;
   Log('pagewatch-cli ' + Params + ' -> ' + IntToStr(ResultCode));
   Result := ResultCode;
+end;
+
+{ Stops every engine of this user: the scheduled one and one the UI started.
+
+  First it asks the engine to quit (`pagewatch-cli stop --wait 30`: finish the running checks,
+  close the database, remove the lockfile, and the command returns only once the process has
+  exited). That is skipped when no engine is running. It cannot work every time: on a first
+  install there is no CLI yet, and the CLI of a release from before `stop` existed does not know
+  the command (it exits non-zero, which is logged and ignored). So the hard stop below always
+  follows and is the fallback; with the engine already gone it finds nothing to end. The engine's
+  design covers a hard stop (WAL, one transaction per check, an interrupted check is re-queued at
+  start-up). }
+procedure StopEngine();
+var
+  ResultCode: Integer;
+begin
+  EngineWasRunning := EngineIsRunning();
+  if EngineWasRunning then
+    RunCli('stop --wait 30');
+  Exec(ExpandConstant('{sys}\schtasks.exe'), '/End /TN "' + TaskName + '"', '',
+    SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM pagewatch-engine.exe', '',
+    SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(1000);  { let Windows release the files }
 end;
 
 { -- install -------------------------------------------------------------------------- }

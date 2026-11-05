@@ -83,7 +83,8 @@ version resources and the portable zip.
   a bundle each worker is a fresh copy of the same executable. It then repairs the missing
   standard streams of a windowed build and runs the program's `main()`.
 - **Children are started through `component_command()`** (UI starts the engine, the tray opens the
-  UI) and `playwright_install_command()` (installing the fallback Chromium), never through
+  UI) and `playwright_command()` / `playwright_install_command()` (Playwright's own CLI: installing
+  the fallback Chromium, and `codegen` for the macro recorder), never through
   `sys.executable -m ...`, which from a bundle would be the wrong program. A test fails if code
   reintroduces that.
 - **Data files** are everything non-code under `src/pagewatch`, found by walking the tree, so what
@@ -118,13 +119,12 @@ version resources and the portable zip.
 
 - Never run on Windows by the author of this folder: see `docs/DECISIONS.md` (M8) for exactly what
   was and was not executed.
-- The installer still stops the engine with a hard kill (`schtasks /End`, `taskkill /F /T`). The
-  engine can now be asked to quit cleanly (`POST /shutdown`, or `pagewatch-cli stop`, which waits
-  until the process has exited and succeeds if none is running), but `StopEngine` in `installer.iss`
-  has not been changed to use it: that is Inno Script and could not be compiled or run where this
-  was written. To finish it, call `RunCli('stop --wait 30')` there before the hard kill and keep the
-  hard kill as the fallback (the old CLI in an upgrade may not have `stop`). The hard kill is safe by
-  design (WAL, one transaction per check, interrupted checks re-queued). See `docs/DECISIONS.md`,
-  *Merging M6, M7 and M8*.
+- The installer asks the engine to quit first (`StopEngine` in `installer.iss` runs
+  `pagewatch-cli stop --wait 30`, which waits until the process has exited and succeeds if none is
+  running) and only then falls back to the hard kill (`schtasks /End`, `taskkill /F /T`). The
+  fallback is needed: on a first install there is no CLI yet, and the CLI of a release from before
+  `stop` existed exits non-zero. The hard kill is safe by design (WAL, one transaction per check,
+  interrupted checks re-queued). **Never compiled or run**: Inno Script, no Windows here;
+  `verify-install.ps1` is the real check. See `docs/DECISIONS.md`, *Merging M6 · Logins and proxies*.
 - Size: roughly 0.3 GB without the UI and 0.9 GB with it, on disk. Playwright's Node driver
   (about 0.13 GB) and QtWebEngine are most of it.

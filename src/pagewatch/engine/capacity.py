@@ -139,6 +139,7 @@ async def compute(engine: Engine, *, hosts_shown: int = HOSTS_SHOWN) -> Capacity
                 ceiling_per_min=ceiling,
                 utilisation=util,
                 over_limit=ceiling is not None and exceeds(per_min, ceiling),
+                stretch=engine.host_stretch.factor(host),
             )
         )
     hosts.sort(key=lambda h: (h.utilisation or 0.0, h.demand_per_min, h.host), reverse=True)

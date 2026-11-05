@@ -47,6 +47,12 @@ REASONS = {
     "browser": "The browser could not load the page",
     "parse": "The content could not be read",
     "needs login": "The site wants you to sign in again",
+    "login_signal": "The site is showing its login page: sign in again",
+    "auth_rejected": "The site rejected the saved login or cookies",
+    "macro_failed": "The saved login steps did not get past the sign-in page",
+    "stored_password_off": "Signing in with a stored password is switched off (Settings, Network)",
+    "login_rate_limited": "An automatic sign-in already ran recently; it waits before trying again",
+    "login_blocked": "Automatic sign-in stopped after a failure: fix it, then Resume checks",
 }
 KINDS = {
     "bookmark_error": "Failing",
@@ -123,6 +129,12 @@ class ProblemsWindow(QDialog):
         self.btn_copy = QPushButton("Copy error")
         self.btn_retry = QPushButton("Retry")
         self.btn_dismiss = QPushButton("Dismiss")
+        self.btn_signin = QPushButton("Sign in...")
+        self.btn_resume = QPushButton("Resume checks")
+        self.btn_signin.setToolTip("Open a window to sign in to this site (checks resume after)")
+        self.btn_resume.setToolTip(
+            "After fixing the login (new cookies, a new password): check now"
+        )
         self.btn_refresh = QPushButton("Refresh")
         close = QPushButton("Close")
         self.btn_check.setToolTip("Check the selected bookmark again now")
@@ -136,12 +148,17 @@ class ProblemsWindow(QDialog):
         self.btn_retry.clicked.connect(self.retry_selected)
         self.btn_dismiss.clicked.connect(self.dismiss_selected)
         self.btn_refresh.clicked.connect(self.refresh)
+        self.btn_signin.clicked.connect(self.sign_in_selected)
+        self.btn_resume.clicked.connect(self.resume_selected)
         close.clicked.connect(self.close)
         self.table.itemSelectionChanged.connect(self._sync_buttons)
         self.table.itemDoubleClicked.connect(lambda _i: self.show_selected())
 
         row = QHBoxLayout()
-        for b in (self.btn_check, self.btn_show, self.btn_open, self.btn_copy):
+        for b in (
+            self.btn_check, self.btn_signin, self.btn_resume, self.btn_show, self.btn_open,
+            self.btn_copy,
+        ):  # fmt: skip
             row.addWidget(b)
         row.addSpacing(12)
         row.addWidget(self.btn_retry)
@@ -224,6 +241,9 @@ class ProblemsWindow(QDialog):
     def _sync_buttons(self) -> None:
         p = self.selected_problem()
         self.btn_check.setEnabled(p is not None and p.kind != "action_failed")
+        needs = p is not None and p.kind == "needs_login"
+        self.btn_signin.setEnabled(needs)
+        self.btn_resume.setEnabled(needs)
         for b in (self.btn_show, self.btn_open, self.btn_copy):
             b.setEnabled(p is not None)
         for b in (self.btn_retry, self.btn_dismiss):
@@ -269,6 +289,35 @@ class ProblemsWindow(QDialog):
     def _after_job(self, text: str) -> None:
         self.say(text)
         self.refresh()
+
+    def sign_in_selected(self) -> None:
+        p = self.selected_problem()
+        if p is None or p.kind != "needs_login":
+            return
+
+        def failed(e: Exception) -> None:
+            self.say(
+                str(e).split(": ", 1)[-1]
+                + " Fix its login in the editor (Login tab), then choose Resume checks."
+            )
+
+        run_async(
+            lambda: self._client.start_signin(p.bookmark_id),
+            lambda _o: self.say(
+                f"Sign in to {p.bookmark_name} in the window that opened, then close it."
+            ),
+            failed,
+        )
+
+    def resume_selected(self) -> None:
+        p = self.selected_problem()
+        if p is None or p.kind != "needs_login":
+            return
+        run_async(
+            lambda: self._client.resume_login(p.bookmark_id),
+            lambda _o: self.say(f"Checking {p.bookmark_name} again"),
+            lambda e: self.say(str(e)),
+        )
 
     def show_selected(self) -> None:
         p = self.selected_problem()

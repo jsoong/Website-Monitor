@@ -25,6 +25,7 @@ def test_the_files_read_through_importlib_resources_are_bundled() -> None:
     """PyInstaller follows imports, not ``importlib.resources``: these would be silently absent."""
     datas = {Path(src).name: dest for src, dest in bundle.package_data_files()}
     assert datas["0001_init.sql"] == "pagewatch/engine/store/migrations"
+    assert datas["0002_logins.sql"] == "pagewatch/engine/store/migrations"
     assert datas["volatile_patterns.yaml"] == "pagewatch/data"
     assert datas["cookie_banner_selectors.txt"] == "pagewatch/data"
     assert datas["diff.css"] == "pagewatch/ui/web"

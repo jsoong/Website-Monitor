@@ -169,6 +169,26 @@ def test_the_engine_is_stopped_before_files_are_replaced_and_restarted_after() -
     assert post and "ssPostInstall" in post.group(0) and "/Run /TN" in post.group(0)
 
 
+def test_the_engine_is_asked_to_quit_before_anything_is_killed() -> None:
+    """``pagewatch-cli stop --wait 30`` first; the two hard stops stay as the fallback (the CLI of
+    a release from before ``stop`` existed, or none yet on a first install, cannot do it)."""
+    stop = re.search(r"procedure StopEngine.*?\nend;", ISS, re.DOTALL)
+    assert stop
+    body = stop.group(0)
+    graceful = body.index("RunCli('stop --wait 30')")
+    assert graceful < body.index("/End /TN") < body.index("/F /T /IM pagewatch-engine.exe")
+    assert "EngineWasRunning := EngineIsRunning();" in body
+    # Pascal Script reads top to bottom: RunCli has to exist before StopEngine uses it
+    assert ISS.index("function RunCli") < ISS.index("procedure StopEngine")
+
+
+def test_the_cli_stop_command_the_installer_calls_exists_with_that_flag() -> None:
+    from pagewatch.cli.main import build_parser
+
+    args = build_parser().parse_args(["stop", "--wait", "30"])
+    assert args.cmd == "stop" and args.wait == 30
+
+
 def test_it_refuses_to_install_an_older_version_over_a_newer_one() -> None:
     m = re.search(r"function InitializeSetup.*?\nend;", ISS, re.DOTALL)
     assert m

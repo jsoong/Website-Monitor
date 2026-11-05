@@ -12,9 +12,20 @@ from typing import Any
 from pydantic import ValidationError
 
 from pagewatch.engine.store.db import Database
-from pagewatch.models import Settings, deep_merge
+from pagewatch.models import Settings, deep_merge, normalize_host
 
 STATE_PREFIX = "_state."  # engine bookkeeping in the `setting` table; never a user setting
+
+
+def _normalised_hosts(overrides: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in overrides.items():
+        try:
+            out[normalize_host(str(key))] = value
+        except ValueError:
+            Settings.model_validate({"host_overrides": {str(key): None}})  # raises the 422 error
+            raise
+    return out
 
 
 class SettingsStore:
@@ -40,6 +51,9 @@ class SettingsStore:
 
     async def update(self, patch: dict[str, Any]) -> Settings:
         """Validate ``patch`` merged onto the current settings, then persist what changed."""
+        if isinstance(patch.get("host_overrides"), dict):
+            # Keys are normalised first, so ``{"Example.COM:80": null}`` removes ``example.com``.
+            patch = {**patch, "host_overrides": _normalised_hosts(patch["host_overrides"])}
         merged = deep_merge(self.current.model_dump(mode="json"), patch)
         if isinstance(patch.get("host_overrides"), dict):
             # Merging can add or change a host's override but never remove one, so ``null``

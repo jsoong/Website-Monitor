@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.packaging.helpers import load_packaging_module
+from tests.packaging.helpers import SRC, load_packaging_module
 
 build = load_packaging_module("build")
 smoke = load_packaging_module("smoke")
@@ -40,6 +40,15 @@ def test_the_headless_bundle_has_the_programs_and_passes_the_smoke_test(headless
         assert (folder / name).exists() or (folder / f"{name}.exe").exists()
     assert (folder / "USER_GUIDE.md").is_file(), "the installer links to it"
     assert (folder / "_internal").is_dir()
+
+
+def test_the_bundle_carries_every_migration_the_source_has(headless: Path) -> None:
+    """A bundle that lacks the newest migration would call its users' upgraded data "newer than
+    this build". M6 (logins) added ``0002_logins.sql`` after the packaging tests were written."""
+    folder = headless / bundle.BUNDLE_NAME / "_internal" / "pagewatch" / "engine" / "store"
+    shipped = {p.name for p in (folder / "migrations").glob("*.sql")}
+    source = {p.name for p in (SRC / "engine" / "store" / "migrations").glob("*.sql")}
+    assert shipped == source and "0002_logins.sql" in shipped
 
 
 def test_the_portable_zip_is_a_complete_runnable_copy(headless: Path, tmp_path: Path) -> None:

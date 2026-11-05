@@ -2,9 +2,11 @@
 (spec: *Desktop UI → Other screens*; *Actions → Execution rules*: "Failed jobs appear in the UI's
 Problems list with the last error").
 
-It only reads ``GET /problems``. A problem goes away when its cause does: a bookmark when a check
-succeeds or when it is opened (marked read), a failed action when its change is read. The window
-refreshes on the engine's ``problem`` events and when asked.
+It reads ``GET /problems``. A problem goes away when its cause does: a bookmark when a check
+succeeds or when it is opened (marked read), a failed action when its change is read. A failed
+action can also be sent round again (**Retry**: fresh set of attempts) or removed (**Dismiss**);
+those two are the only things this window changes, through ``/action-jobs``. The window refreshes on
+the engine's ``problem`` events and when asked.
 """
 
 from __future__ import annotations
@@ -119,14 +121,20 @@ class ProblemsWindow(QDialog):
         self.btn_show = QPushButton("Show bookmark")
         self.btn_open = QPushButton("Open URL")
         self.btn_copy = QPushButton("Copy error")
+        self.btn_retry = QPushButton("Retry")
+        self.btn_dismiss = QPushButton("Dismiss")
         self.btn_refresh = QPushButton("Refresh")
         close = QPushButton("Close")
         self.btn_check.setToolTip("Check the selected bookmark again now")
+        self.btn_retry.setToolTip("Run the failed action again, with a fresh set of attempts")
+        self.btn_dismiss.setToolTip("Remove the failed action from this list without retrying it")
         self.btn_show.setToolTip("Select it in the main window's list")
         self.btn_check.clicked.connect(self.check_selected)
         self.btn_show.clicked.connect(self.show_selected)
         self.btn_open.clicked.connect(self.open_selected)
         self.btn_copy.clicked.connect(self.copy_selected)
+        self.btn_retry.clicked.connect(self.retry_selected)
+        self.btn_dismiss.clicked.connect(self.dismiss_selected)
         self.btn_refresh.clicked.connect(self.refresh)
         close.clicked.connect(self.close)
         self.table.itemSelectionChanged.connect(self._sync_buttons)
@@ -135,6 +143,9 @@ class ProblemsWindow(QDialog):
         row = QHBoxLayout()
         for b in (self.btn_check, self.btn_show, self.btn_open, self.btn_copy):
             row.addWidget(b)
+        row.addSpacing(12)
+        row.addWidget(self.btn_retry)
+        row.addWidget(self.btn_dismiss)
         row.addStretch(1)
         row.addWidget(self.btn_refresh)
         row.addWidget(close)
@@ -215,6 +226,13 @@ class ProblemsWindow(QDialog):
         self.btn_check.setEnabled(p is not None and p.kind != "action_failed")
         for b in (self.btn_show, self.btn_open, self.btn_copy):
             b.setEnabled(p is not None)
+        for b in (self.btn_retry, self.btn_dismiss):
+            b.setEnabled(self._failed_job() is not None)
+
+    def _failed_job(self) -> ProblemOut | None:
+        """The selected problem, if it is a failed action (the only kind with a job to retry)."""
+        p = self.selected_problem()
+        return p if p is not None and p.kind == "action_failed" and p.job_id is not None else None
 
     def check_selected(self) -> None:
         p = self.selected_problem()
@@ -225,6 +243,32 @@ class ProblemsWindow(QDialog):
             lambda _n: self.say(f"Checking {p.bookmark_name}"),
             lambda e: self.say(str(e)),
         )
+
+    def retry_selected(self) -> None:
+        p = self._failed_job()
+        if p is None or p.job_id is None:
+            return
+        job_id = p.job_id
+        run_async(
+            lambda: self._client.retry_action_job(job_id),
+            lambda _job: self._after_job(f"Queued again: {p.bookmark_name} ({p.action_type})"),
+            lambda e: self._after_job(str(e)),  # e.g. it was dismissed elsewhere: the list is stale
+        )
+
+    def dismiss_selected(self) -> None:
+        p = self._failed_job()
+        if p is None or p.job_id is None:
+            return
+        job_id = p.job_id
+        run_async(
+            lambda: self._client.dismiss_action_job(job_id),
+            lambda _none: self._after_job(f"Dismissed: {p.bookmark_name} ({p.action_type})"),
+            lambda e: self._after_job(str(e)),
+        )
+
+    def _after_job(self, text: str) -> None:
+        self.say(text)
+        self.refresh()
 
     def show_selected(self) -> None:
         p = self.selected_problem()

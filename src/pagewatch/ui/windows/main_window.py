@@ -43,7 +43,6 @@ from pagewatch.ui.models import (
     FolderTree,
     SummaryRole,
 )
-from pagewatch.ui.windows.action_tools import ActionTools
 from pagewatch.ui.windows.add_assistant import AddBookmarkDialog
 from pagewatch.ui.windows.bookmark_editor import BookmarkEditor
 from pagewatch.ui.windows.false_positive import FalsePositiveDialog
@@ -125,7 +124,6 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.splitter)
 
         self._build_actions()
-        self.tools = ActionTools(self)  # Notifications... and Problems, beside the main toolbar
         self._build_status_bar()
         self._wire()
         if persist:
@@ -410,6 +408,8 @@ class MainWindow(QMainWindow):
                     self.viewer.show_bookmark(bid, cur.name)
             self._debounce.start()
         elif kind in ("change_detected", "check_finished", "engine_state", "problem"):
+            if kind == "problem" and data.get("kind") == "action_failed":
+                self.say(f"An action failed: {data.get('error', '')}"[:200])
             self._debounce.start()
             if self.problems_window is not None and self.problems_window.isVisible():
                 self.problems_window.schedule_refresh()

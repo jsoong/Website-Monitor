@@ -128,6 +128,21 @@ def test_an_empty_list_says_so_and_a_failing_bookmark_appears_with_its_error(
     assert w.selected_problem() is not None and w.selected_problem().bookmark_id == bid  # type: ignore[union-attr]
 
 
+def test_a_failing_bookmark_cannot_be_retried_or_dismissed_only_a_failed_action_can(
+    eng: EngineThread, api_client: ApiClient, qapp: Any, pump_until: Callable[..., None]
+) -> None:
+    make(eng, api_client, "Shop")
+    break_site(eng, "Shop")
+    w = ProblemsWindow(api_client)
+    pump_until(lambda: w.total == 1, what="the problem")
+    w.table.selectRow(0)
+    assert w.selected_problem() is not None and w.selected_problem().kind == "bookmark_error"  # type: ignore[union-attr]
+    assert not w.btn_retry.isEnabled() and not w.btn_dismiss.isEnabled()
+    w.retry_selected()  # and calling the handlers directly does nothing either
+    w.dismiss_selected()
+    assert w.message.text() == ""
+
+
 def test_it_updates_itself_from_engine_events_and_clears_when_the_site_recovers(
     eng: EngineThread, api_client: ApiClient, open_main: Callable[[], MainWindow],
     pump_until: Callable[..., None],

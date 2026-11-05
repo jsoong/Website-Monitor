@@ -1,5 +1,6 @@
-"""The M6 UI: per-action settings, the Notifications dialog, the failed-actions (Problems) list,
-and their place in the bookmark editor and the main window."""
+"""The M6 UI: per-action settings in the bookmark editor, and the two M6 features that live in M5's
+screens: the Email and Notifications pages of the Settings window, and Retry / Dismiss for failed
+actions in the Problems window."""
 
 from __future__ import annotations
 
@@ -9,16 +10,16 @@ from typing import Any
 
 import pytest
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QPlainTextEdit
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QPlainTextEdit, QToolBar
 
 from pagewatch.engine.secrets import NullSecrets
 from pagewatch.ui.client import ApiClient
 from pagewatch.ui.events import EventStream
 from pagewatch.ui.windows.action_params import CONFIGURABLE, ActionParamsDialog, RowTable
 from pagewatch.ui.windows.bookmark_editor import IMPLEMENTED_ACTIONS, BookmarkEditor
-from pagewatch.ui.windows.failed_actions import FailedActionsDialog
 from pagewatch.ui.windows.main_window import MainWindow
-from pagewatch.ui.windows.notification_settings import NotificationSettingsDialog
+from pagewatch.ui.windows.problems import ProblemsWindow
+from pagewatch.ui.windows.settings import PAGES, SettingsDialog
 from pagewatch.ui.workers import wait_idle
 from tests.support.engine_thread import EngineThread
 from tests.support.fixture_site import article
@@ -230,7 +231,7 @@ def test_a_plain_bookmark_switches_privacy_without_a_question(
     pump_until(lambda: bool(saved), what="save")
 
 
-# -- Notifications ------------------------------------------------------------------------------
+# -- Notifications: the Email and Notifications pages of Settings ------------------------------
 
 
 def start_servers(eng: EngineThread) -> tuple[SmtpServer, HttpSink]:
@@ -239,26 +240,62 @@ def start_servers(eng: EngineThread) -> tuple[SmtpServer, HttpSink]:
     return smtp, sink
 
 
-def test_notifications_dialog_saves_settings_and_keeps_the_password_in_the_secret_store(
-    eng: EngineThread, api_client: ApiClient, qapp: QApplication,
+@pytest.fixture
+def settings_window(
+    api_client: ApiClient, qapp: QApplication
+) -> Iterator[Callable[[], SettingsDialog]]:
+    dialogs: list[SettingsDialog] = []
+
+    def factory() -> SettingsDialog:
+        d = SettingsDialog(api_client, api_client.settings())
+        dialogs.append(d)
+        return d
+
+    yield factory
+    wait_idle(2000)
+    for d in dialogs:
+        d.close()
+
+
+def fill_mail_and_ntfy(d: SettingsDialog, smtp: SmtpServer, sink: HttpSink) -> None:
+    ed = d.notifications
+    ed.smtp_host.setText("127.0.0.1")
+    ed.smtp_security.setCurrentIndex(ed.smtp_security.findData("none"))
+    ed.smtp_port.setValue(smtp.port)
+    ed.smtp_from.setText("pw@example.com")
+    ed.smtp_to.setText("a@example.com, b@example.com")
+    ed.ntfy_server.setText(sink.base)
+    ed.ntfy_topic.setText("alerts-1")
+
+
+def test_the_mail_settings_are_on_the_email_page_and_ntfy_on_the_notifications_page(
+    settings_window: Callable[[], SettingsDialog],
+) -> None:
+    d = settings_window()
+
+    def holds(page: str, widget: Any) -> bool:
+        return bool(d.stack.widget(PAGES.index(page)).widget().isAncestorOf(widget))  # type: ignore[attr-defined]
+
+    assert holds("Email", d.notifications.smtp_host) and holds("Email", d.notifications.smtp_test)
+    assert holds("Notifications", d.notifications.ntfy_topic)
+    assert not holds("Email", d.notifications.ntfy_topic)
+    assert d.build_patch() == {}  # looking at them changes nothing
+
+
+def test_settings_save_the_mail_and_ntfy_settings_and_keep_passwords_in_the_secret_store(
+    eng: EngineThread, api_client: ApiClient, settings_window: Callable[[], SettingsDialog],
     pump_until: Callable[..., None],
 ) -> None:  # fmt: skip
     smtp, sink = start_servers(eng)
-    dialog = NotificationSettingsDialog(api_client, api_client.settings())
-    pump_until(lambda: dialog._secrets_ok, what="secret store check")
-    dialog.smtp_host.setText("127.0.0.1")
-    dialog.smtp_security.setCurrentIndex(dialog.smtp_security.findData("none"))
-    dialog.smtp_port.setValue(smtp.port)
-    dialog.smtp_user.setText("me")
-    dialog.smtp_password.setText("hunter2")
-    dialog.smtp_from.setText("pw@example.com")
-    dialog.smtp_to.setText("a@example.com, b@example.com")
-    dialog.ntfy_server.setText(sink.base)
-    dialog.ntfy_topic.setText("alerts-1")
-    dialog.ntfy_token.setText("tk_secret")
+    d = settings_window()
+    ed = d.notifications
+    fill_mail_and_ntfy(d, smtp, sink)
+    ed.smtp_user.setText("me")
+    ed.smtp_password.setText("hunter2")
+    ed.ntfy_token.setText("tk_secret")
     saved: list[bool] = []
-    dialog.saved.connect(lambda: saved.append(True))
-    dialog.save()
+    d.saved.connect(lambda: saved.append(True))
+    d.save(close=False)
     pump_until(lambda: bool(saved), what="save")
 
     n = api_client.settings().notifications
@@ -269,62 +306,93 @@ def test_notifications_dialog_saves_settings_and_keeps_the_password_in_the_secre
     assert eng.engine.secrets.get("ntfy-token") == "tk_secret"
     dumped = api_client.settings().model_dump_json()
     assert "hunter2" not in dumped and "tk_secret" not in dumped  # ...and nowhere else
-    reopened = NotificationSettingsDialog(api_client, api_client.settings())
-    assert reopened.smtp_password.text() == "" and reopened.smtp_host.text() == "127.0.0.1"
+    assert ed.smtp_password.text() == "" and ed.ntfy_token.text() == ""  # forgotten once stored
+    assert d.build_patch() == {} and d.notifications.pending_secrets() == []  # nothing left to send
+    reopened = settings_window()
+    assert reopened.notifications.smtp_password.text() == ""
+    assert reopened.notifications.smtp_host.text() == "127.0.0.1"
+
+
+def test_a_password_typed_on_its_own_is_saved_though_no_setting_changed(
+    eng: EngineThread, settings_window: Callable[[], SettingsDialog],
+    pump_until: Callable[..., None],
+) -> None:  # fmt: skip
+    d = settings_window()
+    d.notifications.smtp_password.setText("only-this")
+    assert d.build_patch() == {}  # a password is not a setting...
+    saved: list[bool] = []
+    d.saved.connect(lambda: saved.append(True))
+    d.save(close=False)  # ...but it must not be swallowed by "nothing changed"
+    pump_until(lambda: bool(saved), what="save")
+    assert eng.engine.secrets.get("smtp-password") == "only-this"
+    assert d.notifications.smtp_password.text() == ""
 
 
 def test_send_test_buttons_save_first_then_report_the_outcome(
-    eng: EngineThread, api_client: ApiClient, qapp: QApplication,
+    eng: EngineThread, settings_window: Callable[[], SettingsDialog],
     pump_until: Callable[..., None],
 ) -> None:  # fmt: skip
     smtp, sink = start_servers(eng)
-    dialog = NotificationSettingsDialog(api_client, api_client.settings())
-    dialog.smtp_host.setText("127.0.0.1")
-    dialog.smtp_security.setCurrentIndex(dialog.smtp_security.findData("none"))
-    dialog.smtp_port.setValue(smtp.port)
-    dialog.smtp_from.setText("pw@example.com")
-    dialog.smtp_to.setText("me@example.com")
-    dialog.ntfy_server.setText(sink.base)
-    dialog.ntfy_topic.setText("alerts-1")
-    dialog.smtp_test.click()
-    pump_until(lambda: dialog.smtp_result.text().startswith("Sent"), what="email test")
+    d = settings_window()
+    ed = d.notifications
+    fill_mail_and_ntfy(d, smtp, sink)
+    ed.smtp_to.setText("me@example.com")
+    assert d.build_patch() != {}
+    ed.smtp_test.click()
+    pump_until(lambda: ed.smtp_result.text().startswith("Sent"), what="email test")
     assert len(smtp.messages) == 1 and smtp.messages[0].rcpt_to == ["me@example.com"]
-    dialog.ntfy_test.click()
-    pump_until(lambda: dialog.ntfy_result.text().startswith("Sent"), what="ntfy test")
+    assert d.build_patch() == {}  # the test saved them: Apply has nothing more to send
+    ed.ntfy_test.click()
+    pump_until(lambda: ed.ntfy_result.text().startswith("Sent"), what="ntfy test")
     assert sink.requests[0].json()["topic"] == "alerts-1"
 
     smtp.reject = "554 no thanks"
-    dialog.smtp_test.click()
-    pump_until(lambda: "554" in dialog.smtp_result.text(), what="a failing test")
-    assert dialog.smtp_result.styleSheet().endswith("#b00020")  # shown as a failure
+    ed.smtp_test.click()
+    pump_until(lambda: "554" in ed.smtp_result.text(), what="a failing test")
+    assert ed.smtp_result.styleSheet().endswith("#b00020")  # shown as a failure
 
 
-def test_notifications_dialog_warns_about_the_public_ntfy_server(
-    eng: EngineThread, api_client: ApiClient, qapp: QApplication
+def test_a_test_does_not_save_the_rest_of_the_window(
+    eng: EngineThread, settings_window: Callable[[], SettingsDialog],
+    pump_until: Callable[..., None],
+) -> None:  # fmt: skip
+    smtp, sink = start_servers(eng)
+    d = settings_window()
+    fill_mail_and_ntfy(d, smtp, sink)
+    d.w["keep_changed_versions"].setValue(9)  # type: ignore[attr-defined]
+    d.notifications.smtp_test.click()
+    pump_until(lambda: d.notifications.smtp_result.text().startswith("Sent"), what="email test")
+    assert d.build_patch() == {"keep_changed_versions": 9}  # still pending, still the user's call
+
+
+def test_the_public_ntfy_server_is_flagged(
+    settings_window: Callable[[], SettingsDialog],
 ) -> None:
-    dialog = NotificationSettingsDialog(api_client, api_client.settings())
-    assert "public server" in dialog.ntfy_warning.text()  # ntfy.sh is the default
-    dialog.ntfy_server.setText("https://ntfy.example.org")
-    assert dialog.ntfy_warning.text() == ""
+    ed = settings_window().notifications
+    assert "public server" in ed.ntfy_warning.text()  # ntfy.sh is the default
+    ed.ntfy_server.setText("https://ntfy.example.org")
+    assert ed.ntfy_warning.text() == ""
 
 
-def test_without_a_credential_store_the_dialog_says_so_and_locks_the_password_fields(
+def test_without_a_credential_store_the_page_says_so_and_locks_the_password_fields(
     tmp_path: Path, qapp: QApplication, pump_until: Callable[..., None]
 ) -> None:
     et = EngineThread(tmp_path / "null", secret_store=NullSecrets()).start()
     client = ApiClient(et.base, et.engine.token)
     try:
-        dialog = NotificationSettingsDialog(client, client.settings())
-        pump_until(lambda: not dialog.smtp_password.isEnabled(), what="secret store check")
-        assert "no secure credential store" in dialog.secret_note.text()
-        assert not dialog.ntfy_token.isEnabled()
+        d = SettingsDialog(client, client.settings())
+        ed = d.notifications
+        pump_until(lambda: not ed.smtp_password.isEnabled(), what="secret store check")
+        assert "no secure credential store" in ed.secret_note.text()
+        assert "no secure credential store" in ed.ntfy_secret_note.text()
+        assert not ed.ntfy_token.isEnabled()
     finally:
         wait_idle(2000)
         client.close()
         et.stop()
 
 
-# -- Problems -----------------------------------------------------------------------------------
+# -- Problems: retry and dismiss in the Problems window ------------------------------------------
 
 
 def fail_an_action(eng: EngineThread, client: ApiClient) -> int:
@@ -344,31 +412,47 @@ def fail_an_action(eng: EngineThread, client: ApiClient) -> int:
     return bid
 
 
-def test_failed_actions_dialog_lists_retries_and_dismisses(
+def test_problems_window_retries_and_dismisses_a_failed_action(
     eng: EngineThread, api_client: ApiClient, qapp: QApplication,
     pump_until: Callable[..., None],
 ) -> None:  # fmt: skip
     fail_an_action(eng, api_client)
-    dialog = FailedActionsDialog(api_client)
-    pump_until(lambda: dialog.table.rowCount() == 1, what="the list")
-    row = [dialog.table.item(0, c).text() for c in range(5)]
-    assert row[1] == "Tea shop" and row[2] == "pushover" and row[3] == "1"
-    assert "pushover action is not available" in row[4]
+    w = ProblemsWindow(api_client)
+    pump_until(lambda: w.table.rowCount() == 1, what="the list")
+    assert w.table.item(0, 1).text() == "Tea shop" and w.table.item(0, 4).text() == "1"
+    assert "pushover action is not available" in w.table.item(0, 2).text()
+    assert not w.btn_retry.isEnabled() and not w.btn_dismiss.isEnabled()  # nothing selected
 
-    dialog.retry.click()  # nothing selected yet
-    assert "Select" in dialog.status.text()
-    dialog.table.selectRow(0)
-    dialog.retry.click()
-    pump_until(lambda: dialog.status.text().startswith("Queued again"), what="retry")
+    w.table.selectRow(0)
+    assert w.btn_retry.isEnabled() and w.btn_dismiss.isEnabled()
+    w.btn_retry.click()
+    pump_until(lambda: w.message.text().startswith("Queued again"), what="retry")
+    assert "Tea shop" in w.message.text() and "pushover" in w.message.text()
     eng.settle()  # it fails again, immediately, for the same reason
-    dialog.refresh_button.click()
-    pump_until(lambda: dialog.table.rowCount() == 1, what="the list again")
+    w.btn_refresh.click()
+    pump_until(lambda: w.table.rowCount() == 1, what="the list again")
 
-    dialog.table.selectRow(0)
-    dialog.dismiss.click()
-    pump_until(lambda: dialog.table.rowCount() == 0, what="an empty list")
-    assert dialog.status.text() == "No failed actions."
-    assert not dialog.retry.isEnabled() and not dialog.dismiss.isEnabled()
+    w.table.selectRow(0)
+    w.btn_dismiss.click()
+    pump_until(lambda: w.table.rowCount() == 0, what="an empty list")
+    assert w.total == 0 and w.message.text().startswith("Dismissed")
+    assert not w.btn_retry.isEnabled() and not w.btn_dismiss.isEnabled()
+    assert api_client.action_jobs("failed") == []  # really gone from the engine, not just hidden
+
+
+def test_retrying_a_job_that_is_already_gone_says_so_and_refreshes(
+    eng: EngineThread, api_client: ApiClient, qapp: QApplication,
+    pump_until: Callable[..., None],
+) -> None:  # fmt: skip
+    fail_an_action(eng, api_client)
+    w = ProblemsWindow(api_client)
+    pump_until(lambda: w.table.rowCount() == 1, what="the list")
+    w.table.selectRow(0)
+    job = api_client.action_jobs("failed")[0]
+    api_client.dismiss_action_job(job.id)  # someone else (the CLI, another window) removed it
+    w.btn_retry.click()
+    pump_until(lambda: "no failed action job" in w.message.text(), what="the error")
+    pump_until(lambda: w.table.rowCount() == 0, what="the refreshed list")
 
 
 # -- the main window ----------------------------------------------------------------------------
@@ -389,27 +473,19 @@ def window(
     w.close()
 
 
-def test_main_window_has_notifications_and_a_live_problems_count(
+def test_a_failed_action_is_announced_and_counted_on_the_problems_button(
     eng: EngineThread, api_client: ApiClient, window: MainWindow, pump_until: Callable[..., None]
 ) -> None:
-    assert window.tools.act_notifications.text() == "Notifications..."
-    assert window.tools.act_problems.text() == "Problems"
+    pump_until(lambda: window.btn_problems.text() == "Problems: 0", what="the first count")
     fail_an_action(eng, api_client)
-    pump_until(lambda: window.tools.act_problems.text() == "Problems (1)", what="the count")
+    pump_until(lambda: window.btn_problems.text() == "Problems: 1", what="the count")
     pump_until(lambda: "An action failed" in window.lbl_message.text(), what="a status message")
     assert "pushover action is not available" in window.lbl_message.text()
 
 
-def test_main_window_opens_the_problems_and_notifications_dialogs(
-    eng: EngineThread, api_client: ApiClient, window: MainWindow, pump_until: Callable[..., None]
+def test_notifications_and_problems_have_one_home_each_and_no_second_toolbar(
+    window: MainWindow,
 ) -> None:
-    window.tools.act_problems.trigger()
-    pump_until(lambda: isinstance(window.tools.dialog, FailedActionsDialog), what="Problems")
-    assert window.tools.dialog.isVisible()
-    window.tools.dialog.close()
-    window.tools.act_notifications.trigger()
-    pump_until(
-        lambda: isinstance(window.tools.dialog, NotificationSettingsDialog), what="Notifications"
-    )
-    assert window.tools.dialog.isVisible()
-    window.tools.dialog.close()
+    assert len(window.findChildren(QToolBar)) == 1  # M6 once added its own beside the main one
+    window.open_problems()  # the same window the status-bar button opens, with Retry and Dismiss
+    assert window.problems_window is not None and window.problems_window.btn_retry.text() == "Retry"

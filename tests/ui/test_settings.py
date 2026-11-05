@@ -105,14 +105,17 @@ def test_an_untouched_window_sends_nothing_even_when_it_is_saved(
     assert d.result() == QDialog.DialogCode.Accepted
 
 
-def test_every_page_exists_and_the_email_page_says_it_is_not_there_yet(
+def test_every_page_exists_and_the_email_page_holds_the_mail_settings(
     opened: Callable[[], SettingsDialog],
 ) -> None:
     d = opened()
     assert d.nav.count() == len(PAGES) == 9
     assert [d.nav.item(i).text() for i in range(d.nav.count())] == PAGES
     assert {"keep_changed_versions", "disk_cap_gb", "backup_time", "debug_logging",
-            "pause_on_battery_saver", "connectivity_url", "global_proxy"} <= set(d.w)  # fmt: skip
+            "pause_on_battery_saver", "connectivity_url", "global_proxy",
+            "notifications"} <= set(d.w)  # fmt: skip
+    email = d.stack.widget(PAGES.index("Email")).widget()  # type: ignore[attr-defined]
+    assert email.isAncestorOf(d.notifications.smtp_host)  # M6's settings, no longer a placeholder
 
 
 def test_only_the_changed_fields_are_sent_and_the_engine_keeps_them(

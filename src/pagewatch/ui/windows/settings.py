@@ -55,6 +55,7 @@ from pagewatch.engine.paths import DataDir
 from pagewatch.models import CapacityOut, HealthOut, Settings
 from pagewatch.ui.client import ApiClient
 from pagewatch.ui.windows.bookmark_editor import UNITS, SettingError, best_unit, diff_dict
+from pagewatch.ui.windows.notification_settings import NotificationsEditor, write_secrets
 from pagewatch.ui.windows.problems import when_text
 from pagewatch.ui.workers import run_async
 
@@ -168,6 +169,10 @@ class SettingsDialog(QDialog):
         self.nav.setObjectName("settingsPages")
         self.stack = QStackedWidget()
         self._loaded: set[int] = set()
+        # Email (SMTP) and ntfy: two group boxes placed on the Email and Notifications pages. They
+        # are one tracked setting ("notifications"); their passwords go to the secret store.
+        self.notifications = NotificationsEditor(client, settings.notifications, self)
+        self.notifications.saved_by_test.connect(self._rebase_notifications)
         builders = [
             self._build_general, self._build_network, self._build_notifications,
             self._build_email, self._build_power_and_resources, self._build_retention,
@@ -457,14 +462,16 @@ class SettingsDialog(QDialog):
         self._int(form, "backlog_warning", "Warn when this many checks are waiting", 1, 1_000_000)
         self._float(form, "transient_retry_s", "Retry a temporary error after", 1, 3600, suffix=" s",
                     tip="A timeout, DNS failure or 5xx is tried once more before it counts")  # fmt: skip
+        form.addRow(self.notifications.ntfy_box)
 
     def _build_email(self) -> None:
         form = self._page(
-            "Email alerts are not available yet: sending mail (server, account, and the address "
-            "to send to) arrives with the actions milestone. Alerts use Windows notifications "
-            "until then."
+            "The mail server the Email action sends through, and who receives alerts when a "
+            "bookmark does not name its own recipients."
         )
-        form.addRow(QLabel(""))
+        form.addRow(self.notifications.smtp_box)
+        # one setting for both boxes: the whole `notifications` section is sent when either changed
+        self._track("notifications", self.notifications.smtp_box, self.notifications.read)
 
     def _build_power_and_resources(self) -> None:
         form = self._page("What the engine does when the computer sleeps, runs on battery or "
@@ -812,16 +819,22 @@ class SettingsDialog(QDialog):
             self.error.setText(str(exc))
             return
         self.error.setText("")
-        if not patch:
+        secrets = self.notifications.pending_secrets()  # typed passwords and tokens
+        if not patch and not secrets:
             if close:
                 self.accept()
             return
         restart = [f.key for f in self._fields if f.restart and f.key in patch]
         self._set_saving(True)
 
+        def work() -> Settings:
+            write_secrets(self._client, secrets)  # first: settings must not name a missing secret
+            return self._client.put_settings(patch) if patch else self._client.settings()
+
         def done(saved: Settings) -> None:
             self._set_saving(False)
             self._rebase(saved, patch, sent)
+            self.notifications.saved(saved, secrets)
             self.saved.emit()
             self.note.setText(
                 "Saved. "
@@ -838,4 +851,13 @@ class SettingsDialog(QDialog):
             self._set_saving(False)
             self.error.setText(str(exc).split(": ", 1)[-1])
 
-        run_async(lambda: self._client.put_settings(patch), done, failed)
+        run_async(work, done, failed)
+
+    def _rebase_notifications(self, saved: Settings, sent: dict[str, Any]) -> None:
+        """The Send test buttons saved the notification settings on their own: they are the
+        starting point now, so a later Apply does not send them again. The rest of the window
+        is untouched."""
+        self._orig = saved
+        for f in self._fields:
+            if f.key == "notifications":
+                f.baseline = sent

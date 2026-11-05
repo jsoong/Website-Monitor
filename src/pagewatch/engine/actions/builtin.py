@@ -11,10 +11,10 @@ from pagewatch.engine.actions.export import export
 from pagewatch.engine.actions.mailer import email
 from pagewatch.engine.actions.ntfy import ntfy
 from pagewatch.engine.actions.program import run_program
+from pagewatch.engine.actions.report import report
 from pagewatch.engine.actions.scrape import scrape
 from pagewatch.engine.actions.script import script
 from pagewatch.engine.actions.webhook import webhook
-from pagewatch.engine.actions.report import report
 
 if TYPE_CHECKING:
     from pagewatch.engine.core import Engine

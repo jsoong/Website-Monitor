@@ -1,7 +1,8 @@
 """The durable action queue: order, retries, permanent failure, and surviving restarts.
 
-The e-mail, export and ntfy actions do not exist until M6, so their names are used here as three
-independent slots with recording stand-ins.
+The names "email", "sound" and "ntfy" are used here as three independent slots with recording
+stand-ins for the real actions (the registry is patched). "sound" rather than "export" because since
+M6 an export action is rejected at save time without a path, while "sound" takes no parameters.
 """
 
 from __future__ import annotations
@@ -67,7 +68,7 @@ class Recorder:
 @pytest.fixture
 def rec(monkeypatch: pytest.MonkeyPatch, clock: FakeClock) -> Recorder:
     r = Recorder(clock)
-    for slot in ("email", "export", "ntfy"):
+    for slot in ("email", "sound", "ntfy"):
         monkeypatch.setitem(ACTIONS, slot, r.action(slot))
     return r
 
@@ -126,14 +127,14 @@ async def test_a_changes_jobs_run_one_at_a_time_in_order_with_mark_read_last(
 ) -> None:
     rec.delay["email"] = 0.05
     # configured with mark_read FIRST: the spec says it always runs last
-    bid = await alert(client, engine, clock, page, "mark_read", "email", "export", "ntfy")
+    bid = await alert(client, engine, clock, page, "mark_read", "email", "sound", "ntfy")
     assert [j["action_type"] for j in await jobs(engine)] == [
         "email",
-        "export",
+        "sound",
         "ntfy",
         "mark_read",
     ]
-    assert rec.order() == ["email:start", "email:end", "export:start", "export:end",
+    assert rec.order() == ["email:start", "email:end", "sound:start", "sound:end",
                            "ntfy:start", "ntfy:end"]  # fmt: skip
     assert [j["status"] for j in await jobs(engine)] == ["done"] * 4
     b = await bookmark(client, bid)
@@ -144,14 +145,14 @@ async def test_a_job_waits_while_an_earlier_one_is_waiting_for_its_retry(
     client: httpx.AsyncClient, engine: Engine, clock: FakeClock, page: Page, rec: Recorder
 ) -> None:
     rec.fail["email"] = 1
-    await alert(client, engine, clock, page, "email", "export")
+    await alert(client, engine, clock, page, "email", "sound")
     js = await jobs(engine)
     assert [j["status"] for j in js] == ["queued", "queued"] and rec.calls == {"email": 1}
     assert js[0]["attempts"] == 1 and "email is down" in js[0]["last_error"]
     await advance(engine, clock, 61, step=1)  # the first back-off is one minute
     assert [j["status"] for j in await jobs(engine)] == ["done", "done"]
     assert rec.order() == ["email:start", "email:fail", "email:start", "email:end",
-                           "export:start", "export:end"]  # fmt: skip
+                           "sound:start", "sound:end"]  # fmt: skip
 
 
 # -- retries ----------------------------------------------------------------------------------
@@ -183,13 +184,13 @@ async def test_the_fifth_failure_is_final_and_is_reported(
 ) -> None:
     rec.fail["email"] = -1
     sub = engine.events.subscribe()
-    bid = await alert(client, engine, clock, page, "email", "export", "mark_read")
+    bid = await alert(client, engine, clock, page, "email", "sound", "mark_read")
     await advance(engine, clock, (1 + 5 + 30 + 30) * 60 + 120, step=30)
     js = await jobs(engine)
-    email, export, mark = js
+    email, sound, mark = js
     assert email["status"] == "failed" and email["attempts"] == 5
     assert "email is down" in email["last_error"]
-    assert export["status"] == "done"  # the failure does not block the later actions
+    assert sound["status"] == "done"  # the failure does not block the later actions
     assert rec.calls["email"] == 5  # and it is not tried a sixth time
     # but a change the user was never told about must not be marked read
     assert mark["status"] == "done" and "stays unread" in mark["last_error"]
@@ -211,7 +212,7 @@ async def test_queued_jobs_survive_a_restart_and_run_when_their_time_comes(
     data_dir: DataDir, settings_overrides: dict[str, Any], toasts: LogToastBackend,
 ) -> None:  # fmt: skip
     rec.fail["email"] = 1
-    await alert(client, engine, clock, page, "email", "export")
+    await alert(client, engine, clock, page, "email", "sound")
     assert [j["status"] for j in await jobs(engine)] == ["queued", "queued"]
     await engine.stop()
 
@@ -242,7 +243,7 @@ async def test_a_job_interrupted_by_a_crash_runs_again_exactly_once(
     data_dir: DataDir, settings_overrides: dict[str, Any], toasts: LogToastBackend,
 ) -> None:  # fmt: skip
     rec.hang.add("email")  # the engine goes away while the e-mail is being sent
-    await add(client, "lib", actions={"actions": [{"type": "email"}, {"type": "export"}]})
+    await add(client, "lib", actions={"actions": [{"type": "email"}, {"type": "sound"}]})
     await settle(engine, clock)
     page.body = B
     clock.advance(70)
@@ -266,8 +267,8 @@ async def test_a_job_interrupted_by_a_crash_runs_again_exactly_once(
             "email:start",
             "email:start",
             "email:end",
-            "export:start",
-            "export:end",
+            "sound:start",
+            "sound:end",
         ]
         assert [j["status"] for j in await jobs(again)] == ["done", "done"]
     finally:

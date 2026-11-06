@@ -170,7 +170,8 @@ async def test_page_with_hostile_markup_is_sanitised_in_every_view(
         for bad in ("onclick", "<script", "onerror", "<iframe", "tracker.test"):
             assert bad not in body, (view, bad)
     on = (await client.get(f"/bookmarks/{bid}/diff", params={"view": "new", "images": True})).text
-    assert "tracker.test" in on and "img-src data: http: https:" in on
+    assert "tracker.test" in on and "img-src * data: blob: http: https:" in on
+    assert "onerror" not in on and "<script" not in on and "<iframe" not in on  # still stripped
 
 
 # -- preview ------------------------------------------------------------------------------

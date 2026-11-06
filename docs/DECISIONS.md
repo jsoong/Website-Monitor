@@ -298,6 +298,7 @@ half rewrite: 10,000 blocks, 50% replaced             5850.5ms /  6485.2ms*(1000
   (manual check, M8). Menu callbacks run on the tray's thread and hop onto the engine loop. Icons are
   drawn with Pillow (now a regular dependency: pystray requires it and M4's pixel diff will use it).
 * `Engine.drain_background()` waits for fire-and-forget work (re-normalising after a filter edit).
+  It is bounded and cannot spin; see *The `drain_background` hang* near the end of this file.
 
 ### UI
 
@@ -2256,6 +2257,73 @@ could not trace to the code.** In order:
 So the gates are green on a clean run, and three earlier attempts on the same code were not.
 If the hang in item 4 comes back, the stack dump in this paragraph is the place to start:
 `core.py:164` in `drain_background`, called from `test_m5_unattended.py:248`.
+**(Superseded: item 4 was reproduced, explained and fixed; see the next subsection.)**
+
+### The `drain_background` hang (item 4): cause found, and it was not a respawning task
+
+**Reproduced.** The hang needs contention: run alone, that test never hung. With six copies of it
+running at once on four cores it hit a 60 s timeout in 3 of 60 runs and 3 of 49 (about 5 %). A
+watchdog that dumped the stuck process gave exactly the stack recorded in item 4: the main thread,
+running, in `core.py:164` -> `asyncio.gather` -> `gather`'s own `_done_callback`.
+
+**Cause.** The note's guess ("what kept spawning background tasks I did not find") was wrong:
+nothing was spawning. `drain_background` was `while self._background: await asyncio.gather(*list(
+self._background), return_exceptions=True)`, and:
+
+1. A task finishes, but its `discard` done-callback is queued for the *next* turn of the event loop,
+   so for the rest of this turn the task is `done()` and still in `_background`.
+2. If the caller resumes in that same turn, after the finishing task, the `while` sees a non-empty
+   set. Whether it does depends on the order of wake-ups (the database and worker threads hand
+   results to the loop), which is why it took contention to show; I did not trace which ordering
+   the three captured hangs had, only that the state above is what the stack requires.
+3. Python 3.12's `gather` completes **eagerly** when every future it is given is already done
+   (that is the `_done_callback` frame in the dump), and `await` on a finished future does not
+   suspend. The loop re-checks, the set is still non-empty, and the callback that would empty it
+   is stuck behind the loop turn that this code never lets happen.
+
+A synchronous spin that starves the loop it is waiting on: 90 % CPU, nothing printed, nothing able to
+interrupt it. The watchdog's own callbacks (queued with `call_soon_threadsafe`) never ran, which is
+how it showed. A copy of the old method reproduces it deterministically in a few lines (spawn a
+task that returns at once, `await asyncio.sleep(0)`, drain).
+
+**Audit of what spawns.** All 16 `Engine.spawn` call sites in 9 files (`core`: catch-up after
+online / AC, restart after restore, persisting an expired timed pause, problem toasts; `follow`:
+discovery after a check; `plugins` and `logins/prompt`: toasts; `stretch`: the refresh; `bookmarks`:
+rebuild and follow after an edit; `routes_folders`: rebuild and battery policy after a folder edit;
+`tray`: menu actions; `power`: the OS resume message) were read for a path that re-spawns itself or
+another task without waiting on the clock, the database or a worker. None does: every chain ends,
+and under a FakeClock the ones that wait on time wait for the test to move it. The one other
+`while` loop around a `gather` of possibly-finished tasks in the engine is this one; the remaining
+`gather` calls are one-shots on the shutdown paths (an eager completion is harmless there) or follow
+an `asyncio.wait`, which always suspends.
+
+**Fix (`engine/core.py`).**
+
+* `drain_background` yields to the loop every round (so finished tasks are discarded) and waits
+  only for tasks that are still running, with `asyncio.wait`.
+* It is bounded in real time, rounds and spawns, whatever the cause: `timeout_s` (30), `max_rounds`
+  (100: a round waits for the tasks running at that moment, what they spawn is the next round) and
+  `max_spawns` (1,000 during one drain). Past any of them it raises `DrainError` (a `TimeoutError`)
+  that names each task still running with its coroutine chain (`file:line function > ...`), which
+  is the stack that item 4 had to obtain by SIGABRT. The checks run inside the loop, so they also
+  stop a spin that never yields.
+* **Draining guard:** once a drain has seen `max_spawns` spawns, `spawn()` closes the coroutine and
+  refuses, so a task that re-queues itself ends the chain instead of growing it. Outside a drain
+  nothing is counted or refused.
+* **Closing guard:** `stop()` sets a flag before it cancels the background tasks; `spawn()` then
+  refuses. Before, a task cancelled by `stop()` could spawn a successor that the snapshot did not
+  contain and that then ran against a closing database.
+
+**Evidence.** `tests/unit/test_engine_background.py` (9 tests, +9 on the default suite). The first
+builds the exact state (a finished task still in the set when the caller resumes) and fails against
+the old method *by a SIGALRM watchdog in the module*, not by hanging; it passes against the fix. The
+rest cover waiting for follow-up work, a task that never finishes, one that yields forever, a
+self-respawning chain (guard raises, names it, and refuses the rest), the round cap, that ordinary
+spawning is unaffected, and `stop()` refusing a successor. The original scenario, six copies at
+once on four cores, then ran 150 times with the fix: 0 hangs (before: 6 in 109). That is evidence,
+not proof for the integration test; the deterministic test is the proof for the cause.
+
+`drain_background` is still used only by tests; no engine code calls it.
 
 ### Not verified here
 

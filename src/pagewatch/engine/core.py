@@ -11,6 +11,7 @@ import asyncio
 import random
 import secrets
 import sqlite3
+from collections import Counter
 from collections.abc import Coroutine
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -61,6 +62,31 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_ALREADY_RUNNING = 2
 EXIT_RESTART = 3
+
+# ``Engine.drain_background`` bounds. They are real time and real rounds of the event loop, not the
+# engine's clock: a FakeClock never moves by itself, so it could not time a stuck drain out.
+DRAIN_TIMEOUT_S = 30.0
+DRAIN_MAX_ROUNDS = 100  # a round waits for the tasks running now; what they spawn is the next
+DRAIN_MAX_SPAWNS = 1000  # tasks that may be spawned while one drain runs
+
+
+class DrainError(TimeoutError):
+    """``drain_background`` gave up: the background work did not settle within its bounds. The
+    message names the tasks still running and where each is suspended."""
+
+
+def _where(task: asyncio.Task[Any]) -> str:
+    """Where a task is suspended: ``file:line function`` of its coroutine, then of each coroutine
+    it is awaiting, down to the innermost (``a.py:9 job > locks.py:212 wait``)."""
+    chain: list[str] = []
+    awaiting: Any = task.get_coro()
+    while awaiting is not None and hasattr(awaiting, "cr_frame"):
+        frame = awaiting.cr_frame
+        if frame is not None:
+            name = Path(frame.f_code.co_filename).name
+            chain.append(f"{name}:{frame.f_lineno} {frame.f_code.co_name}")
+        awaiting = awaiting.cr_await
+    return " > ".join(chain) or "?"
 
 
 class Engine:
@@ -142,6 +168,10 @@ class Engine:
         self._stopped = asyncio.Event()
         self._started = False
         self._background: set[asyncio.Task[Any]] = set()
+        self._closing = False  # stop() is cancelling background work: spawn() takes no more
+        self._draining = 0  # drain_background calls in progress
+        self._drain_budget = DRAIN_MAX_SPAWNS
+        self._drain_spawned: Counter[str] = Counter()  # by task name, since the drain began
 
     # -- properties ---------------------------------------------------------------------
 
@@ -153,15 +183,93 @@ class Engine:
         return secrets.compare_digest(candidate.encode(), self.token.encode())
 
     def spawn(self, coro: Coroutine[Any, Any, Any], name: str) -> None:
-        """Run a fire-and-forget task, keeping a reference so it is not garbage collected."""
+        """Run a fire-and-forget task, keeping a reference so it is not garbage collected.
+
+        Two guards refuse the work (the coroutine is closed, nothing runs): ``stop()`` has begun
+        cancelling background tasks, so a cancelled task cannot leave a successor that outlives
+        the database; and a ``drain_background`` in progress has used up its budget of spawns."""
+        if self._closing:
+            coro.close()
+            log.debug("spawn_refused", task=name, why="closing")
+            return
+        if self._draining:
+            self._drain_spawned[name] += 1
+            if self._drain_spawned.total() > self._drain_budget:
+                coro.close()
+                log.warning("spawn_refused", task=name, why="drain_budget")
+                return
         task = asyncio.create_task(coro, name=name)
         self._background.add(task)
         task.add_done_callback(self._background.discard)
 
-    async def drain_background(self) -> None:
-        """Wait for fire-and-forget work (re-normalising after a filter edit, ...)."""
-        while self._background:
-            await asyncio.gather(*list(self._background), return_exceptions=True)
+    def _running_background(self) -> list[asyncio.Task[Any]]:
+        """The background tasks that have not finished. A finished task can still be in the set:
+        its ``discard`` callback runs on the next turn of the event loop, not when it finishes."""
+        running: list[asyncio.Task[Any]] = []
+        for task in self._background:
+            if not task.done():
+                running.append(task)
+            elif not task.cancelled():
+                task.exception()  # retrieved: a failed background task is not drain's to report
+        return running
+
+    async def drain_background(
+        self,
+        *,
+        timeout_s: float = DRAIN_TIMEOUT_S,
+        max_rounds: int = DRAIN_MAX_ROUNDS,
+        max_spawns: int = DRAIN_MAX_SPAWNS,
+    ) -> None:
+        """Wait for fire-and-forget work (re-normalising after a filter edit, ...) and for the
+        work that work spawns in turn. A test helper: nothing in the engine calls it.
+
+        It always gives the event loop a turn and only waits for tasks that are still running.
+        It used to loop on ``gather`` over the whole set, and Python 3.12's ``gather`` completes
+        eagerly when every task has already finished, so ``await`` did not suspend: a task that
+        finished in the same turn as the caller (``discard`` still queued) kept the set
+        non-empty while the loop that would run ``discard`` never got to turn. That spun at full
+        CPU, forever, and nothing could interrupt it (found in the M6 merge, at 90% CPU).
+
+        Bounded all the same, so no other cause can make it spin or wait without end: more than
+        ``timeout_s`` seconds, ``max_rounds`` rounds or ``max_spawns`` spawns raise ``DrainError``
+        naming what is still running and where."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
+        if not self._draining:
+            self._drain_spawned.clear()
+        self._drain_budget = max_spawns
+        self._draining += 1
+        reason = f"still busy after {max_rounds} rounds"
+        try:
+            for _ in range(max_rounds):
+                await asyncio.sleep(0)  # runs the done-callbacks of whatever has just finished
+                if self._drain_spawned.total() > max_spawns:
+                    reason = f"more than {max_spawns} tasks spawned"
+                    break
+                running = self._running_background()
+                if not running:
+                    return
+                left = deadline - loop.time()
+                if left <= 0:
+                    reason = f"still busy after {timeout_s:g} s"
+                    break
+                await asyncio.wait(running, timeout=left)
+            raise self._drain_gave_up(reason)
+        finally:
+            self._draining -= 1
+
+    def _drain_gave_up(self, reason: str) -> DrainError:
+        running = self._running_background()
+        shown = "; ".join(f"{t.get_name()} at {_where(t)}" for t in running[:8])
+        more = f" (and {len(running) - 8} more)" if len(running) > 8 else ""
+        spawned = ", ".join(f"{name} x{n}" for name, n in self._drain_spawned.most_common(3))
+        log.warning(
+            "drain_background_gave_up", reason=reason, running=len(running), spawned=spawned
+        )
+        return DrainError(
+            f"drain_background gave up: {reason}. Running: {shown or 'nothing'}{more}. "
+            f"Spawned meanwhile: {spawned or 'nothing'}."
+        )
 
     # -- lifecycle ----------------------------------------------------------------------
 
@@ -272,6 +380,7 @@ class Engine:
         await self.logins.aclose()
         await self.actions.stop()
         await self.toasts.aclose()
+        self._closing = True  # a task cancelled below must not spawn a successor
         for task in list(self._background):
             task.cancel()
         await asyncio.gather(*self._background, return_exceptions=True)

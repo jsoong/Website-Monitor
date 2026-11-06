@@ -21,7 +21,9 @@ dependencies = [
     "nh3>=0.2.18",
     "pillow>=10.3",
     "rapidfuzz>=3.9",
-    "cdifflib>=1.2",
+    # cdifflib publishes no win_amd64 wheel for CPython 3.12 (its sdist needs a C compiler), so it
+    # is not installed on Windows; pipeline/differs.py falls back to difflib.SequenceMatcher.
+    "cdifflib>=1.2.6; sys_platform != 'win32'",
     "fast-diff-match-patch>=2.1",
     "tzdata>=2024.1; sys_platform == 'win32'",
     "windows-toasts>=1.1; sys_platform == 'win32'",

@@ -17,7 +17,7 @@ guard's grace period, ``blob_grace_h`` and ``browser_args``.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -67,6 +67,7 @@ PAGES = [
 ]  # fmt: skip
 P_CAPACITY, P_DATA = PAGES.index("Capacity"), PAGES.index("Data folder")
 ROLE_PATH = Qt.ItemDataRole.UserRole
+THEME_CHOICES = [("Dark", "dark"), ("Light", "light"), ("Same as Windows", "system")]
 
 
 def fmt_size(n: int) -> str:
@@ -146,6 +147,11 @@ class _Field:
 class SettingsDialog(QDialog):
     saved = Signal()  # settings were written
     restore_staged = Signal(str)  # the engine is restarting to apply this backup
+
+    @property
+    def settings(self) -> Settings:
+        """The settings as last loaded or saved."""
+        return self._orig
 
     def __init__(
         self,
@@ -289,6 +295,18 @@ class SettingsDialog(QDialog):
         form.addRow(self._label(label, key), edit)
         return edit
 
+    def _choice(
+        self, form: QFormLayout, key: str, label: str, options: Sequence[tuple[str, str]],
+        tip: str = "",
+    ) -> QComboBox:  # fmt: skip
+        box = QComboBox()
+        for text, value in options:
+            box.addItem(text, value)
+        box.setCurrentIndex(max(0, box.findData(getattr(self._orig, key))))
+        self._track(key, box, lambda: str(box.currentData()), tip)
+        form.addRow(self._label(label, key), box)
+        return box
+
     def _clock(self, form: QFormLayout, key: str, label: str, tip: str = "") -> QTimeEdit:
         edit = QTimeEdit(QTime.fromString(str(getattr(self._orig, key)), "HH:mm"))
         edit.setDisplayFormat("HH:mm")
@@ -351,6 +369,8 @@ class SettingsDialog(QDialog):
         self._text(form, "default_user_agent", "User agent")
         self._text(form, "timezone", "Time zone", nullable=True,
                    placeholder="the system's time zone", tip="An IANA name such as Europe/Berlin")  # fmt: skip
+        self._choice(form, "theme", "Theme", THEME_CHOICES,
+                     tip="Dark, Light, or follow the Windows setting. Applies at once")  # fmt: skip
         self._float(form, "startup_delay_s", "Wait after start", 0, 3600, suffix=" s",
                     tip="Checks wait this long after the engine starts")  # fmt: skip
         self._bool(form, "notify_on_first_check", "Alert on a bookmark's very first check")

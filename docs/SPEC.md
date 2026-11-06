@@ -388,7 +388,7 @@ Every good fetch whose filtered text differs from the latest version is stored a
 
 ### Diff algorithm
 
-- **Pluggable `Differ`:** the implementation is chosen by an M1 benchmark on the golden corpus. Candidates: difflib, cdifflib, rapidfuzz opcodes and fast-diff-match-patch.
+- **Pluggable `Differ`:** the implementation is chosen by an M1 benchmark on the golden corpus. Candidates: difflib, cdifflib, rapidfuzz opcodes and fast-diff-match-patch. cdifflib is an optional C accelerator: it has no Windows wheel for CPython 3.12, so it is installed on other platforms only (`sys_platform != 'win32'`), and the `cdifflib` differ falls back to `difflib.SequenceMatcher` (same opcodes, slower) where it is absent.
 - **Stage 1, block alignment:** match the sequences of block-text hashes into equal, insert, delete and replace runs. Blocks are hashed by text, not DOM position, so wrapper-element changes don't disturb alignment.
 - **Stage 2, word diff:** inside each replace run, tokenize on Unicode word boundaries with punctuation kept as tokens, then diff the token lists.
 - **Moves:** a block deleted in one place and inserted elsewhere with the same hash is a `mov` op and is not counted as a change in Standard mode.
@@ -422,7 +422,7 @@ Every good fetch whose filtered text differs from the latest version is stored a
 
 ### Rendering
 
-- **In-page view:** re-inject `<ins class="pw-add">` and `<del class="pw-del">` into the new version's HTML at each block's DOM path. Scripts are stripped and remote resources stay off unless the user enables images.
+- **In-page view:** re-inject `<ins class="pw-add">` and `<del class="pw-del">` into the new version's HTML at each block's DOM path. Scripts are stripped. The page's own stylesheets, `<style>` blocks, lazy-loaded images (`data-src`, `data-srcset`, ... promoted onto `src` / `srcset`), `<picture>` and inline SVG are kept so the view looks like the page; elements a script would have revealed (`.elementor-invisible`, `[data-aos]`, ...) are forced visible and unsized SVG icons are capped to 1.5em. The *Remote images* switch off gives the text-only view.
 - **Text view:** normalized blocks with inline marks. It always works and is reused for "changes only" emails.
 - **Deletions:** shown struck through in place, or listed in a side panel, per a viewer toggle.
 - **Changed images:** compare image source lists; a changed image gets an outline.
@@ -555,7 +555,7 @@ Folders carry defaults; a bookmark overrides any field. The minimum interval is 
 ### Sleep, resume and connectivity
 
 - **Detect resume** two ways: wall-clock vs monotonic drift above 30 s, and `WM_POWERBROADCAST` on the tray's hidden window.
-- **Wait for network:** after resume, probe a configurable URL (default a HEAD to a well-known host) for up to 2 minutes before dispatching.
+- **Wait for network:** after resume, probe a configurable URL (default a HEAD to `http://www.msftconnecttest.com/connecttest.txt`, Windows' own connectivity test) for up to 2 minutes before dispatching. The default is plain `http`: that host serves no valid certificate for its name over https, so an https probe always failed and left the engine offline. A saved `https://www.msftconnecttest.com/...` (the earlier default) is probed as `http://` without anyone editing it.
 - **Catch up once:** each overdue bookmark gets one `catchup` check, not one per missed interval. Spread them over min(5 min, count × 1 s).
 - **Offline mode:** when the probe fails, pause dispatch and stop counting errors. Resume when it succeeds.
 - **Battery:** read `psutil.sensors_battery()` once a minute and apply each bookmark's `on_battery` policy. A global "pause on battery saver" option is off by default.
@@ -594,10 +594,13 @@ The UI is a PySide6 client of the engine API, laid out like an email client; it 
 
 ### Main window
 
-- **Left pane, folder tree:** real folders plus virtual folders (saved queries). Built-ins: Changed today, Unread, Errors, Needs login, Keyword hits.
-- **Middle pane, bookmark list:** status icon, name, last changed, last checked, next due, interval, error count, keyword hits. Unread rows are bold. Sortable, filterable, multi-select. A lazy model pages rows from the API so 10,000 bookmarks stay fast.
-- **Right pane, change viewer:** tabs for Highlighted (in-page), Text diff, New, Old, Screenshot diff and Check log. Highlighted and Text diff show last read → latest by default; a history list steps through each alert's own diff.
-- **Toolbar:** Add, Check selected, Check all, AutoWatch start/pause, Mark read, Next unread, Search.
+- **Folder tree:** real folders plus virtual folders (saved queries). Built-ins: Changed today, Unread, Errors, Needs login, Keyword hits.
+- **Bookmark list:** status icon, name, last changed, last checked, next due, interval, error count, keyword hits. Unread rows are bold. Sortable, filterable, multi-select. A lazy model pages rows from the API so 10,000 bookmarks stay fast.
+- **Change viewer:** tabs for Highlighted (in-page), Text diff, New, Old, Screenshot diff and Check log. Highlighted and Text diff show last read → latest by default; a history list steps through each alert's own diff. Remote images (the page's images, web fonts and stylesheets) are on by default; the header has a switch for text-only views.
+- **Viewer dock position:** *Dock bottom* (the default) puts the folder tree and the bookmark list side by side in a top pane and the viewer below them across the full window width, so wide pages keep their horizontal layout. *Dock right* is the classic three columns. The header button, the View menu, the toolbar and **Ctrl+Shift+D** switch between them.
+- **Expand viewer:** **F11** or **Ctrl+M** (the header's *Expand* button, the View menu, the toolbar) hides the folder tree and the list so the viewer fills the window; the same keys, the button, or **Esc** bring them back with their sizes. Review keys (N, R, O, ...) keep working on the hidden list.
+- Both choices, and the pane sizes of each layout, are remembered between runs.
+- **Toolbar:** Add, Check selected, Check all, AutoWatch start/pause, Mark read, Next unread, Search, Dock position, Expand viewer.
 - **Status bar:** engine connection, queue length, checks in flight, browser running, offline and battery state.
 
 ### Review shortcuts
@@ -610,6 +613,9 @@ The UI is a PySide6 client of the engine API, laid out like an email client; it 
 | F          | Flag false positive (proposes automatic filters) |
 | C          | Check selected now                               |
 | Ctrl+E     | Edit bookmark                                    |
+| F11 or Ctrl+M | Expand the viewer to the whole window, and back |
+| Esc        | Restore the expanded viewer                      |
+| Ctrl+Shift+D | Dock the viewer below or beside the list       |
 
 ### Bookmark editor
 
@@ -642,7 +648,7 @@ Settings (defaults, network, email, notifications, retention, backup, data folde
 
 - Icon states: normal, unread changes, paused, offline, error.
 - Menu: Open PageWatch, Check all now, Pause AutoWatch (1 hour or until resumed), Quit engine.
-- Dark mode follows the Windows setting in both tray and UI.
+- The tray icon follows the Windows app theme. The UI has a **Theme** setting (Settings > General): Dark (the default), Light, or Same as Windows. It uses Qt's Fusion style, because the native Windows style ignores the application's colour scheme; the viewer's empty page and background are dark (#1e1e1e) in a dark UI, so there is no white flash.
 
 ## Engine local API
 
@@ -777,7 +783,7 @@ The engine is reachable only from this user's session, never stores a password i
 - **Local API:** binds 127.0.0.1 on a random port. Every request needs `Authorization: Bearer <token>`; the WebSocket sends the token in its first message. Requests carrying a browser `Origin` header are rejected, which blocks drive-by calls from web pages.
 - **Lockfile:** lives under `%LOCALAPPDATA%`, which only this user can read.
 - **Secrets:** keyring (Windows Credential Manager). The database stores key names only. Exports and backups never include secrets.
-- **Viewer safety:** rendered change views have scripts and event handlers stripped (nh3). Remote images and styles load only when the user turns them on.
+- **Viewer safety:** rendered change views have scripts, event handlers, forms, frames and `javascript:` URLs stripped (nh3), and a Content-Security-Policy with no `script-src`, so nothing in a page can run. Remote images, web fonts and the page's own stylesheets load by default (the viewer's *Remote images* switch) and are the only thing the policy then opens up. With the switch off, and always for email, no remote resource is requested: images are text placeholders, and stylesheets, inline `style` attributes, SVG and `srcset` are dropped.
 - **Login profiles:** persistent browser profiles stay in the data folder; each bookmark has a "wipe session" button.
 - **run_program:** argument list, no shell, template values escaped. Enabling it on a bookmark needs an explicit confirmation.
 - **Plugins and templates:** plugins are trusted local code; templates render in Jinja2's sandbox.

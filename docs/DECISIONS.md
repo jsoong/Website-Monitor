@@ -280,6 +280,9 @@ half rewrite: 10,000 blocks, 50% replaced             5850.5ms /  6485.2ms*(1000
   (`default-src 'none'`). Remote images become `[alt]` placeholders and remote stylesheets are removed
   unless the caller passes `images=true`, which relaxes only `img-src`/`style-src` and adds `<base>`.
   `QWebEngineView` additionally refuses navigation and sends link clicks to the OS browser.
+  *(Since the Windows acceptance run the viewer asks for remote content by default and the rich set
+  below is allowed with it; this paragraph is the text-only mode. See "Windows acceptance findings
+  and the viewer layout".)*
 * **The viewer's default diff (`GET /bookmarks/{id}/diff`) is baseline -> latest**, computed in the pool
   and cached as one `view_diff_cache` row per bookmark. The commit that moves either pointer deletes the
   row; the cache write re-checks the pointers so a slow computation cannot store a stale pair. The history
@@ -612,7 +615,7 @@ half rewrite: 10,000 blocks, 50% replaced             5850.5ms /  6485.2ms*(1000
 ### Connectivity and offline mode
 
 * **The probe** is a HEAD to `connectivity_url` (default Windows' own `msftconnecttest.com`
-  endpoint) through the global proxy. **Any HTTP reply, whatever its status, means online**; only
+  endpoint, over plain `http` since the Windows acceptance run) through the global proxy. **Any HTTP reply, whatever its status, means online**; only
   failing to get one (DNS, refused, timeout, TLS) means offline. It is single-flight, and its answer
   is reused for 2 s so a burst of failing checks causes one probe.
 * **A failed check asks before it counts.** A DNS, connection or timeout failure (never for a local
@@ -2334,3 +2337,133 @@ HTTPS proxy, and **the portal experiment, which has not been run**: `Settings.st
 stays off, and the findings table in *M6 · Logins and proxies* is still empty. Do not enable
 stored-password login for ACCESS HRA or Housing Connect until it is filled in. The ACCESS HRA
 "never request a notice PDF" check against the real portal is also still manual.
+
+
+## Windows acceptance findings and the viewer layout
+
+The first run of the packaged-from-source app on Windows 11 / CPython 3.12 found three crashes or
+dead ends that Linux could not show, three behaviours that made the viewer poor to use, and one
+layout problem. Each item below says what was done and, where the spec was followed differently,
+why. Nothing here was run on Windows from this sandbox: the Windows-only behaviours are covered by
+tests that simulate the failing condition and were each checked to fail without the fix.
+
+### Crashes and dead ends
+
+* **cdifflib is not installed on Windows** (`cdifflib>=1.2.6; sys_platform != 'win32'`). It has no
+  win_amd64 wheel for CPython 3.12, so `uv sync` needed a C compiler. The fallback lives in
+  `pipeline/differs.py`, not `diff.py` (which only receives a `Differ`): `CDifflibDiffer` uses
+  `difflib.SequenceMatcher` when `import cdifflib` fails and says so in `.native`. The default differ is
+  `rapidfuzz` (M1 benchmark), so the Windows install loses nothing but the optional accelerator.
+  The dependency was `>=1.2` in this tree (the lock held 1.2.9), not the `==1.2.9` the report quoted.
+* **pystray rejects a callback whose `co_argcount` is 3.** `lambda _i, _m, cb=cb: cb()` counts the default
+  argument, so `pystray.MenuItem` raised `ValueError` at start-up. `tray._wrap(cb)` returns a closure
+  of exactly two parameters. The test runs `PystrayBackend.start` against a stand-in `pystray` module that
+  enforces the same 0/1/2 rule, because pystray itself is a Windows-only dependency.
+* **`os.fsync` on a read-only descriptor fails on Windows** (`_commit` wants write access:
+  `EBADF`). `backup._fsync_file` opens `r+b` and writes nothing. It also replaces the identical
+  `open(tmp, "rb")` in `stage_restore`, which the report did not name but which would have failed the same
+  way when a restore was staged. The test checks the descriptor's access mode (POSIX would not complain).
+* **The default connectivity probe never succeeded.** `www.msftconnecttest.com` has no certificate for its
+  own name, so every https probe failed and the engine started offline. The default is now
+  `http://www.msftconnecttest.com/connecttest.txt`, and `power.probe_url` rewrites an exact
+  `https://www.msftconnecttest.com` to `http://` at probe time, so settings already saved with the old
+  default recover without a migration (the stored value is not touched). The match is anchored to the host
+  (`...msftconnecttest.com.evil.test` and a path that merely contains the name are left alone). The probe
+  only needs *a reply*, so plain http carries no secret.
+
+### Dark mode and the Theme setting
+
+* `theme.apply(name)` sets the **Fusion** style and the colour scheme. The native `windowsvista` style
+  is drawn by the OS and ignores the scheme, which is why dark mode did nothing on Windows.
+* **Theme is a setting, not just a default**: `Settings.theme` (`dark` | `light` | `system`, default
+  `dark`), a combo on Settings > General, applied at once when saved. It is an engine setting like every
+  other row of that dialog (one patch path, one rebase), not a `QSettings` value; the cost is that the UI
+  starts dark and applies a different saved choice once it has read the settings (a moment after launch).
+* **Where Qt cannot switch the scheme itself** (the offscreen platform the UI tests use, a bare X11
+  session) `setColorScheme` is ignored, so `apply` paints a matching palette by hand and the choice still
+  holds; on Windows the platform does it and the palette is left alone. That is also what lets the theme be
+  tested here.
+* `HtmlView` paints `#1e1e1e` behind the page in a dark UI (white in a light one) and follows scheme
+  changes, and an empty document (`set_document("")`) loads a one-line page with that background instead of
+  Qt's white default. `last_html` stays `""` so callers still see "no document".
+* **Known limit:** a page whose CSS paints no background of its own but sets dark text assumes a white
+  canvas and is dark-on-dark in a dark viewer. Choose Light for such pages. (Rewriting page colours would
+  defeat "looks like the page".)
+
+### Save in the add assistant
+
+Save is enabled by a non-blank URL, no preview needed. Three consequences handled: a **failed preview no
+longer disables Save** (the site may be down or need a login: that is the case for watching it anyway);
+`save()` is guarded so typing during the request cannot unlock a second create; and the URL is
+normalised at Save with the same `https://` rule Preview applies, since an unpreviewed address may have no
+scheme.
+
+### Rich rendering in the change viewer
+
+The viewer looked like unstyled text: the sanitiser kept `<body>` only, so the page's stylesheets, web
+fonts, lazy images and icons were all gone, and a 70 rem cap squeezed it.
+
+* **Defaults flip to `allow_remote=True`** in `_csp`, `sanitize_fragment`, `wrap_document`,
+  `render_highlight` and `render_plain`; `False` still works and is what email, `changes_only` exports and
+  the static note pages pass. `RenderJob.allow_remote` and the API's `images` parameter keep their `False`
+  default: the UI always sends it explicitly, and an API caller who says nothing still gets no remote
+  fetches. The UI's *Remote images* box is now ticked by default.
+* **The rich markup is only offered with `allow_remote`.** The report asked for svg, `<picture>`, `srcset`
+  and inline `style` in the allow-list; they are in `_TAGS` / `_ATTRS`, but `sanitize_fragment(...,
+  allow_remote=False)` removes them again. The reason is email: `changes_only` mail is built from
+  `render_highlight(allow_remote=False)`, and an inline `style="background:url(https://t/p.gif)"` would be
+  a tracking pixel in every mail client that honours it (the CSP protects only the viewer).
+* **`viewBox` is allowed in both spellings.** The report said nh3 lowercases attribute names and to list
+  `viewbox`. Measured with nh3 0.3.7: html5ever re-cases SVG attributes while parsing, so the lowercase
+  entry **drops** `viewBox` and the camel-case entry keeps it. Both are listed so either behaviour works;
+  without it every icon loses its scaling. The same goes for `preserveAspectRatio`. SVG elements also get
+  their geometry and paint attributes (`d`, `points`, `fill`, `stroke*`, ...), without which a `<path>` draws
+  nothing.
+* **Narrow holes in the broader allow-list.** `<use href>` only accepts a same-document `#fragment`
+  (no remote sprite sheet); an `attribute_filter` drops `style` values with `expression(`, `javascript:`,
+  `-moz-binding`, `behavior:` or `@import` (dead in current Chromium; hygiene on top of the CSP, which has
+  no `script-src` so nothing runs whatever the markup says).
+* **The page's own CSS is rebuilt outside nh3.** `nh3.clean` removes `<style>` content and would escape the
+  `>` of child selectors (`.menu > li`), so `_strip_remote` pulls every `<link rel=stylesheet>` and
+  `<style>` out of the tree first and returns it as markup that `render_highlight` / `render_plain` put in
+  front of the sanitised body. The report said "from `<head>`" and "store them on root"; this takes them from
+  the whole document (a `<style>` in the body would otherwise vanish) and returns a string, because an lxml
+  element cannot carry extra attributes. A stylesheet `href` must be http(s) or relative (never `data:` /
+  `javascript:`), a `</` in CSS is written `<\/` (the same character inside a CSS string) so it can never
+  end the element early, and the text after a removed element is kept.
+* **Lazy images** (`data-src`, `data-lazy-src`, `data-original`, `data-srcset`, `data-lazy-srcset`) are copied
+  onto `src` / `srcset` of `<img>` and `<source>`; the placeholder in `src` is overwritten.
+* **CSP with remote content**: `font-src`, `img-src` (also `blob:`), `style-src` and `media-src` open to
+  `*` / `data:` / `http:` / `https:`; `default-src 'none'` stays, so scripts, frames, forms and connections
+  stay blocked.
+* **`<base href>` becomes `setHtml`'s base URL** (http/https only, entities undone). The document then
+  lives in the site's origin, so relative assets resolve and web fonts load as in a browser; scripts are
+  still blocked by the CSP.
+* **Added CSS**: no `max-width`; `.elementor-invisible`, `[data-animate]`, `[data-aos]`, `.wow` forced
+  visible (their scripts are not running); `img` / `svg` capped to the pane and unsized SVGs to 1.5 em.
+* **Known limits**: attributes of `<body>` (classes such as `body.home`) are not carried into the viewer's
+  own `<body>`, so a selector that depends on them does not match; content a page builds with JavaScript is
+  not there (the stored HTML is shown, as before; the browser method stores the rendered DOM); a very large
+  inline stylesheet (embedded fonts) is passed through as is.
+
+### Viewer dock position and the expanded viewer
+
+* **Bottom is the default**: one central `QSplitter`, vertical, holding `[list_split | viewer]` where
+  `list_split` is `[folders | list]`. **Right** turns the same splitter horizontal and holds `[folders |
+  list | viewer]`. The viewer is never reparented, so its web page is not reloaded by either switch.
+* **Expand** hides the list pane(s) (the whole top pane below, the two columns at the right) and the viewer
+  takes the space. The toolbar, menu and status bar stay: they are how you come back, and "100% of the
+  window" is the splitter's area. It survives a dock switch.
+* **F11 or Ctrl+M** toggle; **Esc** restores but is a separate action that is enabled only while expanded, so
+  Esc is untouched everywhere else. The header buttons emit signals and the window owns the layout, the
+  actions and the shortcuts (one place to change them). The toolbar and View menu carry the actions; their
+  text and tooltips flip with the state.
+* **Remembered**: `viewer_dock` and `viewer_maximized` are written the moment they change, the splitter sizes
+  per layout when the window closes (and not while expanded, when the hidden panes would record a width of
+  nothing: the sizes from before are kept and written instead). A stored dock that is not one of the two
+  falls back to the default. The old single `splitter` key is no longer read: it describes the three-column
+  layout, which is no longer the default.
+
+### Results
+
+(Filled in after the final run, below.)

@@ -279,7 +279,7 @@ def test_the_main_window_opens_import_export_with_its_selection(
     ]
     pump_until(lambda: w.model.total == 5, what="the list reloaded after the import")
     assert w.act_import.shortcut().toString() == "Ctrl+Shift+I"
-    assert [a.text() for a in w.menuBar().actions()] == ["&File", "&Tools"]
+    assert [a.text() for a in w.menuBar().actions()] == ["&File", "&View", "&Tools"]
 
 
 # -- the editor ---------------------------------------------------------------------------------

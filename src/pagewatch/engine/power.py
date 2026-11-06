@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import sys
 import threading
 from collections.abc import Awaitable, Callable
@@ -268,6 +269,18 @@ class SystemPowerBackend:
 ProbeFn = Callable[[str, float, str | None], Awaitable[bool]]
 
 
+# Windows' own connectivity-test host answers on http only: over https its certificate is for
+# another name, so every probe failed with a hostname mismatch and the engine stayed offline.
+_NCSI_HTTPS = re.compile(r"^https://(www\.msftconnecttest\.com)(?=[/:?#]|$)", re.IGNORECASE)
+
+
+def probe_url(url: str) -> str:
+    """The address actually probed: the old default ``https://www.msftconnecttest.com`` that
+    earlier versions saved into settings is rewritten to ``http://``, so those installs recover
+    without anyone editing a setting. Any other URL is used as given."""
+    return _NCSI_HTTPS.sub(r"http://\1", url.strip())
+
+
 async def http_probe(url: str, timeout_s: float, proxy: str | None) -> bool:
     """HEAD ``url``. *Any* HTTP reply means the network works; only a failure to get one
     (DNS, refused, timeout, TLS) means offline. Goes through the global proxy, if any."""
@@ -275,7 +288,7 @@ async def http_probe(url: str, timeout_s: float, proxy: str | None) -> bool:
         async with httpx.AsyncClient(
             timeout=timeout_s, proxy=proxy, follow_redirects=False
         ) as client:
-            await client.head(url)
+            await client.head(probe_url(url))
         return True
     except Exception:
         return False

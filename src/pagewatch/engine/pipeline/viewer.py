@@ -9,7 +9,9 @@
 * ``render_plain`` shows a stored version unmarked.
 
 Everything is sanitised with nh3 (scripts, event handlers and forms removed) and wrapped with a
-Content-Security-Policy that blocks remote resources unless the caller turns them on.
+Content-Security-Policy. Remote resources (images, web fonts, the page's own stylesheets) load by
+default so the viewer looks like the page; a caller that must not phone home (emails, the
+"Remote images" switch turned off) passes ``allow_remote=False`` and gets text-only markup.
 """
 
 from __future__ import annotations
@@ -35,7 +37,7 @@ from pagewatch.engine.pipeline.extract import (
 
 CSS = """
 :root { color-scheme: light dark; }
-body.pw-view { font: 15px/1.5 system-ui, "Segoe UI", sans-serif; margin: 1rem 1.25rem; max-width: 70rem;
+body.pw-view { font: 15px/1.5 system-ui, "Segoe UI", sans-serif; margin: 1rem 1.25rem;
   --add-bg: #d9f7d9; --add-fg: #0a4d0a; --del-bg: #ffe0e0; --del-fg: #8a1111; --mov-bg: #e0ecff; }
 @media (prefers-color-scheme: dark) {
   body.pw-view { --add-bg: #1e4620; --add-fg: #c9f5c9; --del-bg: #5a2020; --del-fg: #ffd0d0; --mov-bg: #1d3557; }
@@ -57,6 +59,12 @@ body.pw-del-panel #pw-deleted { display: block; }
 body.pw-del-panel .pw-removed, body.pw-del-panel del.pw-del { display: none; }
 body.pw-del-none .pw-removed, body.pw-del-none del.pw-del { display: none; }
 .pw-note { padding: .5rem 1rem; background: #fff4ce; color: #5c4400; border-radius: 4px; margin-bottom: 1rem; }
+/* The page's own scripts are gone, so elements that a script was meant to reveal stay hidden: show them. */
+.elementor-invisible, [data-animate], [data-aos], .wow { visibility: visible !important; opacity: 1 !important; transform: none !important; }
+/* Icons are often inline SVGs sized by the page's script or stylesheet: without a size they fill the pane. */
+img { max-width: 100%; height: auto; }
+svg { max-width: 100%; height: auto; }
+svg:not([width]):not([height]) { max-width: 1.5em !important; max-height: 1.5em !important; display: inline-block; vertical-align: middle; }
 """
 
 _TAGS = {
@@ -67,12 +75,41 @@ _TAGS = {
     "section", "small", "span", "strong", "sub", "summary", "sup", "table", "tbody", "td",
     "tfoot", "th", "thead", "time", "tr", "u", "ul", "var", "wbr", "body", "html", "head",
     "title", "meta", "style", "link", "base",
+    "svg", "path", "g", "circle", "rect", "polygon", "line", "polyline", "defs", "use", "symbol",
+    "picture", "source",
+}  # fmt: skip
+#: Only offered with ``allow_remote``: markup whose point is to show what the page paints. A view
+#: that must stay free of anything remote (email) keeps the plain tag set.
+_RICH_TAGS = {
+    "svg", "path", "g", "circle", "rect", "polygon", "line", "polyline", "defs", "use", "symbol",
+    "picture", "source",
 }  # fmt: skip
 PATH_ATTR = "data-pw-path"  # the extractor's DOM path of an element (the filter assistant's anchor)
+# SVG presentation attributes (no ``style``/``on*``/``href`` here: those are handled on their own).
+_SVG_PAINT = {
+    "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-miterlimit",
+    "stroke-dasharray", "stroke-dashoffset", "fill-rule", "clip-rule", "fill-opacity",
+    "stroke-opacity", "opacity", "transform",
+}  # fmt: skip
+# nh3 (html5ever) re-cases SVG attributes while parsing, so ``viewBox`` must be listed in that
+# spelling: with only the lowercase ``viewbox`` it is dropped and every icon loses its scaling.
+# Both are listed so a library that keeps the lowercase form still works.
+_SVG_BOX = {"viewBox", "viewbox", "preserveAspectRatio", "preserveaspectratio"}
 _ATTRS = {
-    "*": {"class", "id", "title", "lang", "dir", PATH_ATTR},
+    "*": {"class", "id", "title", "lang", "dir", "style", PATH_ATTR},
     "a": {"href", "rel"},
-    "img": {"src", "alt", "width", "height"},
+    "img": {"src", "alt", "width", "height", "srcset", "sizes", "loading", "decoding"},
+    "source": {"srcset", "sizes", "media", "type"},
+    "svg": {"width", "height", "focusable"} | _SVG_BOX | _SVG_PAINT,
+    "symbol": _SVG_BOX | _SVG_PAINT,
+    "g": set(_SVG_PAINT),
+    "path": {"d"} | _SVG_PAINT,
+    "circle": {"cx", "cy", "r"} | _SVG_PAINT,
+    "rect": {"x", "y", "width", "height", "rx", "ry"} | _SVG_PAINT,
+    "polygon": {"points"} | _SVG_PAINT,
+    "polyline": {"points"} | _SVG_PAINT,
+    "line": {"x1", "y1", "x2", "y2"} | _SVG_PAINT,
+    "use": {"href", "xlink:href", "x", "y", "width", "height"} | _SVG_PAINT,
     "td": {"colspan", "rowspan"},
     "th": {"colspan", "rowspan", "scope"},
     "meta": {"charset", "http-equiv", "content", "name"},
@@ -84,24 +121,51 @@ _ATTRS = {
 # -- sanitising and wrapping --------------------------------------------------------------
 
 
-def _csp(allow_remote: bool) -> str:
+def _csp(allow_remote: bool = True) -> str:
     if allow_remote:
+        # No script-src: scripts stay blocked by default-src 'none'. Everything a page paints may
+        # load: web fonts (also inlined as data:), images (also blob:), stylesheets and media.
         return (
-            "default-src 'none'; img-src data: http: https:; style-src 'unsafe-inline' http: https:"
+            "default-src 'none'; font-src * data: http: https:; "
+            "img-src * data: blob: http: https:; "
+            "style-src * 'unsafe-inline' http: https:; "
+            "media-src * data: http: https:"
         )
     return "default-src 'none'; img-src data:; style-src 'unsafe-inline'"
 
 
-def sanitize_fragment(markup: str, *, allow_remote: bool = False) -> str:
-    """Strip scripts, event handlers, forms and (unless allowed) remote resources."""
+# A style value that can run or fetch code in an old engine; modern Chromium ignores all of these,
+# so this is hygiene on top of the CSP (which has no script-src).
+_BAD_STYLE = re.compile(r"expression\s*\(|javascript:|vbscript:|-moz-binding|behaviou?r\s*:|@import",
+                        re.IGNORECASE)  # fmt: skip
+
+
+def _attribute_filter(tag: str, attr: str, value: str) -> str | None:
+    if attr == "style":
+        return None if _BAD_STYLE.search(value) else value
+    if tag == "use" and attr in ("href", "xlink:href"):
+        return value if value.startswith("#") else None  # only a symbol of this same document
+    return value
+
+
+def sanitize_fragment(markup: str, *, allow_remote: bool = True) -> str:
+    """Strip scripts, event handlers, forms and (unless allowed) remote resources.
+
+    With ``allow_remote`` the page's inline ``style`` attributes, ``srcset`` images, ``<picture>``
+    and inline SVG survive and ``<link>`` is kept (``_strip_remote`` already reduced it to
+    stylesheets); without it the markup is the plain, text-first subset used for email."""
     tags = _TAGS - {"head", "html", "body", "title", "meta", "style", "base"}
+    attrs = {k: set(v) for k, v in _ATTRS.items()}
     if not allow_remote:
-        tags -= {"link"}
+        tags -= {"link"} | _RICH_TAGS
+        attrs["*"].discard("style")
+        attrs["img"] -= {"srcset", "sizes", "loading", "decoding"}
     cleaned: str = nh3.clean(
         markup,
         tags=tags,
         clean_content_tags={"script", "style", "template", "noscript", "iframe", "object", "embed"},
-        attributes={k: v for k, v in _ATTRS.items() if k in tags or k == "*"},
+        attributes={k: v for k, v in attrs.items() if k in tags or k == "*"},
+        attribute_filter=_attribute_filter,
         url_schemes={"http", "https", "mailto"},
         link_rel=None,
         set_tag_attribute_values={"a": {"rel": "noopener noreferrer nofollow"}},
@@ -110,7 +174,7 @@ def sanitize_fragment(markup: str, *, allow_remote: bool = False) -> str:
     return cleaned
 
 
-def wrap_document(body: str, *, allow_remote: bool = False, base_url: str | None = None,
+def wrap_document(body: str, *, allow_remote: bool = True, base_url: str | None = None,
                   body_class: str = "pw-view pw-del-inline") -> str:  # fmt: skip
     base = (
         f'<base href="{htmllib.escape(base_url, quote=True)}">' if allow_remote and base_url else ""
@@ -142,11 +206,86 @@ def tag_paths(root: Any) -> None:
             stack.append(child)
 
 
-def _strip_remote(root: Any, allow_remote: bool) -> None:
-    """Without remote resources images become a text placeholder (their source is never loaded)."""
+# Lazy-loading plugins (WordPress, Elementor, lazysizes, ...) leave a placeholder in ``src`` and
+# the real address in a ``data-`` attribute that their script copies over. There is no script here.
+_LAZY_SRC = ("data-src", "data-lazy-src", "data-original")
+_LAZY_SRCSET = ("data-srcset", "data-lazy-srcset")
+_SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
+_CTRL = re.compile(r"[\x00-\x1f\x7f]")
+# A "</" in the CSS text must never be able to close the <style> early. Inside a CSS string `\/` is
+# the same character, and outside a string "</" was never valid CSS.
+_CLOSE_ESCAPED = "<\\/"
+
+
+def _promote_lazy_images(root: Any) -> None:
+    """Copy lazy-load attributes onto ``src`` / ``srcset`` (``<img>``) and ``srcset``
+    (``<source>`` inside ``<picture>``) so those images draw without JavaScript."""
+    for el in root.iter("img", "source"):
+        srcset = next((v for a in _LAZY_SRCSET if (v := (el.get(a) or "").strip())), "")
+        if srcset:
+            el.set("srcset", srcset)
+        if el.tag == "img":
+            src = next((v for a in _LAZY_SRC if (v := (el.get(a) or "").strip())), "")
+            if src:
+                el.set("src", src)
+
+
+def _drop(el: Any) -> None:
+    """Remove ``el`` but keep the text that follows it (lxml's ``remove`` takes the tail along)."""
+    parent = el.getparent()
+    if parent is None:
+        return
+    if el.tail:
+        prev = el.getprevious()
+        if prev is not None:
+            prev.tail = (prev.tail or "") + el.tail
+        else:
+            parent.text = (parent.text or "") + el.tail
+    parent.remove(el)
+
+
+def _stylesheet_href(href: str) -> bool:
+    """http(s), protocol-relative or relative: never ``data:``, ``javascript:`` or ``file:``."""
+    if not href or _CTRL.search(href):
+        return False
+    m = _SCHEME.match(href)
+    return m is None or m.group(0).lower() in ("http:", "https:")
+
+
+def _take_page_styles(root: Any) -> str:
+    """Pull the page's ``<link rel="stylesheet">`` and ``<style>`` elements out of the tree and
+    return them as ready-to-use markup.
+
+    They cannot go through ``nh3``: it removes ``<style>`` content and would HTML-escape the ``>``
+    in child selectors (``.menu > li``), breaking the stylesheet. So they are rebuilt here from
+    their parts and the caller puts the result in front of the sanitised fragment."""
+    out: list[str] = []
+    for el in list(root.iter("link", "style")):
+        media = el.get("media")
+        extra = f' media="{htmllib.escape(media, quote=True)}"' if media else ""
+        if el.tag == "link":
+            rel = (el.get("rel") or "").lower().split()
+            href = (el.get("href") or "").strip()
+            if "stylesheet" in rel and _stylesheet_href(href):
+                href = htmllib.escape(href, quote=True)
+                out.append(f'<link rel="stylesheet" href="{href}"{extra}>')
+        else:
+            css = "".join(el.itertext())
+            if css.strip():
+                out.append(f"<style{extra}>{css.replace('</', _CLOSE_ESCAPED)}</style>")
+        _drop(el)
+    return "".join(out)
+
+
+def _strip_remote(root: Any, allow_remote: bool) -> str:
+    """Without remote resources images become a text placeholder (their source is never loaded)
+    and stylesheets are dropped. Returns the markup to put in front of the sanitised body: with
+    remote resources, the page's own stylesheets and ``<style>`` blocks (see
+    ``_take_page_styles``); otherwise nothing."""
+    if allow_remote:
+        _promote_lazy_images(root)
+        return _take_page_styles(root)
     for img in list(root.iter("img")):
-        if allow_remote:
-            continue
         alt = (img.get("alt") or "image").strip()
         span = etree.Element("span")
         span.set("class", "pw-img")
@@ -156,10 +295,8 @@ def _strip_remote(root: Any, allow_remote: bool) -> None:
         if parent is not None:
             parent.replace(img, span)
     for link in list(root.iter("link")):
-        if not allow_remote or (link.get("rel") or "").lower() != "stylesheet":
-            parent = link.getparent()
-            if parent is not None:
-                parent.remove(link)
+        _drop(link)
+    return ""
 
 
 # -- text view ----------------------------------------------------------------------------
@@ -461,7 +598,7 @@ def render_highlight(
     *,
     nfkc: bool = True,
     ignore_options: bool = True,
-    allow_remote: bool = False,
+    allow_remote: bool = True,
     paths: bool = False,
 ) -> str | None:
     """The new version's HTML with changes marked in place; ``None`` if ``raw`` is not HTML
@@ -555,17 +692,17 @@ def render_highlight(
             d = etree.SubElement(li, "del")
             d.set("class", "pw-del")
             d.text = text
-    _strip_remote(root, allow_remote)
+    styles = _strip_remote(root, allow_remote)
     markup = etree.tostring(body, encoding="unicode", method="html")
     note = (
         '<div class="pw-note">This change was too large for a word-by-word comparison.</div>'
         if diff.degraded
         else ""
     )
-    return note + sanitize_fragment(markup, allow_remote=allow_remote)
+    return styles + note + sanitize_fragment(markup, allow_remote=allow_remote)
 
 
-def render_plain(raw: bytes, content_type: str, url: str, *, allow_remote: bool = False,
+def render_plain(raw: bytes, content_type: str, url: str, *, allow_remote: bool = True,
                  nfkc: bool = True, paths: bool = False) -> str:  # fmt: skip
     """A stored version, unmarked (the New / Old tabs)."""
     text = decode_body(raw, content_type)
@@ -574,10 +711,10 @@ def render_plain(raw: bytes, content_type: str, url: str, *, allow_remote: bool 
         return f"<pre>{_esc(text)}</pre>"
     if paths:
         tag_paths(root)
-    _strip_remote(root, allow_remote)
+    styles = _strip_remote(root, allow_remote)
     body = root.find(".//body")
     markup = etree.tostring(body if body is not None else root, encoding="unicode", method="html")
-    return sanitize_fragment(markup, allow_remote=allow_remote)
+    return styles + sanitize_fragment(markup, allow_remote=allow_remote)
 
 
 _HTMLISH = re.compile(r"<\s*(html|body|div|p|table|ul|ol|h[1-6])\b", re.IGNORECASE)

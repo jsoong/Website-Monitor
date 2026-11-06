@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+import sys
+import types
+from collections.abc import AsyncIterator, Callable
 from datetime import timedelta
 from typing import Any
 
@@ -14,7 +16,10 @@ from pagewatch.engine.core import Engine
 from pagewatch.engine.paths import DataDir
 from pagewatch.engine.tray import (
     NullTrayBackend,
+    PystrayBackend,
+    TrayController,
     TrayState,
+    _wrap,
     compute_state,
     make_icon,
     tooltip,
@@ -166,3 +171,63 @@ async def test_menu_actions(
     backend.click("Quit engine")
     await asyncio.sleep(0.05)
     await asyncio.wait_for(eng.wait_stopped(), 2)
+
+
+# -- pystray's callback arity ----------------------------------------------------------------
+
+
+def _fake_pystray() -> types.ModuleType:
+    """A stand-in for ``pystray`` (a Windows-only dependency) that enforces the same rule as
+    ``pystray._base._assert_action``: an action's ``__code__.co_argcount`` must be 0, 1 or 2."""
+    mod = types.ModuleType("pystray")
+
+    class MenuItem:
+        def __init__(self, text: str, action: Callable[..., Any]) -> None:
+            if action.__code__.co_argcount not in (0, 1, 2):
+                raise ValueError(action)
+            self.text, self.action = text, action
+
+    class Menu:
+        def __init__(self, *items: MenuItem) -> None:
+            self.items = items
+
+    class Icon:
+        def __init__(self, name: str, icon: Any, title: str, menu: Menu) -> None:
+            self.menu, self.icon, self.title, self.ran = menu, icon, title, False
+
+        def run_detached(self) -> None:
+            self.ran = True
+
+        def stop(self) -> None:
+            self.ran = False
+
+    mod.MenuItem, mod.Menu, mod.Icon = MenuItem, Menu, Icon  # type: ignore[attr-defined]
+    return mod
+
+
+def test_every_tray_menu_action_has_a_callback_arity_pystray_accepts() -> None:
+    """On Windows ``lambda _i, _m, cb=cb: cb()`` (co_argcount == 3, the default argument counts)
+    made pystray raise ValueError when the tray started."""
+    calls: list[str] = []
+    menu = [(label, lambda label=label: calls.append(label)) for label in ("a", "b", "c")]
+    for label, cb in menu:
+        action = _wrap(cb)
+        assert action.__code__.co_argcount in (0, 1, 2), label
+        action(object(), object())  # pystray calls it with (icon, item)
+    assert calls == ["a", "b", "c"]  # each wrapper is bound to its own callback
+
+
+def test_pystray_backend_registers_every_controller_menu_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _fake_pystray()
+    monkeypatch.setitem(sys.modules, "pystray", fake)
+    # TrayController.menu() only builds closures: no engine is touched until one is clicked
+    entries = TrayController.menu(types.SimpleNamespace())  # type: ignore[arg-type]
+    assert len(entries) == 6
+    backend = PystrayBackend()
+    backend.start(entries)  # raised ValueError("<lambda>") before the fix
+    icon = backend._icon
+    assert icon.ran and [i.text for i in icon.menu.items] == [label for label, _ in entries]
+    for item in icon.menu.items:
+        assert item.action.__code__.co_argcount in (0, 1, 2), item.text

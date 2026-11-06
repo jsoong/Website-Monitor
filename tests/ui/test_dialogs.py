@@ -158,8 +158,9 @@ def test_add_assistant_previews_proposes_filters_and_saves(
     api_client._call("POST", "/folders", json={"name": "Ops"})
     folders = api_client.folders()
     dlg = AddBookmarkDialog(api_client, folders, None, samples=2, gap_s=0)
-    assert not dlg.save_btn.isEnabled()  # nothing previewed yet
+    assert not dlg.save_btn.isEnabled()  # no URL yet
     dlg.url.setText(eng.site.url("/status"))
+    assert dlg.save_btn.isEnabled() and dlg.preview_out is None  # a URL is enough: no preview yet
     dlg.preview()
     pump_until(lambda: dlg.preview_out is not None, what="preview")
     out = dlg.preview_out
@@ -218,7 +219,43 @@ def test_add_assistant_flags_js_apps_and_reports_fetch_errors(
     bad.url.setText(eng.site.url("/nothing-here"))
     bad.preview()
     pump_until(lambda: "Could not fetch" in bad.error.text(), what="fetch error")
-    assert not bad.save_btn.isEnabled()
+    assert (
+        bad.save_btn.isEnabled()
+    )  # a failed preview does not take Save away: the site may be down
+
+
+def test_add_assistant_saves_as_soon_as_a_url_is_typed_without_a_preview(
+    eng: EngineThread, api_client: ApiClient, qapp: Any, pump_until: Callable[..., None]
+) -> None:
+    dlg = AddBookmarkDialog(api_client, [], None, samples=1)
+    assert not dlg.save_btn.isEnabled()
+    dlg.url.setText("   ")
+    assert not dlg.save_btn.isEnabled()  # blanks are not a URL
+    dlg.url.setText("example.org/news")
+    assert dlg.save_btn.isEnabled() and dlg.preview_out is None
+    dlg.url.setText("")
+    assert not dlg.save_btn.isEnabled()  # and clearing it takes Save away again
+    dlg.url.setText(eng.site.url("/never-previewed"))
+    created: list[Any] = []
+    dlg.created.connect(created.append)
+    dlg.save()
+    assert not dlg.save_btn.isEnabled()  # while the request is on its way
+    dlg.url.setText(dlg.url.text() + "x")  # typing meanwhile must not unlock a second create
+    assert not dlg.save_btn.isEnabled()
+    dlg.save()  # nor may a second click, a shortcut or Enter
+    pump_until(lambda: bool(created), what="created")
+    assert len(created) == 1 and len(api_client.bookmarks().items) == 1  # one create, not two
+    assert api_client.bookmark(created[0].id).url.endswith("/never-previewed")  # as sent at Save
+
+
+def test_a_url_without_a_scheme_is_saved_the_way_preview_would_fetch_it(
+    api_client: ApiClient, qapp: Any
+) -> None:
+    dlg = AddBookmarkDialog(api_client, [], None, samples=1)
+    dlg.url.setText("example.org/news")
+    assert dlg.build_body()["url"] == "https://example.org/news"
+    dlg.url.setText("http://example.org/plain")
+    assert dlg.build_body()["url"] == "http://example.org/plain"
 
 
 def test_false_positive_dialog_builds_the_patch_from_the_ticked_proposals(qapp: Any) -> None:

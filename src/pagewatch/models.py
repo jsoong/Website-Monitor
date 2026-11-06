@@ -1243,12 +1243,13 @@ class Settings(PWModel):
     transient_retry_s: float = Field(60.0, ge=1.0)
     timezone: str | None = None  # IANA name for times/window/days; None = the system zone
     debug_logging: bool = False
+    theme: Literal["dark", "light", "system"] = "dark"  # the desktop UI's colour scheme
     autowatch_state: Literal["running", "paused"] = "running"
     autowatch_paused_until: str | None = None
     # -- unattended operation (spec: Sleep, resume and connectivity; Continuous operation) ----
-    connectivity_url: str = (
-        "https://www.msftconnecttest.com/connecttest.txt"  # HEAD; any reply = online
-    )
+    # HEAD; any reply = online. Plain http on purpose: Microsoft's NCSI host serves no valid
+    # certificate for www.msftconnecttest.com, so the https form always failed (hostname mismatch).
+    connectivity_url: str = "http://www.msftconnecttest.com/connecttest.txt"
     connectivity_timeout_s: float = Field(5.0, gt=0.0, le=60.0)
     probe_interval_s: float = Field(5.0, ge=0.05)  # between probes while waiting after a resume
     resume_probe_window_s: float = Field(

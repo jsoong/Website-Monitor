@@ -53,6 +53,7 @@ class AddBookmarkDialog(QDialog):
         self._samples, self._gap_s = samples, gap_s
         self._proposals: list[ProposalOut] = []
         self.preview_out: PreviewOut | None = None
+        self._saving = False
         self.setWindowTitle("Add bookmark")
         self.resize(760, 640)
 
@@ -97,7 +98,7 @@ class AddBookmarkDialog(QDialog):
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
         self.save_btn = self.buttons.button(QDialogButtonBox.StandardButton.Save)
-        self.save_btn.setEnabled(False)
+        self.save_btn.setEnabled(False)  # until there is a URL; Preview is optional
         self.buttons.accepted.connect(self.save)
         self.buttons.rejected.connect(self.reject)
 
@@ -122,6 +123,12 @@ class AddBookmarkDialog(QDialog):
         self.preview_btn.clicked.connect(self.preview)
         self.url.returnPressed.connect(self.preview)
         self.selector.textChanged.connect(lambda t: self.region.setChecked(bool(t)))
+        self.url.textChanged.connect(self._url_changed)
+
+    def _url_changed(self, text: str) -> None:
+        """Save is available as soon as there is a URL: previewing first is a convenience, not a
+        step (a page that is down, or behind a login, can still be watched)."""
+        self.save_btn.setEnabled(bool(text.strip()) and not self._saving)
 
     # -- preview ------------------------------------------------------------------------
 
@@ -155,7 +162,6 @@ class AddBookmarkDialog(QDialog):
         if out.error:
             self.status.setText("")
             self.error.setText(f"Could not fetch the page: {out.error}")
-            self.save_btn.setEnabled(False)
             self.previewed.emit(out)
             return
         kinds = {
@@ -191,7 +197,6 @@ class AddBookmarkDialog(QDialog):
             self.proposal_list.addItem(item)
         if not self.name.text():
             self.name.setText(self._guess_name(out))
-        self.save_btn.setEnabled(True)
         self.previewed.emit(out)
 
     @staticmethod
@@ -211,9 +216,13 @@ class AddBookmarkDialog(QDialog):
             == self.proposal_list.item(i).checkState().Checked
         ]
 
+    def _normalized_url(self) -> str:
+        url = self.url.text().strip()
+        return url if "://" in url else f"https://{url}"  # the same rule Preview applies
+
     def build_body(self) -> dict[str, Any]:
         body: dict[str, Any] = {
-            "url": self.url.text().strip(),
+            "url": self._normalized_url(),
             "schedule": {"interval_s": int(self.interval.currentData())},
             "folder_id": self.folder.currentData(),
         }
@@ -234,7 +243,10 @@ class AddBookmarkDialog(QDialog):
         return body
 
     def save(self) -> None:
+        if self._saving or not self.url.text().strip():
+            return
         body = self.build_body()
+        self._saving = True
         self.save_btn.setEnabled(False)
 
         def done(out: BookmarkOut) -> None:
@@ -242,7 +254,8 @@ class AddBookmarkDialog(QDialog):
             self.accept()
 
         def failed(exc: Exception) -> None:
-            self.save_btn.setEnabled(True)
+            self._saving = False
+            self.save_btn.setEnabled(bool(self.url.text().strip()))
             self.error.setText(str(exc).split(": ", 1)[-1])
 
         run_async(lambda: self._client.create_bookmark(body), done, failed)

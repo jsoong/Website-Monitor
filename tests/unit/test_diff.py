@@ -1,11 +1,17 @@
 import itertools
 import random
+import sys
 from typing import Any
 
 import pytest
 
 from pagewatch.engine.pipeline.diff import DiffResult, align, diff_blocks, tokenize
-from pagewatch.engine.pipeline.differs import available_differs, get_differ
+from pagewatch.engine.pipeline.differs import (
+    CDifflibDiffer,
+    DifflibDiffer,
+    available_differs,
+    get_differ,
+)
 
 
 def ops_of(res: DiffResult) -> list[str]:
@@ -245,6 +251,29 @@ def test_every_differ_finds_a_minimal_script_on_simple_cases(name: str) -> None:
         else:
             stats["chg"] += (i2 - i1) + (j2 - j1)
     assert stats == {"eq": 3, "chg": 2}
+
+
+def test_cdifflib_differ_falls_back_to_difflib_when_cdifflib_is_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cdifflib has no Windows wheel for CPython 3.12 and is not installed there (pyproject.toml):
+    the differ must still work, with difflib's matcher and the same opcodes."""
+    monkeypatch.setitem(sys.modules, "cdifflib", None)  # `import cdifflib` -> ImportError
+    fallback = CDifflibDiffer()
+    assert fallback.native is False
+    old = ["a", "b", "c", "d", "e"]
+    new = ["a", "c", "d", "x", "e", "f"]
+    assert fallback.opcodes(old, new) == DifflibDiffer().opcodes(old, new)
+    res = diff_blocks(old, new, differ=fallback, detect_moves=False, ignore_case=False)
+    assert res.changed_blocks > 0 and not res.degraded
+
+
+def test_cdifflib_differ_uses_the_native_matcher_when_it_is_installed() -> None:
+    pytest.importorskip("cdifflib")
+    native = CDifflibDiffer()
+    assert native.native is True
+    old, new = ["a", "b", "c"], ["a", "x", "c"]
+    assert native.opcodes(old, new) == DifflibDiffer().opcodes(old, new)
 
 
 def test_full_page_rewrite_at_the_block_cap_stays_inside_the_2s_budget() -> None:

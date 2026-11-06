@@ -1,4 +1,9 @@
-"""PageWatch main window: folders | bookmark list | change viewer, laid out like an email client.
+"""PageWatch main window: folders, bookmark list and change viewer, laid out like an email client.
+
+The viewer sits below the folders and the list by default, so a page gets the window's full
+width (docked at the right it was squeezed and horizontal layouts broke); "Dock right" gives the
+classic three columns, and "Expand viewer" (F11 / Ctrl+M) hides the folders and the list so the
+viewer fills the window. Both choices are remembered.
 
 The UI never fetches pages and never owns monitoring: closing this window leaves the engine
 checking. Every action is a call to the local API on a worker thread; engine events keep the
@@ -35,6 +40,7 @@ from PySide6.QtWidgets import (
 from pagewatch.engine.instance import read_lockfile
 from pagewatch.engine.paths import DataDir
 from pagewatch.models import BookmarkOut, BookmarkSummary, FolderOut, PluginInfo, Settings
+from pagewatch.ui import theme
 from pagewatch.ui.client import ApiClient
 from pagewatch.ui.events import EventStream
 from pagewatch.ui.models import (
@@ -60,6 +66,10 @@ REVEAL_TIMEOUT_MS = 4000  # how long "Show bookmark" waits for the list to load 
 RECONNECT_MS = 2000  # while disconnected: how often to look for a restarted engine
 REFRESH_DEBOUNCE_MS = 250
 SEARCH_DEBOUNCE_MS = 250
+DOCK_BOTTOM, DOCK_RIGHT = "bottom", "right"
+DOCKS = (DOCK_BOTTOM, DOCK_RIGHT)
+# Relative sizes only (the window is not shown yet): list above viewer; folders | list | viewer.
+BOTTOM_SIZES, BOTTOM_LIST_SIZES, RIGHT_SIZES = [330, 490], [240, 1100], [220, 520, 620]
 
 
 class MainWindow(QMainWindow):
@@ -84,6 +94,9 @@ class MainWindow(QMainWindow):
         self.signin_offer: list[int] = []
         self._paused = False
         self._assist_open = False  # one filter assistant at a time
+        self._dock = DOCK_BOTTOM
+        self._maximized = False  # the viewer has the whole window
+        self._split_states: dict[str, QByteArray] = {}  # splitter sizes per layout
         self.setWindowTitle("PageWatch")
         self.resize(1360, 820)
 
@@ -113,17 +126,17 @@ class MainWindow(QMainWindow):
         self.table.customContextMenuRequested.connect(self._row_menu)
         self.viewer = ViewerPanel(client)
 
-        middle = QWidget()
-        mlayout = QVBoxLayout(middle)
+        self.middle = QWidget()
+        mlayout = QVBoxLayout(self.middle)
         mlayout.setContentsMargins(0, 0, 0, 0)
         mlayout.addWidget(self.search)
         mlayout.addWidget(self.table, 1)
-        self.splitter = QSplitter()
-        self.splitter.addWidget(self.tree)
-        self.splitter.addWidget(middle)
-        self.splitter.addWidget(self.viewer)
-        self.splitter.setSizes([220, 520, 620])
+        # Docked below: splitter = [list_split = [tree | middle]] over [viewer]. Docked right the
+        # same splitter turns horizontal and holds [tree | middle | viewer] (list_split is idle).
+        self.list_split = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter = QSplitter(Qt.Orientation.Vertical)
         self.setCentralWidget(self.splitter)
+        self._arrange(DOCK_BOTTOM)
 
         self._build_actions()
         self._build_status_bar()
@@ -203,10 +216,26 @@ class MainWindow(QMainWindow):
         self.act_saved = self._action(
             "New saved search...", [], self.new_saved_search, "Save a search as a virtual folder"
         )
+        self.act_dock = self._action(
+            "Dock viewer right", ["Ctrl+Shift+D"], self.toggle_viewer_dock,
+            "Move the viewer between below the list and beside it",
+        )  # fmt: skip
+        self.act_maximize = self._action(
+            "Expand viewer", ["F11", "Ctrl+M"], self.toggle_viewer_maximized,
+            "Hide the folders and the list so the viewer fills the window (again to restore)",
+        )  # fmt: skip
+        self.act_restore = self._action(
+            "Restore view", ["Esc"], self.restore_viewer, "Show the folders and the list again"
+        )
+        self.act_restore.setEnabled(False)  # Esc is only taken while the viewer is expanded
         menu = self.menuBar().addMenu("&File")
         menu.addAction(self.act_add)
         menu.addAction(self.act_import)
         menu.addAction(self.act_saved)
+        view = self.menuBar().addMenu("&View")
+        view.addAction(self.act_dock)
+        view.addAction(self.act_maximize)
+        view.addAction(self.act_restore)
         tools = self.menuBar().addMenu("&Tools")
         tools.addAction(self.act_assist)
         tools.addAction(self.act_fp)
@@ -239,7 +268,11 @@ class MainWindow(QMainWindow):
         bar.addAction(self.act_macros)
         bar.addAction(self.act_problems)
         bar.addAction(self.act_settings)
+        bar.addSeparator()
+        bar.addAction(self.act_dock)
+        bar.addAction(self.act_maximize)
         self.addToolBar(bar)
+        self._sync_layout_controls()
 
     def _build_status_bar(self) -> None:
         self.lbl_conn = QLabel("engine: connecting")
@@ -276,11 +309,145 @@ class MainWindow(QMainWindow):
         self.model.load_failed.connect(lambda m: self.say(f"Could not load bookmarks: {m}"))
         self.viewer.status_text.connect(self.lbl_view.setText)
         self.viewer.selection_made.connect(self._open_assistant)
+        self.viewer.dock_toggle_requested.connect(self.toggle_viewer_dock)
+        self.viewer.maximize_toggle_requested.connect(self.toggle_viewer_maximized)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._folder_menu)
         if self.events is not None:
             self.events.event.connect(self._on_event)
             self.events.connection_changed.connect(self._on_connection)
+
+    def apply_theme(self, name: str) -> None:
+        """Dark, Light or Same as Windows - now, for every window of the application."""
+        theme.apply(name)
+        self.viewer.web.sync_background()
+
+    # -- viewer layout: dock position and expand -----------------------------------------
+
+    @property
+    def viewer_dock(self) -> str:
+        """``"bottom"`` (the default) or ``"right"``."""
+        return self._dock
+
+    @property
+    def viewer_maximized(self) -> bool:
+        return self._maximized
+
+    def _arrange(self, where: str) -> None:
+        """Put the panes in the splitters for ``where``. The viewer stays a child of the central
+        splitter throughout, so its web page is never reparented (and never reloaded)."""
+        s = self.splitter
+        if where == DOCK_RIGHT:
+            s.setOrientation(Qt.Orientation.Horizontal)
+            s.insertWidget(0, self.tree)  # out of list_split, into the splitter
+            s.insertWidget(1, self.middle)
+            s.insertWidget(2, self.viewer)
+            self.list_split.setParent(None)  # empty now; parentless widgets are hidden
+            s.setSizes(RIGHT_SIZES)
+        else:
+            s.setOrientation(Qt.Orientation.Vertical)
+            self.list_split.addWidget(self.tree)
+            self.list_split.addWidget(self.middle)
+            s.insertWidget(0, self.list_split)
+            s.insertWidget(1, self.viewer)
+            self.list_split.show()
+            self.list_split.setSizes(BOTTOM_LIST_SIZES)
+            s.setSizes(BOTTOM_SIZES)
+        self._dock = where
+        for pane in (self.tree, self.middle, self.viewer):
+            pane.show()
+        self._restore_split_states()
+        self._apply_expanded()
+
+    def _remember_split_states(self) -> None:
+        """Keep the current layout's splitter sizes. Not while expanded: the collapsed panes would
+        record a width of nothing, and the sizes from before are already kept."""
+        if self._maximized:
+            return
+        if self._dock == DOCK_RIGHT:
+            self._split_states["right"] = self.splitter.saveState()
+        else:
+            self._split_states["bottom"] = self.splitter.saveState()
+            self._split_states["bottom_list"] = self.list_split.saveState()
+
+    def _restore_split_states(self) -> None:
+        keys = ("right",) if self._dock == DOCK_RIGHT else ("bottom_list", "bottom")
+        for key in keys:
+            state = self._split_states.get(key)
+            if state is not None:
+                (self.splitter if key in ("right", "bottom") else self.list_split).restoreState(
+                    state
+                )
+
+    def _apply_expanded(self) -> None:
+        """Hide (or show) the folders and the list. Below, that is the whole top pane; at the
+        right, the two columns - the viewer takes the space either way."""
+        hide = self._maximized
+        if self._dock == DOCK_BOTTOM:
+            self.list_split.setHidden(hide)
+        else:
+            self.tree.setHidden(hide)
+            self.middle.setHidden(hide)
+
+    def _sync_layout_controls(self) -> None:
+        to_right = self._dock == DOCK_BOTTOM
+        dock_keys = ", ".join(k.toString() for k in self.act_dock.shortcuts())
+        max_keys = ", ".join(k.toString() for k in self.act_maximize.shortcuts())
+        self.act_dock.setText("Dock viewer right" if to_right else "Dock viewer bottom")
+        self.act_dock.setToolTip(
+            ("Show the viewer beside the list" if to_right else "Show the viewer below the list")
+            + f" ({dock_keys})"
+        )
+        self.act_maximize.setText("Restore viewer" if self._maximized else "Expand viewer")
+        self.act_maximize.setToolTip(
+            (
+                "Show the folders and the list again"
+                if self._maximized
+                else "Give the viewer the whole window"
+            )
+            + f" ({max_keys}; Esc restores)"
+        )
+        self.act_restore.setEnabled(self._maximized)
+        self.viewer.set_dock(self._dock, self.act_dock.toolTip())
+        self.viewer.set_maximized(self._maximized, self.act_maximize.toolTip())
+
+    def set_viewer_dock(self, where: str) -> None:
+        """Dock the viewer ``"bottom"`` (full width under the folders and the list) or
+        ``"right"`` (the classic three columns). An expanded viewer stays expanded."""
+        if where not in DOCKS or where == self._dock:
+            return
+        self._remember_split_states()
+        self._arrange(where)
+        self._sync_layout_controls()
+        self._save_layout_choice()
+
+    def set_viewer_maximized(self, on: bool) -> None:
+        """Give the viewer the whole window (``True``) or bring the folders and list back."""
+        if on == self._maximized:
+            return
+        if on:
+            self._remember_split_states()  # before the panes collapse
+        self._maximized = on
+        self._apply_expanded()
+        if not on:
+            self._restore_split_states()
+        self._sync_layout_controls()
+        self._save_layout_choice()
+
+    def toggle_viewer_dock(self, _checked: bool = False) -> None:
+        self.set_viewer_dock(DOCK_RIGHT if self._dock == DOCK_BOTTOM else DOCK_BOTTOM)
+
+    def toggle_viewer_maximized(self, _checked: bool = False) -> None:
+        self.set_viewer_maximized(not self._maximized)
+
+    def restore_viewer(self, _checked: bool = False) -> None:
+        self.set_viewer_maximized(False)
+
+    def _save_layout_choice(self) -> None:
+        if self._persist:
+            s = self._settings()
+            s.setValue("viewer_dock", self._dock)
+            s.setValue("viewer_maximized", self._maximized)
 
     # -- small helpers ------------------------------------------------------------------
 
@@ -619,6 +786,7 @@ class MainWindow(QMainWindow):
         def done(settings: Settings) -> None:
             dialog = SettingsDialog(self.client, settings, self.data_dir, self)
             dialog.saved.connect(self.refresh_health)
+            dialog.saved.connect(lambda: self.apply_theme(dialog.settings.theme))
             dialog.restore_staged.connect(
                 lambda _p: self.say("Restoring a backup: the engine is restarting")
             )
@@ -817,18 +985,36 @@ class MainWindow(QMainWindow):
 
     def _restore(self) -> None:
         s = self._settings()
-        geo, split = s.value("geometry"), s.value("splitter")
+        geo = s.value("geometry")
         if isinstance(geo, QByteArray):
             self.restoreGeometry(geo)
-        if isinstance(split, QByteArray):
-            self.splitter.restoreState(split)
+        for key, name in (
+            ("splitter_bottom", "bottom"),
+            ("splitter_bottom_list", "bottom_list"),
+            ("splitter_right", "right"),
+        ):
+            state = s.value(key)
+            if isinstance(state, QByteArray) and name not in self._split_states:
+                self._split_states[name] = state
+        dock = s.value("viewer_dock", DOCK_BOTTOM)
+        self._maximized = bool(s.value("viewer_maximized", False, type=bool))
+        self._arrange(dock if dock in DOCKS else DOCK_BOTTOM)  # also hides the panes if expanded
+        self._sync_layout_controls()
 
     def closeEvent(self, event: Any) -> None:
         """Closing the window never touches the engine: it keeps checking."""
         if self._persist:
             s = self._settings()
             s.setValue("geometry", self.saveGeometry())
-            s.setValue("splitter", self.splitter.saveState())
+            self._remember_split_states()
+            for name, key in (
+                ("bottom", "splitter_bottom"),
+                ("bottom_list", "splitter_bottom_list"),
+                ("right", "splitter_right"),
+            ):
+                if name in self._split_states:
+                    s.setValue(key, self._split_states[name])
+            self._save_layout_choice()
         if self.problems_window is not None:
             self.problems_window.close()
         self._health_timer.stop()

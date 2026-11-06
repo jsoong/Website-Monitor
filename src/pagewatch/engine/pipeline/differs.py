@@ -10,7 +10,7 @@ from __future__ import annotations
 import difflib
 import os
 from collections.abc import Callable, Hashable, Sequence
-from typing import Protocol
+from typing import Any, Protocol
 
 Opcode = tuple[str, int, int, int, int]
 
@@ -60,12 +60,22 @@ class DifflibDiffer:
 
 
 class CDifflibDiffer:
+    """difflib's algorithm with the matcher in C. cdifflib has no Windows wheel for CPython 3.12,
+    so it is not installed there (see pyproject.toml): without it this is plain difflib, with the
+    same opcodes, only slower."""
+
     name = "cdifflib"
 
     def __init__(self) -> None:
-        from cdifflib import CSequenceMatcher
+        self._matcher: Any
+        try:
+            from cdifflib import CSequenceMatcher
 
-        self._matcher = CSequenceMatcher
+            self._matcher = CSequenceMatcher
+            self.native = True
+        except ImportError:
+            self._matcher = difflib.SequenceMatcher
+            self.native = False
 
     def opcodes(self, a: Sequence[Hashable], b: Sequence[Hashable]) -> list[Opcode]:
         return merge_changes(self._matcher(None, a, b, autojunk=False).get_opcodes())

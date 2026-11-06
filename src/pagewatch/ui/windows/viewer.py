@@ -7,13 +7,15 @@ sanitised; the view additionally refuses to navigate and sends link clicks to th
 
 from __future__ import annotations
 
+import html as htmllib
 import json
+import re
 from collections.abc import Callable
 from importlib import resources
 from typing import Any
 
 from PySide6.QtCore import QFile, QIODevice, QObject, Qt, QUrl, Signal, Slot
-from PySide6.QtGui import QDesktopServices, QPixmap, QResizeEvent
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QPixmap, QResizeEvent
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineScript
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -27,11 +29,13 @@ from PySide6.QtWidgets import (
     QTabBar,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from pagewatch.models import ChangeOut, CheckRunOut, RenderOut
+from pagewatch.ui import theme
 from pagewatch.ui.client import ApiClient, ApiError, ScreenshotDiff
 from pagewatch.ui.models import fmt_time
 from pagewatch.ui.workers import run_async
@@ -106,6 +110,33 @@ class _Page(QWebEnginePage):
         return True
 
 
+_BASE_HREF = re.compile(r'<base\s+href="([^"]+)"', re.IGNORECASE)
+_ABOUT_BLANK = "about:blank"
+
+
+def document_base_url(html: str) -> QUrl:
+    """The page address the engine put in the document's ``<base href>`` (it only does so when
+    remote content is on), or ``about:blank``. Handing it to ``setHtml`` makes relative images,
+    stylesheets and fonts resolve against the site and puts the document in the site's origin, so
+    web fonts load as they would in a browser. Scripts stay blocked by the document's CSP."""
+    m = _BASE_HREF.search(html[:4096])  # it sits right after the CSP in <head>
+    if m:
+        url = QUrl(htmllib.unescape(m.group(1)))
+        if url.isValid() and url.scheme() in ("http", "https"):
+            return url
+    return QUrl(_ABOUT_BLANK)
+
+
+def blank_document() -> str:
+    """What an empty view shows: the theme's background, so there is no white flash."""
+    colour = theme.background().name()
+    return (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<meta name="color-scheme" content="light dark">'
+        f'</head><body style="background:{colour}"></body></html>'
+    )
+
+
 class HtmlView(QWebEngineView):
     document_loaded = Signal()
 
@@ -114,6 +145,11 @@ class HtmlView(QWebEngineView):
         self.setPage(_Page(self))
         self.loadFinished.connect(lambda _ok: self.document_loaded.emit())
         self.last_html = ""
+        self.sync_background()
+        # A bound method of this QObject, not a lambda: Qt drops the connection when the view is
+        # destroyed (a closed dialog's preview), a lambda would outlive it and fail on the next
+        # change of the Theme.
+        QGuiApplication.styleHints().colorSchemeChanged.connect(self._scheme_changed)
         self.bridge = FilterBridge(self)
         self.bridge_ready = self._install_bridge()
 
@@ -148,9 +184,16 @@ class HtmlView(QWebEngineView):
             lambda ok: done(bool(ok)),
         )
 
+    def _scheme_changed(self, _scheme: Qt.ColorScheme) -> None:
+        self.sync_background()
+
+    def sync_background(self) -> None:
+        """Paint the theme's background behind the page (dark: #1e1e1e), not white."""
+        self.page().setBackgroundColor(theme.background())
+
     def set_document(self, html: str) -> None:
         self.last_html = html
-        self.setHtml(html, QUrl("about:blank"))
+        self.setHtml(html or blank_document(), document_base_url(html))
 
 
 def style_document(html: str, deletions: str) -> str:
@@ -166,6 +209,9 @@ class ViewerPanel(QWidget):
     #: The user selected something in the page (Alt+select, right-click, or the shortcut):
     #: ``{bookmark_id, version_id, via, text, path, end_path}`` for the filter assistant
     selection_made = Signal(dict)
+    #: The header buttons: the window owns the layout (and the shortcuts), the panel only asks.
+    dock_toggle_requested = Signal()
+    maximize_toggle_requested = Signal()
 
     def __init__(self, client: ApiClient, parent: Any = None) -> None:
         super().__init__(parent)
@@ -185,7 +231,17 @@ class ViewerPanel(QWidget):
         for label, mode in DELETION_MODES:
             self.deletions.addItem(label, mode)
         self.images = QCheckBox("Remote images")
+        self.images.setChecked(True)  # the page as it looks; unchecked = text-only placeholders
+        self.images.setToolTip("Load the page's images, fonts and stylesheets from its website")
         self.changes_only = QCheckBox("Changes only")
+        self.btn_dock = QToolButton()
+        self.btn_dock.setObjectName("dockToggle")
+        self.btn_dock.setAutoRaise(True)
+        self.btn_max = QToolButton()
+        self.btn_max.setObjectName("maximizeToggle")
+        self.btn_max.setAutoRaise(True)
+        self.set_dock("bottom")
+        self.set_maximized(False)
         self.tabs = QTabBar()
         self.tabs.setObjectName("viewerTabs")
         for name in TABS:
@@ -222,9 +278,13 @@ class ViewerPanel(QWidget):
         for w in (self.history, self.deletions, self.images, self.changes_only):
             controls.addWidget(w)
         controls.setStretch(0, 1)
+        header = QHBoxLayout()
+        header.addWidget(self.title, 1)
+        header.addWidget(self.btn_dock)
+        header.addWidget(self.btn_max)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.title)
+        layout.addLayout(header)
         layout.addLayout(controls)
         layout.addWidget(self.tabs)
         layout.addWidget(self.stack, 1)
@@ -234,6 +294,8 @@ class ViewerPanel(QWidget):
         self.deletions.currentIndexChanged.connect(lambda _i: self.reload())
         self.images.toggled.connect(lambda _c: self.reload())
         self.changes_only.toggled.connect(lambda _c: self.reload())
+        self.btn_dock.clicked.connect(lambda _c=False: self.dock_toggle_requested.emit())
+        self.btn_max.clicked.connect(lambda _c=False: self.maximize_toggle_requested.emit())
         self.web.document_loaded.connect(self._on_loaded)
         self.web.bridge.selection.connect(self._on_selection)
         self._produced = ""
@@ -246,6 +308,20 @@ class ViewerPanel(QWidget):
 
     def current_tab(self) -> int:
         return self.tabs.currentIndex()
+
+    def set_dock(self, where: str, tip: str = "") -> None:
+        """Label the dock button for the layout in force: it offers the other one."""
+        to_right = where != "right"
+        self.btn_dock.setText("Dock right" if to_right else "Dock bottom")
+        self.btn_dock.setToolTip(
+            tip or ("Show the viewer beside the list" if to_right else "Show the viewer below")
+        )
+
+    def set_maximized(self, on: bool, tip: str = "") -> None:
+        self.btn_max.setText("Restore" if on else "Expand")
+        self.btn_max.setToolTip(
+            tip or ("Show the folders and the list again" if on else "Give the viewer the window")
+        )
 
     def show_bookmark(self, bookmark_id: int | None, name: str = "") -> None:
         self._bid = bookmark_id
@@ -356,7 +432,8 @@ class ViewerPanel(QWidget):
             return
         text = str(exc).split(": ", 1)[-1]
         self.web.set_document(
-            f"<html><body><p style='font:15px sans-serif'>{text}</p></body></html>"
+            "<html><head><meta name='color-scheme' content='light dark'></head>"
+            f"<body><p style='font:15px sans-serif'>{htmllib.escape(text)}</p></body></html>"
         )
 
     # -- screenshot diff ----------------------------------------------------------------

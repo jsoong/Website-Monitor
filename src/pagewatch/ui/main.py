@@ -4,6 +4,7 @@ monitoring either way."""
 from __future__ import annotations
 
 import argparse
+import contextlib
 import subprocess
 import sys
 import time
@@ -47,7 +48,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     app = QApplication(sys.argv[:1])
     app.setApplicationName("PageWatch")
-    theme.follow_system()
+    theme.apply()  # Dark until the Theme setting is known (Fusion: Windows' own style ignores it)
     data_dir = resolve_data_dir(args.data_dir)
     try:
         client = connect(data_dir)
@@ -66,6 +67,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 1
         client = connect(data_dir)
+    with contextlib.suppress(Exception):  # else the default stays until a Theme is saved
+        theme.apply(client.settings().theme)
     events = EventStream(client.ws_url, client.token)
     window = MainWindow(client, events, persist=True, data_dir=data_dir)
     events.start()

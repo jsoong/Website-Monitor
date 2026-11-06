@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -160,24 +161,31 @@ HOSTILE = (
 )
 
 
-def test_sanitizer_strips_scripts_handlers_forms_and_dangerous_urls() -> None:
-    out = viewer.sanitize_fragment(HOSTILE)
-    for bad in (
-        "onclick",
-        "onerror",
-        "onload",
-        "<script",
-        "<iframe",
-        "<form",
-        "<input",
-        "javascript:",
-        "<style",
-        "<object",
-        "<svg",
-        "style=",
-    ):
+DANGEROUS = (
+    "onclick", "onerror", "onload", "<script", "<iframe", "<form", "<input", "javascript:",
+    "<style", "<object",
+)  # fmt: skip
+
+
+@pytest.mark.parametrize("allow_remote", [True, False])
+def test_sanitizer_strips_scripts_handlers_forms_and_dangerous_urls(allow_remote: bool) -> None:
+    out = viewer.sanitize_fragment(HOSTILE, allow_remote=allow_remote)
+    for bad in DANGEROUS:
         assert bad not in out, bad
     assert "https://ok.test/" in out and 'rel="noopener noreferrer nofollow"' in out
+
+
+def test_text_only_sanitizing_also_drops_inline_styles_and_svg() -> None:
+    """Without remote content (emails) an inline style could still fetch a tracking image."""
+    out = viewer.sanitize_fragment(HOSTILE, allow_remote=False)
+    assert "<svg" not in out and "style=" not in out
+
+
+def test_rich_sanitizing_keeps_inline_styles_and_inline_svg_but_not_their_handlers() -> None:
+    out = viewer.sanitize_fragment(HOSTILE)  # the default is the rich one
+    assert "<svg></svg>" in out  # the element stays, its onload does not
+    assert '<p style="background:url(//t)">styled</p>' in out
+    assert "<style" not in out  # a <style> element is taken out by the page-style step, not here
 
 
 def test_remote_images_become_placeholders_unless_allowed(tmp_path: Path) -> None:
@@ -188,11 +196,36 @@ def test_remote_images_become_placeholders_unless_allowed(tmp_path: Path) -> Non
     base = {"blob_root": str(tmp_path), "view": "new", "url": "https://x.test/", "old": None}
     off = render_view(RenderJob(new=ViewVersion(raw, "text/html", ""), **base)).html  # type: ignore[arg-type]
     assert "t.test" not in off and "[logo]" in off
-    assert "img-src data:;" in off
+    assert "img-src data:;" in off and "font-src" not in off and "<base" not in off
     on = render_view(
         RenderJob(new=ViewVersion(raw, "text/html", ""), allow_remote=True, **base)
     ).html  # type: ignore[arg-type]
-    assert "https://t.test/p.png" in on and "img-src data: http: https:" in on
+    assert "https://t.test/p.png" in on and "[logo]" not in on
+    assert "img-src * data: blob: http: https:" in on
+
+
+def test_the_remote_content_policy_lets_a_page_paint_but_never_run() -> None:
+    csp = viewer._csp(True)
+    assert csp.startswith("default-src 'none';")  # nothing not listed: no script-src, no frames
+    for allowed in (
+        "font-src * data: http: https:",
+        "img-src * data: blob: http: https:",
+        "style-src * 'unsafe-inline' http: https:",
+        "media-src * data: http: https:",
+    ):
+        assert allowed in csp, allowed
+    assert "script-src" not in csp and "'unsafe-eval'" not in csp
+    assert viewer._csp(False) == "default-src 'none'; img-src data:; style-src 'unsafe-inline'"
+
+
+def test_remote_content_is_the_default_everywhere_and_still_switches_off() -> None:
+    for fn in (
+        viewer._csp, viewer.sanitize_fragment, viewer.wrap_document, viewer.render_highlight,
+        viewer.render_plain,
+    ):  # fmt: skip
+        assert inspect.signature(fn).parameters["allow_remote"].default is True, fn.__name__
+    assert '<base href="https://x.test/">' in viewer.wrap_document("", base_url="https://x.test/")
+    assert "<base" not in viewer.wrap_document("", allow_remote=False, base_url="https://x.test/")
 
 
 def test_text_view_escapes_page_content() -> None:
@@ -289,3 +322,120 @@ def test_highlight_falls_back_to_the_text_view_for_non_html(tmp_path: Path) -> N
 )
 def test_classify(ctype: str, body: bytes, readable: int, kind: str) -> None:
     assert detect.classify(ctype, body, readable) == kind
+
+
+# -- rich rendering: what the page paints ----------------------------------------------------
+
+PAGE = b"""<!doctype html><html><head><meta charset=utf-8><title>T</title>
+<link rel="stylesheet" href="/wp-content/a.css" media="screen">
+<link rel="stylesheet" href="https://cdn.test/b.css">
+<link rel="stylesheet" href="javascript:alert(1)">
+<link rel="stylesheet" href="data:text/css,body{background:red}">
+<link rel="icon" href="/favicon.ico">
+<style>.menu > li { color: red } @media (min-width: 600px) { .a > .b { margin: 0 } }</style>
+<script>alert(1)</script></head>
+<body class="home"><div class="elementor-invisible" style="color:red">Hello</div>
+<img src="data:image/gif;base64,R0lG" data-src="/img/real.jpg" data-srcset="/img/r1.jpg 1x, /img/r2.jpg 2x" alt="pic">
+<img src="/a.jpg" data-lazy-src="/b.jpg" alt="two"><img data-original="/c.jpg" alt="three">
+<picture><source data-lazy-srcset="/img/p.webp" type="image/webp"><img src="/img/p.jpg" alt="p"></picture>
+<svg viewBox="0 0 24 24" width="24"><path d="M0 0L10 10" fill="red"/><use href="#a"/><use href="https://evil.test/x.svg#a"/></svg>
+<p onclick="x()">tail <style>.in-body > p{margin:0}</style>text after</p></body></html>"""
+
+
+def plain(allow_remote: bool = True) -> str:
+    return viewer.render_plain(PAGE, "text/html", "https://x.test/", allow_remote=allow_remote)
+
+
+def test_the_pages_own_stylesheets_come_first_and_child_selectors_survive() -> None:
+    out = plain()
+    assert out.startswith('<link rel="stylesheet" href="/wp-content/a.css" media="screen">')
+    assert '<link rel="stylesheet" href="https://cdn.test/b.css">' in out
+    assert ".menu > li { color: red }" in out and ".a > .b { margin: 0 }" in out  # not &gt;
+    assert ".in-body > p{margin:0}" in out  # a <style> in the body too
+    assert "&gt;" not in out
+    assert "tail text after" in out  # the text after the removed <style> is kept
+    # nothing that runs or fetches from a place that is not http(s) or the site itself
+    for bad in ("javascript:", "data:text/css", "favicon", "<script", "onclick", "alert"):
+        assert bad not in out, bad
+
+
+def test_a_stylesheet_cannot_close_its_own_element_early() -> None:
+    css = (
+        b"<html><head><style>.a::after { content: '<b>x</b>' }</style></head><body>x</body></html>"
+    )
+    out = viewer.render_plain(css, "text/html", "https://x.test/")
+    assert out.count("</style>") == 1 and "<\\/b>" in out
+
+
+def test_lazy_images_are_promoted_so_they_draw_without_javascript() -> None:
+    out = plain()
+    assert 'src="/img/real.jpg"' in out and "data:image/gif" not in out
+    assert 'srcset="/img/r1.jpg 1x, /img/r2.jpg 2x"' in out
+    assert 'src="/b.jpg"' in out and 'src="/c.jpg"' in out  # data-lazy-src, data-original
+    assert 'srcset="/img/p.webp"' in out and 'src="/img/p.jpg"' in out  # inside <picture>
+    assert "data-src" not in out and "data-lazy" not in out
+
+
+def test_inline_svg_keeps_its_viewbox_and_only_references_its_own_document() -> None:
+    out = plain()
+    assert '<svg viewBox="0 0 24 24" width="24">' in out  # lost without "viewBox" in the allow-list
+    assert '<path d="M0 0L10 10" fill="red"></path>' in out
+    assert '<use href="#a"></use>' in out and "evil.test" not in out
+
+
+def test_text_only_mode_has_no_remote_anything_and_keeps_the_text() -> None:
+    out = plain(allow_remote=False)
+    assert "<link" not in out and "<style" not in out and "<svg" not in out
+    assert "<img" not in out and "[pic]" in out and "[p]" in out
+    assert "style=" not in out and "srcset" not in out and "<picture" not in out
+    assert "tail text after" in out and "Hello" in out
+
+
+def test_highlight_carries_the_pages_styles_and_marks_the_change() -> None:
+    old = b"<html><head><style>.n > a{color:red}</style></head><body><p>Price $19</p></body></html>"
+    new = old.replace(b"$19", b"$17")
+    h_old, h_new = viewer_blocks(old), viewer_blocks(new)
+    diff = diff_blocks([b.text for b in h_old], [b.text for b in h_new])
+    out = viewer.render_highlight(
+        new, "text/html", "https://x.test/", h_new, [b.text for b in h_old], diff
+    )
+    assert out is not None and out.startswith("<style>.n > a{color:red}</style>")
+    assert '<ins class="pw-add">17</ins>' in out
+    off = viewer.render_highlight(
+        new, "text/html", "https://x.test/", h_new, [b.text for b in h_old], diff,
+        allow_remote=False,
+    )  # fmt: skip
+    assert off is not None and "<style" not in off and '<ins class="pw-add">17</ins>' in off
+
+
+def viewer_blocks(html: bytes) -> Any:
+    from pagewatch.engine.pipeline.extract import decode_body, extract_blocks, parse_html
+
+    root = parse_html(decode_body(html, "text/html"))
+    return extract_blocks(root, base_url="https://x.test/")
+
+
+def test_rendering_css_shows_what_scripts_would_reveal_and_caps_unsized_icons() -> None:
+    css = viewer.CSS
+    assert "max-width: 70rem" not in css  # the pane is as wide as the window
+    assert (
+        ".elementor-invisible, [data-animate], [data-aos], .wow { visibility: visible !important;"
+        " opacity: 1 !important; transform: none !important; }" in css
+    )
+    assert "img { max-width: 100%; height: auto; }" in css
+    assert "svg { max-width: 100%; height: auto; }" in css
+    assert "svg:not([width]):not([height]) { max-width: 1.5em !important;" in css
+    assert "max-height: 1.5em !important; display: inline-block; vertical-align: middle; }" in css
+    assert viewer.CSS in viewer.wrap_document("<p>x</p>")
+
+
+def test_a_full_view_renders_the_pages_styles_through_the_pipeline(tmp_path: Path) -> None:
+    store = BlobStore(tmp_path)
+    raw = store.put(PAGE)
+    base = {"blob_root": str(tmp_path), "view": "new", "url": "https://x.test/", "old": None}
+    on = render_view(
+        RenderJob(new=ViewVersion(raw, "text/html", ""), allow_remote=True, **base)  # type: ignore[arg-type]
+    ).html
+    assert '<base href="https://x.test/">' in on and ".menu > li { color: red }" in on
+    off = render_view(RenderJob(new=ViewVersion(raw, "text/html", ""), **base)).html  # type: ignore[arg-type]
+    assert "<base" not in off and ".menu" not in off and "[pic]" in off

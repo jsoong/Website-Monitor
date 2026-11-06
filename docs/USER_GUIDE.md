@@ -29,7 +29,9 @@ Prefer no installer? Unpack `PageWatch-<version>-portable.zip` anywhere and doub
    anything that already differs between the two (a clock, a session token) is proposed as
    something to ignore. If the page needs JavaScript to show its content, PageWatch notices and
    switches to a real browser by itself. You can also choose to watch only one region.
-3. Pick how often to check ("Check every") and save.
+3. Pick how often to check ("Check every") and save. **Save** is available as soon as you have
+   typed an address; **Preview** is optional (a page that is down, or behind a login, can still
+   be watched).
 
 The first check records the page as it is now. After that, each change is stored, and a Windows
 notification tells you what changed.
@@ -41,6 +43,25 @@ the change since you last marked it read. Its tabs are **Highlighted** (the page
 marked), **Text diff**, **New**, **Old**, **Screenshot diff** (for pages you watch visually) and
 **Check log**.
 
+The viewer shows the page the way the website draws it: its own styles, fonts and images are
+loaded from the site. Untick **Remote images** in the viewer's header if you want a plain,
+text-first view that fetches nothing from the site. Scripts never run in the viewer.
+
+### Where the viewer sits
+
+By default the viewer is **below** the folders and the list and as wide as the window, so wide
+pages keep their layout. Choose how you like it:
+
+- **Dock right** (button in the viewer's header, **View** menu, toolbar, or **Ctrl+Shift+D**)
+  puts the viewer beside the list instead, as three columns; the button then reads **Dock
+  bottom**.
+- **Expand** (the viewer's header, **View** menu, toolbar, **F11** or **Ctrl+M**) hides the folders
+  and the list so the viewer fills the window. Press **F11**, **Ctrl+M** or **Esc**, or click
+  **Restore**, to bring them back. The review keys (**N**, **R**, **O**, ...) still work while
+  the list is hidden.
+
+PageWatch remembers both choices, and the sizes of the panes, the next time you open it.
+
 Everything works from the keyboard:
 
 - **N** or **Space**: next unread
@@ -51,6 +72,14 @@ Everything works from the keyboard:
 - **Ctrl+E**: edit the bookmark
 - **Ctrl+F**: search; **Ctrl+1** to **Ctrl+6**: the viewer tabs
 - **Ctrl+P**: pause or resume AutoWatch (all automatic checking)
+- **F11** or **Ctrl+M**: expand the viewer to the whole window (and back); **Esc** also goes back
+- **Ctrl+Shift+D**: dock the viewer below or beside the list
+
+## Dark or light
+
+PageWatch opens dark. Change it in **Settings > General > Theme**: **Dark**, **Light** or **Same as
+Windows**. It applies at once. (PageWatch draws its own windows in the Fusion style for this; the
+standard Windows style ignores dark mode.)
 
 ## Cut the noise
 
@@ -239,7 +268,11 @@ The icon shows the state: normal, unread changes, paused, offline or error. Righ
 window, at your next sign-in, or by running `pagewatch-engine`).
 
 While your computer sleeps or is offline PageWatch does not count that as errors; when it
-wakes it catches up, staggering the overdue checks.
+wakes it catches up, staggering the overdue checks. It tells "offline" from "that site is down"
+by asking a well-known address (**Settings > Network > Connectivity check address**, by default
+Windows' own `http://www.msftconnecttest.com/connecttest.txt`). That address is plain `http` on
+purpose: over `https` its certificate does not match, and PageWatch would think it was offline.
+An older install that saved the `https://` form is corrected automatically.
 
 ## Your data
 

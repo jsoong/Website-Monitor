@@ -141,6 +141,13 @@ class NullTrayBackend:
         dict(self.menu)[label]()
 
 
+def _wrap(cb: Callable[[], None]) -> Callable[[Any, Any], None]:
+    """A menu action in the one shape pystray accepts. pystray inspects the callable's
+    ``__code__.co_argcount`` and only allows 0, 1 or 2; a default argument (``cb=cb``) counts, so
+    ``lambda _i, _m, cb=cb: cb()`` has 3 and the tray crashed at start-up with ``ValueError``."""
+    return lambda _icon, _item: cb()
+
+
 class PystrayBackend:  # pragma: no cover - needs a Windows desktop session
     def __init__(self) -> None:
         self._icon: Any = None
@@ -148,7 +155,7 @@ class PystrayBackend:  # pragma: no cover - needs a Windows desktop session
     def start(self, menu: list[tuple[str, Callable[[], None]]]) -> None:
         import pystray
 
-        items = [pystray.MenuItem(label, lambda _i, _m, cb=cb: cb()) for label, cb in menu]
+        items = [pystray.MenuItem(label, _wrap(cb)) for label, cb in menu]
         self._icon = pystray.Icon(
             "PageWatch", make_icon(TrayState.NORMAL, dark=system_uses_dark_mode()), "PageWatch",
             pystray.Menu(*items),

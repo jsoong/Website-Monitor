@@ -355,3 +355,40 @@ async def test_a_damaged_current_database_is_kept_as_raw_files_when_restoring(ri
     assert (raw / "pagewatch.db").stat().st_size == 4096
     rig.db = Database(rig.data.db_path)
     rig.db.start()
+
+
+# -- Windows: os.fsync needs a descriptor that can write ---------------------------------------
+
+
+@pytest.fixture
+def fsync_modes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The access mode of every descriptor handed to os.fsync. On Windows ``_commit`` fails with
+    EBADF for a read-only one, so none may be O_RDONLY (POSIX would not notice)."""
+    fcntl = pytest.importorskip("fcntl")
+    real = os.fsync
+    modes: list[int] = []
+
+    def checking(fd: int) -> None:
+        modes.append(fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE)
+        real(fd)
+
+    monkeypatch.setattr(os, "fsync", checking)
+    return modes
+
+
+async def test_creating_a_backup_syncs_the_zip_through_a_writable_descriptor(
+    rig: Rig, fsync_modes: list[int]
+) -> None:
+    info = rig.make()
+    assert fsync_modes and os.O_RDONLY not in fsync_modes
+    assert zipfile.is_zipfile(info.path)  # r+b did not change a byte of the finished zip
+
+
+async def test_staging_a_restore_syncs_the_copy_through_a_writable_descriptor(
+    rig: Rig, fsync_modes: list[int]
+) -> None:
+    zip_path = rig.make().path
+    fsync_modes.clear()
+    backup.stage_restore(rig.data, zip_path, NOW)
+    assert fsync_modes and os.O_RDONLY not in fsync_modes
+    assert backup.pending_restore(rig.data)

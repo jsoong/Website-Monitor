@@ -95,6 +95,14 @@ def default_destination(data: DataDir, kind: Kind, now: datetime) -> Path:
     return _unique(data.backups_dir / f"{prefix}{now.strftime(_STAMP)}.zip")
 
 
+def _fsync_file(path: Path) -> None:
+    """Flush a finished file to disk. Opened ``r+b``, not ``rb``: on Windows ``os.fsync`` is the
+    CRT's ``_commit``, which needs a descriptor that can write, and fails with ``OSError: [Errno 9]
+    Bad file descriptor`` on a read-only one. Nothing is written."""
+    with open(path, "r+b") as fh:
+        os.fsync(fh.fileno())
+
+
 def create_backup(
     db: Database,
     data: DataDir,
@@ -147,8 +155,7 @@ def create_backup(
                         # already zstd-compressed: storing beats deflating it a second time
                         member = f"blobs/{path.parent.parent.name}/{path.parent.name}/{path.name}"
                         z.write(path, member, compress_type=zipfile.ZIP_STORED)
-            with open(tmp_zip, "rb") as fh:
-                os.fsync(fh.fileno())
+            _fsync_file(tmp_zip)
             os.replace(tmp_zip, target)
         except BaseException:
             with contextlib.suppress(OSError):
@@ -244,8 +251,7 @@ def stage_restore(data: DataDir, source: Path, now: datetime) -> Manifest:
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = zip_path.with_name(zip_path.name + ".tmp")
     shutil.copyfile(source, tmp)
-    with open(tmp, "rb") as fh:
-        os.fsync(fh.fileno())
+    _fsync_file(tmp)
     os.replace(tmp, zip_path)
     marker.write_text(json.dumps({"staged_at": iso(now), "source": str(source)}))
     log.info("restore_staged", source=str(source), created=manifest.created_at)

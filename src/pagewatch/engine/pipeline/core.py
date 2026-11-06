@@ -674,7 +674,9 @@ def render_view(job: RenderJob) -> RenderResult:
         v = job.new if job.view == "new" else job.old
         if v is None or not v.raw_hash:
             return RenderResult(
-                viewer.wrap_document('<div class="pw-note">No stored copy of this version.</div>'),
+                viewer.wrap_document(
+                    '<div class="pw-note">No stored copy of this version.</div>', allow_remote=False
+                ),
                 job.view,
             )
         raw, ctype = sources.view_bytes(
@@ -751,7 +753,8 @@ def render_screenshot(job: RenderJob, store: BlobStore) -> RenderResult:
     if new_hash is None:
         return RenderResult(
             viewer.wrap_document(
-                '<div class="pw-note">No screenshot was stored for this version.</div>'
+                '<div class="pw-note">No screenshot was stored for this version.</div>',
+                allow_remote=False,
             ),
             "screenshot",
         )
@@ -783,7 +786,9 @@ def _screenshot_result(
         '<img alt="screenshot diff" style="max-width:100%;height:auto" '
         f'src="data:image/png;base64,{base64.b64encode(png).decode()}">'
     )
-    html = viewer.wrap_document(f'<div class="pw-note">{viewer._esc(note)}</div>{img}')
+    html = viewer.wrap_document(
+        f'<div class="pw-note">{viewer._esc(note)}</div>{img}', allow_remote=False
+    )
     return RenderResult(html, "screenshot", identical, False, diff.stats(), png)
 
 

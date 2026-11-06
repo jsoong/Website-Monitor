@@ -2466,4 +2466,32 @@ fonts, lazy images and icons were all gone, and a 70 rem cap squeezed it.
 
 ### Results
 
-(Filled in after the final run, below.)
+Environment: Linux sandbox, CPython 3.12, PySide6 6.11.2 (offscreen), no Windows.
+
+* `uv lock`, `ruff check`, `ruff format --check src tests tools`, `mypy --strict`: exit 0.
+* `pytest` (everything, `tests/ui` included): **1771 passed, 1 skipped, 30 deselected, exit 0** (8 min 11 s).
+* `pytest tests/ui` on its own: **166 passed, exit 0** (2 min 31 s).
+* New or changed tests: `tests/unit/test_connectivity_probe.py` (new), `tests/ui/test_viewer_layout.py`
+  (new: dock, expand, shortcuts, persistence, theme, remote-image default, base address, dark empty
+  page, scheme-change safety), and additions to `test_diff`, `test_tray`, `test_backup`, `test_viewer`,
+  `test_dialogs`. Assertions on the old defaults were changed in `test_viewer` (sanitizer and CSP),
+  `test_render_api` (CSP string), `test_dialogs` (Save before a preview) and `test_m7_dialogs` (the
+  menu bar now has a View menu). Each Windows fix was also checked to fail with the fix reverted
+  (arity, `fsync` access mode, and the signal connection below).
+
+What the runs showed besides that, so it is not rediscovered:
+
+* **`tests/integration/test_m7_follow_links.py::test_patterns_same_host_and_exclusions` is flaky and was
+  before this work.** Run alone 100 times: 6 failures on the untouched commit `3d9f163`, 13 on this
+  branch (a difference too small to read anything into). The failure is the Regex bookmark getting one
+  followed child instead of two; in an instrumented run the test made no connectivity probe, and nothing
+  in this change touches following. It failed in one of the three full runs that completed. Not fixed here.
+* **One full run died with SIGBUS** (exit 135, `Fatal Python error: Bus error`) in the teardown of
+  `tests/ui/test_logins_ui.py` (`_dispose_widgets` -> `wait_idle` -> `processEvents`), before any test of
+  this change had run in that process. `/dev/shm` and memory were fine and nothing else was running. It did
+  not recur in two further full runs or in one further `tests/ui` run on the same code, so it is recorded
+  as an unexplained one-off in Qt teardown, not attributed to this change or to the base (the base was not
+  run enough times to compare).
+* Not run here: anything on Windows. The pystray, `fsync`, certificate and Fusion/dark-mode fixes are
+  covered by tests that simulate the failing condition, not by a Windows run. Look at the dark viewer
+  and the dock switch on Windows 11 before calling this done.
